@@ -43,6 +43,8 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
 # owner_user_id -> "cooldown" | "text"  (panel orqali nimani tahrirlayotgani)
 pending_settings_action: dict[int, str] = {}
+# owner_user_id -> "broadcast"  (admin /reklama oqimida)
+pending_admin_action: dict[int, str] = {}
 
 HOW_CONNECT_TEXT = (
     "Ulash uchun kodga yoki parolga ehtiyoj yo'q — bu Telegramning o'z, rasmiy "
@@ -168,6 +170,7 @@ def build_panel(owner_id: int):
 # ---------------------------------------------------------------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
+    db.record_user(owner_id)
 
     if context.args:
         arg = context.args[0]
@@ -200,6 +203,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     owner_id = query.from_user.id
+    db.record_user(owner_id)
     await query.answer()
     data = query.data
 
@@ -259,6 +263,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
+    db.record_user(owner_id)
     action = pending_settings_action.get(owner_id)
     if action is None:
         return  # panelga aloqasi yo'q oddiy xabar
@@ -281,6 +286,66 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, markup = build_panel(owner_id)
     await update.message.reply_text("Yangilandi.")
     await update.message.reply_text(text, reply_markup=markup)
+
+
+# ---------------------------------------------------------------------------
+# Admin buyruqlari: /stats va /reklama
+# ---------------------------------------------------------------------------
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    count = db.get_user_count()
+    await update.message.reply_text(f"\U0001F465 Botdan jami foydalanuvchilar soni: {count}")
+
+
+async def cmd_reklama(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    pending_admin_action[update.effective_user.id] = "broadcast"
+    await update.message.reply_text(
+        "Reklama sifatida barcha foydalanuvchilarga yuboriladigan xabarni yuboring "
+        "(matn, rasm, video — istalgan turda mumkin).\n"
+        "Bekor qilish uchun /cancel yozing."
+    )
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    owner_id = update.effective_user.id
+    if pending_admin_action.pop(owner_id, None):
+        await update.message.reply_text("Bekor qilindi.")
+
+
+async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin /reklama bosgandan keyin yuborgan XOHLAGAN turdagi xabarni ushlab,
+    barcha foydalanuvchilarga nusxalab yuboradi."""
+    if update.effective_user is None or update.effective_message is None:
+        return
+    owner_id = update.effective_user.id
+    if owner_id != ADMIN_ID or pending_admin_action.get(owner_id) != "broadcast":
+        return
+
+    pending_admin_action.pop(owner_id, None)
+
+    source_chat_id = update.effective_chat.id
+    source_message_id = update.effective_message.message_id
+
+    sent, failed = 0, 0
+    for user_id in db.get_all_user_ids():
+        if user_id == owner_id:
+            continue
+        try:
+            await context.bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=source_chat_id,
+                message_id=source_message_id,
+            )
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await update.effective_message.reply_text(
+        f"\u2705 Reklama yuborildi.\nMuvaffaqiyatli: {sent}\nYuborib bo'lmadi (bloklagan/o'chirilgan): {failed}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -358,8 +423,15 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("reklama", cmd_reklama))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    # Admin /reklama oqimi — istalgan turdagi xabarni ushlab qolish uchun alohida,
+    # ustuvor guruhda (boshqa handler'larga to'sqinlik qilmaydi, chunki guruhlar
+    # bir-biridan mustaqil ishlaydi).
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_admin_broadcast_content), group=-1)
     # Alohida guruhda — business_connection/business_message'larni hech narsaga
     # to'sqinlik qilmasdan tinglaydi.
     app.add_handler(TypeHandler(Update, on_raw_update), group=1)
