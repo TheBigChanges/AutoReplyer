@@ -187,10 +187,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = db.get_connection(owner_id)
     if conn and conn["is_enabled"]:
-        text, markup = build_panel(owner_id)
-        await update.message.reply_text(text, reply_markup=markup)
+        greeting = "Assalomu alaykum! Kerakli bo'limni tanlang:"
     else:
-        await update.message.reply_text(HOW_CONNECT_TEXT, reply_markup=main_menu_markup(owner_id))
+        greeting = (
+            "Assalomu alaykum!\n\n"
+            "Bu bot orqali o'z Telegram akkountingizni ulab, siz oflayn bo'lganingizda "
+            "kiruvchi shaxsiy xabarlarga avtomatik javob berishni sozlashingiz mumkin."
+        )
+    await update.message.reply_text(greeting, reply_markup=main_menu_markup(owner_id))
 
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
