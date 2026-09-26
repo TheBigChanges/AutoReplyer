@@ -1,61 +1,80 @@
 """
-Baza: har bir ulangan biznes-akkaunt (owner_user_id) uchun business_connection_id,
-sozlamalar (online/offline, cooldown, xabar matni) va javob-cooldown tarixi.
+Baza: Supabase (yoki istalgan) Postgres orqali. Har bir ulangan biznes-akkaunt
+(owner_user_id) uchun business_connection_id, sozlamalar (online/offline,
+cooldown, xabar matni) va javob-cooldown tarixi saqlanadi.
 
-Endi hech qanday login sessiyasi yoki shifrlash kerak emas — ulanish butunlay
-Telegramning o'z "Chat Automation" (Business Connection) mexanizmi orqali bo'ladi.
+Bu Render'ning bepul Web Service'i o'chib-yonganda (yoki qayta deploy
+qilinganda) ma'lumot yo'qolmasligi uchun — chunki bepul Render'da mahalliy
+fayl (SQLite) saqlanib qolishi kafolatlanmaydi, tashqi Postgres esa doimiy.
 """
 
 import os
-import sqlite3
 import time
-from pathlib import Path
 
-DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).parent / "data.db")))
+import psycopg2
+import psycopg2.extras
+
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 DEFAULT_COOLDOWN_HOURS = 3.0
 DEFAULT_AUTO_REPLY_TEXT = "Salom! Hozirda oflaynman, imkon qadar tezroq javob beraman \U0001F64F"
 
+_conn = None
+
 
 def get_conn():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Ulanishni qaytaradi, agar o'chib qolgan/uzilgan bo'lsa qayta ulaydi."""
+    global _conn
+    if _conn is not None and not _conn.closed:
+        try:
+            with _conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return _conn
+        except Exception:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = None
+
+    _conn = psycopg2.connect(DATABASE_URL)
+    _conn.autocommit = True
+    return _conn
 
 
 def init_db():
-    with get_conn() as conn:
-        conn.execute(
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS connections (
-                owner_user_id INTEGER PRIMARY KEY,
+                owner_user_id BIGINT PRIMARY KEY,
                 business_connection_id TEXT NOT NULL,
-                can_reply INTEGER NOT NULL DEFAULT 1,
-                is_enabled INTEGER NOT NULL DEFAULT 1,
-                connected_at REAL
+                can_reply BOOLEAN NOT NULL DEFAULT TRUE,
+                is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                connected_at DOUBLE PRECISION
             )
             """
         )
-        conn.execute(
+        cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_connections_bcid ON connections (business_connection_id)"
         )
-        conn.execute(
+        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS settings (
-                owner_user_id INTEGER PRIMARY KEY,
-                offline INTEGER NOT NULL DEFAULT 0,
-                cooldown_hours REAL NOT NULL DEFAULT 3.0,
+                owner_user_id BIGINT PRIMARY KEY,
+                offline BOOLEAN NOT NULL DEFAULT FALSE,
+                cooldown_hours DOUBLE PRECISION NOT NULL DEFAULT 3.0,
                 auto_reply_text TEXT NOT NULL DEFAULT ''
             )
             """
         )
-        conn.execute(
+        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS replied_cache (
-                owner_user_id INTEGER,
-                chat_id INTEGER,
-                last_reply_at REAL,
+                owner_user_id BIGINT,
+                chat_id BIGINT,
+                last_reply_at DOUBLE PRECISION,
                 PRIMARY KEY (owner_user_id, chat_id)
             )
             """
@@ -66,56 +85,51 @@ def init_db():
 # Business connections
 # --------------------------------------------------------------------------
 def upsert_connection(owner_user_id: int, business_connection_id: str, can_reply: bool, is_enabled: bool):
-    with get_conn() as conn:
-        conn.execute(
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
             """
             INSERT INTO connections (owner_user_id, business_connection_id, can_reply, is_enabled, connected_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(owner_user_id) DO UPDATE SET
-                business_connection_id = excluded.business_connection_id,
-                can_reply = excluded.can_reply,
-                is_enabled = excluded.is_enabled,
-                connected_at = excluded.connected_at
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (owner_user_id) DO UPDATE SET
+                business_connection_id = EXCLUDED.business_connection_id,
+                can_reply = EXCLUDED.can_reply,
+                is_enabled = EXCLUDED.is_enabled,
+                connected_at = EXCLUDED.connected_at
             """,
-            (owner_user_id, business_connection_id, int(can_reply), int(is_enabled), time.time()),
+            (owner_user_id, business_connection_id, can_reply, is_enabled, time.time()),
         )
 
 
 def get_connection(owner_user_id: int):
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM connections WHERE owner_user_id = ?", (owner_user_id,)
-        ).fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        d["can_reply"] = bool(d["can_reply"])
-        d["is_enabled"] = bool(d["is_enabled"])
-        return d
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM connections WHERE owner_user_id = %s", (owner_user_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
 def get_connection_by_business_id(business_connection_id: str):
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM connections WHERE business_connection_id = ?", (business_connection_id,)
-        ).fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        d["can_reply"] = bool(d["can_reply"])
-        d["is_enabled"] = bool(d["is_enabled"])
-        return d
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT * FROM connections WHERE business_connection_id = %s", (business_connection_id,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
 # --------------------------------------------------------------------------
 # Settings
 # --------------------------------------------------------------------------
 def ensure_settings(owner_user_id: int):
-    with get_conn() as conn:
-        conn.execute(
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
             """
-            INSERT OR IGNORE INTO settings (owner_user_id, offline, cooldown_hours, auto_reply_text)
-            VALUES (?, 0, ?, ?)
+            INSERT INTO settings (owner_user_id, offline, cooldown_hours, auto_reply_text)
+            VALUES (%s, FALSE, %s, %s)
+            ON CONFLICT (owner_user_id) DO NOTHING
             """,
             (owner_user_id, DEFAULT_COOLDOWN_HOURS, DEFAULT_AUTO_REPLY_TEXT),
         )
@@ -123,47 +137,46 @@ def ensure_settings(owner_user_id: int):
 
 def get_settings(owner_user_id: int) -> dict:
     ensure_settings(owner_user_id)
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM settings WHERE owner_user_id = ?", (owner_user_id,)
-        ).fetchone()
-        d = dict(row)
-        d["offline"] = bool(d["offline"])
-        return d
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM settings WHERE owner_user_id = %s", (owner_user_id,))
+        return dict(cur.fetchone())
 
 
 def update_settings(owner_user_id: int, **kwargs):
     ensure_settings(owner_user_id)
-    if "offline" in kwargs:
-        kwargs["offline"] = int(bool(kwargs["offline"]))
-    fields = ", ".join(f"{k} = ?" for k in kwargs)
+    fields = ", ".join(f"{k} = %s" for k in kwargs)
     values = list(kwargs.values()) + [owner_user_id]
-    with get_conn() as conn:
-        conn.execute(f"UPDATE settings SET {fields} WHERE owner_user_id = ?", values)
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(f"UPDATE settings SET {fields} WHERE owner_user_id = %s", values)
 
 
 # --------------------------------------------------------------------------
 # Reply cooldown cache
 # --------------------------------------------------------------------------
 def already_replied_recently(owner_user_id: int, chat_id: int) -> bool:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT last_reply_at FROM replied_cache WHERE owner_user_id = ? AND chat_id = ?",
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT last_reply_at FROM replied_cache WHERE owner_user_id = %s AND chat_id = %s",
             (owner_user_id, chat_id),
-        ).fetchone()
+        )
+        row = cur.fetchone()
     if row is None:
         return False
     cooldown_hours = get_settings(owner_user_id)["cooldown_hours"]
-    return (time.time() - row["last_reply_at"]) < cooldown_hours * 3600
+    return (time.time() - row[0]) < cooldown_hours * 3600
 
 
 def mark_replied(owner_user_id: int, chat_id: int):
-    with get_conn() as conn:
-        conn.execute(
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
             """
             INSERT INTO replied_cache (owner_user_id, chat_id, last_reply_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(owner_user_id, chat_id) DO UPDATE SET last_reply_at = excluded.last_reply_at
+            VALUES (%s, %s, %s)
+            ON CONFLICT (owner_user_id, chat_id) DO UPDATE SET last_reply_at = EXCLUDED.last_reply_at
             """,
             (owner_user_id, chat_id, time.time()),
         )
