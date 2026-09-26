@@ -79,6 +79,18 @@ def init_db():
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS referrals (
+                referred_user_id BIGINT PRIMARY KEY,
+                inviter_user_id BIGINT NOT NULL,
+                created_at DOUBLE PRECISION
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON referrals (inviter_user_id)"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -180,3 +192,48 @@ def mark_replied(owner_user_id: int, chat_id: int):
             """,
             (owner_user_id, chat_id, time.time()),
         )
+
+
+# --------------------------------------------------------------------------
+# Referrallar
+# --------------------------------------------------------------------------
+def record_referral(referred_user_id: int, inviter_user_id: int) -> bool:
+    """Yangi referralni yozadi. Agar bu odam allaqachon ro'yxatdan o'tgan bo'lsa
+    yoki o'zini-o'zi taklif qilmoqchi bo'lsa — False qaytaradi (hisoblanmaydi)."""
+    if referred_user_id == inviter_user_id:
+        return False
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO referrals (referred_user_id, inviter_user_id, created_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (referred_user_id) DO NOTHING
+            """,
+            (referred_user_id, inviter_user_id, time.time()),
+        )
+        return cur.rowcount > 0
+
+
+def get_referral_count(inviter_user_id: int) -> int:
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM referrals WHERE inviter_user_id = %s", (inviter_user_id,)
+        )
+        return cur.fetchone()[0]
+
+
+def get_all_referral_counts():
+    """[(inviter_user_id, count), ...] — ko'p taklif qilganlar oldinda."""
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT inviter_user_id, COUNT(*) AS cnt
+            FROM referrals
+            GROUP BY inviter_user_id
+            ORDER BY cnt DESC
+            """
+        )
+        return cur.fetchall()
