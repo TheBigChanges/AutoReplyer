@@ -14,6 +14,7 @@ online/offline, cooldown, avtojavob matni.
 """
 
 import os
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -50,6 +51,45 @@ HOW_CONNECT_TEXT = (
 )
 
 
+def format_cooldown(hours: float) -> str:
+    """0.5 -> '30 daqiqa', 1.0 -> '1 soat', 2.5 -> '2 soat 30 daqiqa'."""
+    total_minutes = round(hours * 60)
+    h, m = divmod(total_minutes, 60)
+    parts = []
+    if h:
+        parts.append(f"{h} soat")
+    if m or not parts:
+        parts.append(f"{m} daqiqa")
+    return " ".join(parts)
+
+
+def parse_cooldown_input(text: str):
+    """Turli formatlarni qabul qiladi va soat (float) qilib qaytaradi, yoki None."""
+    text = text.strip().lower()
+
+    # "2 soat 30 daqiqa", "1s 30d", "45 daqiqa", "3 soat" kabi formatlar
+    hours_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:soat|s|h|hour)\b", text)
+    minutes_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:daqiqa|minut|min|m|d)\b", text)
+    if hours_match or minutes_match:
+        h = float(hours_match.group(1).replace(",", ".")) if hours_match else 0.0
+        m = float(minutes_match.group(1).replace(",", ".")) if minutes_match else 0.0
+        return h + m / 60
+
+    # "1:30" -> 1 soat 30 daqiqa
+    if ":" in text:
+        try:
+            h_str, m_str = text.split(":", 1)
+            return float(h_str) + float(m_str) / 60
+        except ValueError:
+            return None
+
+    # Oddiy raqam -> soat sifatida (eski xatti-harakat bilan mos)
+    try:
+        return float(text.replace(",", "."))
+    except ValueError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Menyu va panel
 # ---------------------------------------------------------------------------
@@ -71,7 +111,7 @@ def build_panel(owner_id: int):
     text = (
         "\U0001F39B Sizning panelingiz\n\n"
         f"Holat: {status_line}\n"
-        f"Cooldown: {s['cooldown_hours']} soat\n"
+        f"Cooldown: {format_cooldown(s['cooldown_hours'])}\n"
         f"Xabar: {s['auto_reply_text']}"
     )
     keyboard = [
@@ -125,7 +165,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "edit_cooldown":
         pending_settings_action[owner_id] = "cooldown"
-        await query.message.reply_text("Yangi cooldown qiymatini soatlarda yuboring (masalan: 2):")
+        await query.message.reply_text(
+            "Yangi cooldown qiymatini yuboring. Masalan:\n"
+            "\u2022 2 soat 30 daqiqa\n"
+            "\u2022 45 daqiqa\n"
+            "\u2022 1:30 (1 soat 30 daqiqa)\n"
+            "\u2022 3 (shunchaki 3 soat)"
+        )
         return
 
     elif data == "edit_text":
@@ -146,10 +192,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = update.message.text.strip()
 
     if action == "cooldown":
-        try:
-            hours = float(value)
-        except ValueError:
-            await update.message.reply_text("Noto'g'ri format. Raqam yuboring, masalan: 2")
+        hours = parse_cooldown_input(value)
+        if hours is None or hours < 0:
+            await update.message.reply_text(
+                "Noto'g'ri format. Masalan: '2 soat 30 daqiqa', '45 daqiqa', '1:30' yoki '3'"
+            )
             return
         db.update_settings(owner_id, cooldown_hours=hours)
 
@@ -206,6 +253,12 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         owner_id = connection["owner_user_id"]
+
+        # Bu SIZNING (akkaunt egasining) o'zi yozgan xabari — botlarga emas,
+        # mijozlarga javob berishimiz kerak, shuning uchun o'tkazib yuboramiz.
+        if bm.from_user and bm.from_user.id == owner_id:
+            return
+
         settings = db.get_settings(owner_id)
         if not settings["offline"]:
             return
