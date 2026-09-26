@@ -47,12 +47,17 @@ pending_settings_action: dict[int, str] = {}
 pending_admin_action: dict[int, str] = {}
 
 HOW_CONNECT_TEXT = (
-    "Ulash uchun kodga yoki parolga ehtiyoj yo'q — bu Telegramning o'z, rasmiy "
-    "funksiyasi orqali ishlaydi:\n\n"
-    "1. Telegram ilovangizda: Sozlamalar \u2192 Telegram Business (yoki \"Chat Automation\")\n"
-    "2. \"Chatbots\" bo'limiga kiring\n"
-    f"3. Bu botning username'ini kiriting: @{BOT_USERNAME}\n"
-    "4. \"Reply to messages\" (xabarlarga javob berish) ruxsatini yoqing\n\n"
+    "\U0001F517 Akkountni ulash — qadamma-qadam:\n\n"
+    "1\uFE0F\u20E3 Telegram ilovangizda: Sozlamalar (Settings)\n"
+    "2\uFE0F\u20E3 \"Telegram Business\" bo'limini toping va uni oching\n"
+    "3\uFE0F\u20E3 \"Chatbots\" (yoki \"Chat Automation\") ni tanlang\n"
+    f"4\uFE0F\u20E3 Kiritish maydoniga botning username'ini yozing: @{BOT_USERNAME}\n"
+    "   Ro'yxatda chiqqach, ustiga bosib tanlang\n"
+    "5\uFE0F\u20E3 \"Access to chats\" (qaysi chatlarga ruxsat) so'ralganda:\n"
+    "   \u2022 \"All 1-to-1 Chats\" ni tanlang — bu barcha shaxsiy xabarlarga ruxsat beradi\n"
+    "   \u2022 (\"Only Selected Chats\"ni tansangiz, faqat o'zingiz qo'shgan odamlarga javob beriladi)\n"
+    "6\uFE0F\u20E3 \"Reply to messages\" (xabarlarga javob berish) ruxsatini albatta yoqing —\n"
+    "   shu yoqilmasa, bot xabarlarni ko'radi lekin javob bera olmaydi\n\n"
     "Ulangach, shu yerga qaytib /start yozing \u2014 panel avtomatik ochiladi."
 )
 
@@ -132,17 +137,33 @@ def build_referral_view(owner_id: int):
     return text, InlineKeyboardMarkup(keyboard)
 
 
-def build_admin_referrals_view():
+async def build_admin_referrals_view(bot):
     rows = db.get_all_referral_counts()
     if not rows:
         body = "Hozircha hech kim hech kimni taklif qilmagan."
     else:
-        lines = [f"{i + 1}. ID {inviter_id} — {cnt} ta do'st" for i, (inviter_id, cnt) in enumerate(rows)]
+        lines = []
+        for i, (inviter_id, cnt) in enumerate(rows):
+            label = await _display_name_for(bot, inviter_id)
+            lines.append(f"{i + 1}. {label} — {cnt} ta do'st")
         body = "\n".join(lines)
 
     text = f"\U0001F4CA Referral statistikasi\n\n{body}"
     keyboard = [[InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")]]
     return text, InlineKeyboardMarkup(keyboard)
+
+
+async def _display_name_for(bot, user_id: int) -> str:
+    """Username bo'lsa @username, bo'lmasa Telegram ismi, u ham topilmasa ID."""
+    try:
+        chat = await bot.get_chat(user_id)
+        if chat.username:
+            return f"@{chat.username}"
+        if chat.full_name:
+            return chat.full_name
+    except Exception:
+        pass
+    return f"ID {user_id}"
 
 
 def build_panel(owner_id: int):
@@ -233,7 +254,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if owner_id != ADMIN_ID:
             await query.answer("Ruxsat yo'q.", show_alert=True)
             return
-        text, markup = build_admin_referrals_view()
+        text, markup = await build_admin_referrals_view(context.bot)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
