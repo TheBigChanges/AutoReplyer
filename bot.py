@@ -17,6 +17,7 @@ import os
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -36,6 +37,9 @@ load_dotenv()
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "bot_username_bu_yerga")
+# Sizning shaxsiy Telegram user ID'ingiz — faqat shu odam referral statistikasini
+# (barcha foydalanuvchilar bo'yicha) ko'ra oladi. @userinfobot'dan olish mumkin.
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
 # owner_user_id -> "cooldown" | "text"  (panel orqali nimani tahrirlayotgani)
 pending_settings_action: dict[int, str] = {}
@@ -100,7 +104,43 @@ def main_menu_markup(owner_id: int):
         rows.append([InlineKeyboardButton("\U0001F39B Panelni ochish", callback_data="open_panel")])
     else:
         rows.append([InlineKeyboardButton("\u2139\uFE0F Qanday ulash mumkin?", callback_data="how_connect")])
+    rows.append([InlineKeyboardButton("\U0001F381 Do'stlarni taklif qilish", callback_data="referral")])
+    if owner_id == ADMIN_ID:
+        rows.append([InlineKeyboardButton("\U0001F4CA Referral statistikasi (admin)", callback_data="admin_referrals")])
     return InlineKeyboardMarkup(rows)
+
+
+def build_referral_view(owner_id: int):
+    link = f"https://t.me/{BOT_USERNAME}?start=ref_{owner_id}"
+    count = db.get_referral_count(owner_id)
+    share_text = "Oflaynda ham javob beradigan Telegram botdan foydalaning:"
+    share_url = f"https://t.me/share/url?url={quote(link)}&text={quote(share_text)}"
+
+    text = (
+        "\U0001F381 Do'stlarni taklif qilish\n\n"
+        f"Siz orqali botga ulangan do'stlar soni: {count}\n\n"
+        "Shaxsiy havolangiz:\n"
+        f"{link}\n\n"
+        "Do'stlaringiz shu havola orqali botga kirsa, ular siz taklif qilgan hisoblanadi."
+    )
+    keyboard = [
+        [InlineKeyboardButton("\U0001F4E4 Havolani ulashish", url=share_url)],
+        [InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_admin_referrals_view():
+    rows = db.get_all_referral_counts()
+    if not rows:
+        body = "Hozircha hech kim hech kimni taklif qilmagan."
+    else:
+        lines = [f"{i + 1}. ID {inviter_id} — {cnt} ta do'st" for i, (inviter_id, cnt) in enumerate(rows)]
+        body = "\n".join(lines)
+
+    text = f"\U0001F4CA Referral statistikasi\n\n{body}"
+    keyboard = [[InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")]]
+    return text, InlineKeyboardMarkup(keyboard)
 
 
 def build_panel(owner_id: int):
@@ -128,6 +168,23 @@ def build_panel(owner_id: int):
 # ---------------------------------------------------------------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
+
+    if context.args:
+        arg = context.args[0]
+        if arg.startswith("ref_"):
+            try:
+                inviter_id = int(arg[4:])
+            except ValueError:
+                inviter_id = None
+            if inviter_id and db.record_referral(referred_user_id=owner_id, inviter_user_id=inviter_id):
+                try:
+                    await context.bot.send_message(
+                        chat_id=inviter_id,
+                        text="\U0001F389 Sizning havolangiz orqali yangi odam botga qo'shildi!",
+                    )
+                except Exception:
+                    pass
+
     conn = db.get_connection(owner_id)
     if conn and conn["is_enabled"]:
         text, markup = build_panel(owner_id)
@@ -157,6 +214,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back":
         await query.edit_message_text("Bosh menyu:", reply_markup=main_menu_markup(owner_id))
+        return
+
+    if data == "referral":
+        text, markup = build_referral_view(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "admin_referrals":
+        if owner_id != ADMIN_ID:
+            await query.answer("Ruxsat yo'q.", show_alert=True)
+            return
+        text, markup = build_admin_referrals_view()
+        await query.edit_message_text(text, reply_markup=markup)
         return
 
     if data == "toggle_status":
