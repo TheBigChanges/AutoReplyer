@@ -91,6 +91,24 @@ def init_db():
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON referrals (inviter_user_id)"
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                first_seen DOUBLE PRECISION
+            )
+            """
+        )
+        # Bu funksiya qo'shilishidan oldin ham botdan foydalangan odamlarni
+        # (connections/settings/referrals'da qolgan) bir martalik "orqaga qarab"
+        # to'ldirish — hisoblash noto'g'ri chiqmasligi uchun.
+        for query in (
+            "INSERT INTO users (user_id, first_seen) SELECT owner_user_id, extract(epoch from now()) FROM settings ON CONFLICT (user_id) DO NOTHING",
+            "INSERT INTO users (user_id, first_seen) SELECT owner_user_id, extract(epoch from now()) FROM connections ON CONFLICT (user_id) DO NOTHING",
+            "INSERT INTO users (user_id, first_seen) SELECT referred_user_id, extract(epoch from now()) FROM referrals ON CONFLICT (user_id) DO NOTHING",
+            "INSERT INTO users (user_id, first_seen) SELECT inviter_user_id, extract(epoch from now()) FROM referrals ON CONFLICT (user_id) DO NOTHING",
+        ):
+            cur.execute(query)
 
 
 # --------------------------------------------------------------------------
@@ -237,3 +255,33 @@ def get_all_referral_counts():
             """
         )
         return cur.fetchall()
+
+
+# --------------------------------------------------------------------------
+# Foydalanuvchilar (admin /stats va /reklama uchun)
+# --------------------------------------------------------------------------
+def record_user(user_id: int):
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO users (user_id, first_seen)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            (user_id, time.time()),
+        )
+
+
+def get_user_count() -> int:
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM users")
+        return cur.fetchone()[0]
+
+
+def get_all_user_ids():
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT user_id FROM users ORDER BY user_id")
+        return [row[0] for row in cur.fetchall()]
