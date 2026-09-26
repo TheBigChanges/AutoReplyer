@@ -14,6 +14,8 @@ online/offline, cooldown, avtojavob matni.
 """
 
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -237,6 +239,24 @@ def build_app() -> Application:
     return app
 
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Render Web Service uchun: portni tinglab, 'tirik' ekanini bildiradi."""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass  # terminalni har bir ping bilan to'ldirmaslik uchun
+
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    server.serve_forever()
+
+
 if __name__ == "__main__":
     import asyncio
 
@@ -245,6 +265,10 @@ if __name__ == "__main__":
     except RuntimeError:
         # Python 3.14+ asosiy oqimda avtomatik event loop yaratmaydi — qo'lda yaratamiz
         asyncio.set_event_loop(asyncio.new_event_loop())
+
+    # Render Web Service portni tinglashni talab qiladi — shu uchun health server
+    # alohida oqimda (thread) fonda ishga tushadi, asosiy bot esa polling bilan davom etadi.
+    threading.Thread(target=start_health_server, daemon=True).start()
 
     db.init_db()
     app = build_app()
