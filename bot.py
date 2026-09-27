@@ -16,6 +16,7 @@ online/offline, cooldown, avtojavob matni.
 import os
 import re
 import threading
+from datetime import date, time as dtime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote
 
@@ -102,6 +103,108 @@ def parse_cooldown_input(text: str):
 
 
 # ---------------------------------------------------------------------------
+# BIO hisoblagich
+# ---------------------------------------------------------------------------
+BIO_EVENT_LABELS = {
+    "new_year": "Yangi yil",
+    "navroz": "Navro'z",
+    "birthday": "Tug'ilgan kunim",
+}
+# (oy, kun) — har yili takrorlanadigan bayramlar uchun
+FIXED_EVENT_DATES = {
+    "new_year": (1, 1),
+    "navroz": (3, 21),
+}
+
+
+def days_until_next(month: int, day: int, today: date | None = None) -> int:
+    if today is None:
+        today = date.today()
+    year = today.year
+    try:
+        target = date(year, month, day)
+    except ValueError:
+        target = date(year, 3, 1)  # 29-fevral kabi holatlar uchun zaxira
+    if target < today:
+        try:
+            target = date(year + 1, month, day)
+        except ValueError:
+            target = date(year + 1, 3, 1)
+    return (target - today).days
+
+
+def compute_bio_text(target: str, birthday_month, birthday_day) -> str | None:
+    if target in FIXED_EVENT_DATES:
+        month, day = FIXED_EVENT_DATES[target]
+    elif target == "birthday":
+        if not birthday_month or not birthday_day:
+            return None
+        month, day = birthday_month, birthday_day
+    else:
+        return None
+
+    days = days_until_next(month, day)
+    label = BIO_EVENT_LABELS[target]
+    if days == 0:
+        return f"\U0001F389 Bugun {label.lower()}!"
+    return f"{label}ga {days} kun qoldi!"
+
+
+def parse_birthday_input(text: str):
+    """'15.03', '15-03', '15/03' kabi formatlarni (kun, oy) qilib qaytaradi."""
+    match = re.match(r"^\s*(\d{1,2})[.\-/](\d{1,2})\s*$", text)
+    if not match:
+        return None
+    day, month = int(match.group(1)), int(match.group(2))
+    if not (1 <= month <= 12) or not (1 <= day <= 31):
+        return None
+    try:
+        date(2024, month, day)  # to'g'ri sana ekanini tekshirish (2024 — kabisa yil)
+    except ValueError:
+        return None
+    return month, day
+
+
+async def apply_bio_update(bot, owner_id: int) -> tuple[bool, str]:
+    """Bitta foydalanuvchining BIO'sini hozirgi sozlamalariga qarab yangilaydi."""
+    connection = db.get_connection(owner_id)
+    settings = db.get_settings(owner_id)
+    target = settings.get("bio_countdown_target")
+
+    if not connection or not connection["is_enabled"]:
+        return False, "Akkount ulanmagan."
+    if not connection.get("can_edit_bio"):
+        return False, "\"Edit bio\" ruxsati yoqilmagan."
+    if not target:
+        return False, "BIO hisoblagich o'chirilgan."
+
+    text = compute_bio_text(target, settings.get("birthday_month"), settings.get("birthday_day"))
+    if text is None:
+        return False, "Tug'ilgan kun sanasi kiritilmagan."
+
+    try:
+        await bot.set_business_account_bio(
+            business_connection_id=connection["business_connection_id"], bio=text
+        )
+        return True, text
+    except Exception as e:
+        return False, str(e)
+
+
+async def bio_daily_job(context: ContextTypes.DEFAULT_TYPE):
+    for row in db.get_all_bio_targets():
+        text = compute_bio_text(row["bio_countdown_target"], row["birthday_month"], row["birthday_day"])
+        if text is None:
+            continue
+        try:
+            await context.bot.set_business_account_bio(
+                business_connection_id=row["business_connection_id"], bio=text
+            )
+        except Exception as e:
+            print(f"[bot] BIO yangilash xatosi owner={row['owner_user_id']}: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Menyu va panel
 # ---------------------------------------------------------------------------
 def main_menu_markup(owner_id: int):
@@ -181,8 +284,47 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton(toggle_label, callback_data="toggle_status")],
         [InlineKeyboardButton("\u23F1 Cooldownni o'zgartirish", callback_data="edit_cooldown")],
         [InlineKeyboardButton("\U0001F4DD Xabar matnini o'zgartirish", callback_data="edit_text")],
+        [InlineKeyboardButton("\U0001F382 BIO hisoblagich", callback_data="bio_menu")],
         [InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")],
     ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_bio_menu(owner_id: int):
+    connection = db.get_connection(owner_id)
+    s = db.get_settings(owner_id)
+    target = s.get("bio_countdown_target")
+
+    if not connection or not connection.get("can_edit_bio"):
+        text = (
+            "\U0001F382 BIO hisoblagich\n\n"
+            "Bu funksiya uchun \"Edit bio\" (BIO'ni tahrirlash) ruxsati kerak.\n\n"
+            "Telegram: Sozlamalar \u2192 Telegram Business \u2192 Chatbots \u2192 botni bosing \u2192 "
+            "\"Edit bio\" ruxsatini yoqing. Keyin shu tugmani qayta bosing."
+        )
+        keyboard = [[InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="open_panel")]]
+        return text, InlineKeyboardMarkup(keyboard)
+
+    if target:
+        label = BIO_EVENT_LABELS.get(target, target)
+        preview = compute_bio_text(target, s.get("birthday_month"), s.get("birthday_day"))
+        status = f"Yoqilgan: {label}\nHozirgi matn: {preview or '(sana kiritilmagan)'}"
+    else:
+        status = "Hozircha o'chirilgan."
+
+    text = (
+        "\U0001F382 BIO hisoblagich\n\n"
+        f"{status}\n\n"
+        "BIO'ingizda avtomatik shu turdagi hisoblagich ko'rsatilsin:"
+    )
+    keyboard = [
+        [InlineKeyboardButton("\U0001F386 Yangi yilgacha", callback_data="bio_set_new_year")],
+        [InlineKeyboardButton("\U0001F33F Navro'zgacha", callback_data="bio_set_navroz")],
+        [InlineKeyboardButton("\U0001F382 Tug'ilgan kunimgacha", callback_data="bio_set_birthday")],
+    ]
+    if target:
+        keyboard.append([InlineKeyboardButton("\u274C O'chirish", callback_data="bio_disable")])
+    keyboard.append([InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="open_panel")])
     return text, InlineKeyboardMarkup(keyboard)
 
 
@@ -278,6 +420,43 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Yangi avtojavob matnini yuboring:")
         return
 
+    if data == "bio_menu":
+        text, markup = build_bio_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data in ("bio_set_new_year", "bio_set_navroz"):
+        target = "new_year" if data == "bio_set_new_year" else "navroz"
+        db.update_settings(owner_id, bio_countdown_target=target)
+        ok, info = await apply_bio_update(context.bot, owner_id)
+        text, markup = build_bio_menu(owner_id)
+        if not ok:
+            text += f"\n\n\u26A0\uFE0F BIO yangilanmadi: {info}"
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "bio_set_birthday":
+        s = db.get_settings(owner_id)
+        if s.get("birthday_month") and s.get("birthday_day"):
+            db.update_settings(owner_id, bio_countdown_target="birthday")
+            ok, info = await apply_bio_update(context.bot, owner_id)
+            text, markup = build_bio_menu(owner_id)
+            if not ok:
+                text += f"\n\n\u26A0\uFE0F BIO yangilanmadi: {info}"
+            await query.edit_message_text(text, reply_markup=markup)
+        else:
+            pending_settings_action[owner_id] = "birthday_date"
+            await query.message.reply_text(
+                "Tug'ilgan kuningizni kun.oy formatida yuboring (masalan: 15.03 — 15-mart):"
+            )
+        return
+
+    if data == "bio_disable":
+        db.update_settings(owner_id, bio_countdown_target=None)
+        text, markup = build_bio_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
     text, markup = build_panel(owner_id)
     await query.edit_message_text(text, reply_markup=markup)
 
@@ -302,6 +481,24 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "text":
         db.update_settings(owner_id, auto_reply_text=value)
+
+    elif action == "birthday_date":
+        parsed = parse_birthday_input(value)
+        if parsed is None:
+            await update.message.reply_text(
+                "Noto'g'ri format. Kun.oy ko'rinishida yuboring, masalan: 15.03"
+            )
+            return
+        month, day = parsed
+        db.update_settings(owner_id, birthday_month=month, birthday_day=day, bio_countdown_target="birthday")
+        ok, info = await apply_bio_update(context.bot, owner_id)
+        pending_settings_action.pop(owner_id, None)
+        text, markup = build_bio_menu(owner_id)
+        if not ok:
+            text += f"\n\n\u26A0\uFE0F BIO yangilanmadi: {info}"
+        await update.message.reply_text("Saqlandi.")
+        await update.message.reply_text(text, reply_markup=markup)
+        return
 
     pending_settings_action.pop(owner_id, None)
     text, markup = build_panel(owner_id)
@@ -384,11 +581,14 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if can_reply is None:
             can_reply = True
 
+        can_edit_bio = bool(getattr(rights, "can_edit_bio", False)) if rights is not None else False
+
         db.upsert_connection(
             owner_user_id=conn.user.id,
             business_connection_id=conn.id,
             can_reply=can_reply,
             is_enabled=conn.is_enabled,
+            can_edit_bio=can_edit_bio,
         )
         try:
             if conn.is_enabled:
@@ -456,6 +656,11 @@ def build_app() -> Application:
     # Alohida guruhda — business_connection/business_message'larni hech narsaga
     # to'sqinlik qilmasdan tinglaydi.
     app.add_handler(TypeHandler(Update, on_raw_update), group=1)
+
+    # BIO hisoblagichni kuniga bir marta avtomatik yangilash (kun sanog'i o'zgarishi uchun)
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(bio_daily_job, interval=24 * 60 * 60, first=15)
+
     return app
 
 
