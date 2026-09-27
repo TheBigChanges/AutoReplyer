@@ -57,6 +57,9 @@ def init_db():
             """
         )
         cur.execute(
+            "ALTER TABLE connections ADD COLUMN IF NOT EXISTS can_edit_bio BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_connections_bcid ON connections (business_connection_id)"
         )
         cur.execute(
@@ -68,6 +71,15 @@ def init_db():
                 auto_reply_text TEXT NOT NULL DEFAULT ''
             )
             """
+        )
+        cur.execute(
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS bio_countdown_target TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_month INTEGER"
+        )
+        cur.execute(
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_day INTEGER"
         )
         cur.execute(
             """
@@ -114,20 +126,27 @@ def init_db():
 # --------------------------------------------------------------------------
 # Business connections
 # --------------------------------------------------------------------------
-def upsert_connection(owner_user_id: int, business_connection_id: str, can_reply: bool, is_enabled: bool):
+def upsert_connection(
+    owner_user_id: int,
+    business_connection_id: str,
+    can_reply: bool,
+    is_enabled: bool,
+    can_edit_bio: bool = False,
+):
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO connections (owner_user_id, business_connection_id, can_reply, is_enabled, connected_at)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO connections (owner_user_id, business_connection_id, can_reply, is_enabled, can_edit_bio, connected_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (owner_user_id) DO UPDATE SET
                 business_connection_id = EXCLUDED.business_connection_id,
                 can_reply = EXCLUDED.can_reply,
                 is_enabled = EXCLUDED.is_enabled,
+                can_edit_bio = EXCLUDED.can_edit_bio,
                 connected_at = EXCLUDED.connected_at
             """,
-            (owner_user_id, business_connection_id, can_reply, is_enabled, time.time()),
+            (owner_user_id, business_connection_id, can_reply, is_enabled, can_edit_bio, time.time()),
         )
 
 
@@ -285,3 +304,23 @@ def get_all_user_ids():
     with conn.cursor() as cur:
         cur.execute("SELECT user_id FROM users ORDER BY user_id")
         return [row[0] for row in cur.fetchall()]
+
+
+# --------------------------------------------------------------------------
+# BIO hisoblagich
+# --------------------------------------------------------------------------
+def get_all_bio_targets():
+    """BIO'sini avtomatik yangilash kerak bo'lgan barcha ulanishlar."""
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT c.owner_user_id, c.business_connection_id,
+                   s.bio_countdown_target, s.birthday_month, s.birthday_day
+            FROM connections c
+            JOIN settings s ON s.owner_user_id = c.owner_user_id
+            WHERE c.is_enabled = TRUE AND c.can_edit_bio = TRUE
+              AND s.bio_countdown_target IS NOT NULL
+            """
+        )
+        return [dict(r) for r in cur.fetchall()]
