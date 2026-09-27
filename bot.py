@@ -110,6 +110,11 @@ BIO_EVENT_LABELS = {
     "navroz": "Navro'z",
     "birthday": "Tug'ilgan kunim",
 }
+BIO_EVENT_EMOJIS = {
+    "new_year": "\U0001F386",  # 🎆
+    "navroz": "\U0001F337",    # 🌷
+    "birthday": "\U0001F382",  # 🎂
+}
 # (oy, kun) — har yili takrorlanadigan bayramlar uchun
 FIXED_EVENT_DATES = {
     "new_year": (1, 1),
@@ -145,9 +150,10 @@ def compute_bio_text(target: str, birthday_month, birthday_day) -> str | None:
 
     days = days_until_next(month, day)
     label = BIO_EVENT_LABELS[target]
+    emoji = BIO_EVENT_EMOJIS.get(target, "")
     if days == 0:
-        return f"\U0001F389 Bugun {label.lower()}!"
-    return f"{label}ga {days} kun qoldi!"
+        return f"{emoji} Bugun {label.lower()}!".strip()
+    return f"{emoji} {label}ga {days} kun qoldi!".strip()
 
 
 def parse_birthday_input(text: str):
@@ -214,7 +220,7 @@ def main_menu_markup(owner_id: int):
         rows.append([InlineKeyboardButton("\U0001F39B Panelni ochish", callback_data="open_panel")])
     else:
         rows.append([InlineKeyboardButton("\u2139\uFE0F Qanday ulash mumkin?", callback_data="how_connect")])
-    rows.append([InlineKeyboardButton("\U0001F381 Do'stlarni taklif qilish", callback_data="referral")])
+    rows.append([InlineKeyboardButton("\U0001F381 Referal bonus", callback_data="referral")])
     if owner_id == ADMIN_ID:
         rows.append([InlineKeyboardButton("\U0001F4CA Referral statistikasi (admin)", callback_data="admin_referrals")])
     return InlineKeyboardMarkup(rows)
@@ -227,7 +233,7 @@ def build_referral_view(owner_id: int):
     share_url = f"https://t.me/share/url?url={quote(link)}&text={quote(share_text)}"
 
     text = (
-        "\U0001F381 Do'stlarni taklif qilish\n\n"
+        "\U0001F381 Referal bonus\n\n"
         f"Siz orqali botga ulangan do'stlar soni: {count}\n\n"
         "Shaxsiy havolangiz:\n"
         f"{link}\n\n"
