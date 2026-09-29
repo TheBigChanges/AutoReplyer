@@ -13,15 +13,18 @@ Foydalanuvchi shu botga /start yozib, o'zining panelini ochadi:
 online/offline, cooldown, avtojavob matni.
 """
 
+import asyncio
+import logging
 import os
-import re
 import threading
-from datetime import date, time as dtime
+from datetime import time as dtime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -33,8 +36,23 @@ from telegram.ext import (
 )
 
 import db
+from logic import (
+    BIO_EVENT_LABELS,
+    compute_bio_text,
+    format_cooldown,
+    parse_birthday_input,
+    parse_cooldown_input,
+)
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("autoreplyer")
+
+TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "bot_username_bu_yerga")
@@ -63,114 +81,6 @@ HOW_CONNECT_TEXT = (
 )
 
 
-def format_cooldown(hours: float) -> str:
-    """0.5 -> '30 daqiqa', 1.0 -> '1 soat', 2.5 -> '2 soat 30 daqiqa'."""
-    total_minutes = round(hours * 60)
-    h, m = divmod(total_minutes, 60)
-    parts = []
-    if h:
-        parts.append(f"{h} soat")
-    if m or not parts:
-        parts.append(f"{m} daqiqa")
-    return " ".join(parts)
-
-
-def parse_cooldown_input(text: str):
-    """Turli formatlarni qabul qiladi va soat (float) qilib qaytaradi, yoki None."""
-    text = text.strip().lower()
-
-    # "2 soat 30 daqiqa", "1s 30d", "45 daqiqa", "3 soat" kabi formatlar
-    hours_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:soat|s|h|hour)\b", text)
-    minutes_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:daqiqa|minut|min|m|d)\b", text)
-    if hours_match or minutes_match:
-        h = float(hours_match.group(1).replace(",", ".")) if hours_match else 0.0
-        m = float(minutes_match.group(1).replace(",", ".")) if minutes_match else 0.0
-        return h + m / 60
-
-    # "1:30" -> 1 soat 30 daqiqa
-    if ":" in text:
-        try:
-            h_str, m_str = text.split(":", 1)
-            return float(h_str) + float(m_str) / 60
-        except ValueError:
-            return None
-
-    # Oddiy raqam -> soat sifatida (eski xatti-harakat bilan mos)
-    try:
-        return float(text.replace(",", "."))
-    except ValueError:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# BIO hisoblagich
-# ---------------------------------------------------------------------------
-BIO_EVENT_LABELS = {
-    "new_year": "Yangi yil",
-    "navroz": "Navro'z",
-    "birthday": "Tug'ilgan kunim",
-}
-BIO_EVENT_EMOJIS = {
-    "new_year": "\U0001F386",  # 🎆
-    "navroz": "\U0001F337",    # 🌷
-    "birthday": "\U0001F382",  # 🎂
-}
-# (oy, kun) — har yili takrorlanadigan bayramlar uchun
-FIXED_EVENT_DATES = {
-    "new_year": (1, 1),
-    "navroz": (3, 21),
-}
-
-
-def days_until_next(month: int, day: int, today: date | None = None) -> int:
-    if today is None:
-        today = date.today()
-    year = today.year
-    try:
-        target = date(year, month, day)
-    except ValueError:
-        target = date(year, 3, 1)  # 29-fevral kabi holatlar uchun zaxira
-    if target < today:
-        try:
-            target = date(year + 1, month, day)
-        except ValueError:
-            target = date(year + 1, 3, 1)
-    return (target - today).days
-
-
-def compute_bio_text(target: str, birthday_month, birthday_day) -> str | None:
-    if target in FIXED_EVENT_DATES:
-        month, day = FIXED_EVENT_DATES[target]
-    elif target == "birthday":
-        if not birthday_month or not birthday_day:
-            return None
-        month, day = birthday_month, birthday_day
-    else:
-        return None
-
-    days = days_until_next(month, day)
-    label = BIO_EVENT_LABELS[target]
-    emoji = BIO_EVENT_EMOJIS.get(target, "")
-    if days == 0:
-        return f"{emoji} Bugun {label.lower()}!".strip()
-    return f"{emoji} {label}ga {days} kun qoldi!".strip()
-
-
-def parse_birthday_input(text: str):
-    """'15.03', '15-03', '15/03' kabi formatlarni (kun, oy) qilib qaytaradi."""
-    match = re.match(r"^\s*(\d{1,2})[.\-/](\d{1,2})\s*$", text)
-    if not match:
-        return None
-    day, month = int(match.group(1)), int(match.group(2))
-    if not (1 <= month <= 12) or not (1 <= day <= 31):
-        return None
-    try:
-        date(2024, month, day)  # to'g'ri sana ekanini tekshirish (2024 — kabisa yil)
-    except ValueError:
-        return None
-    return month, day
-
-
 async def apply_bio_update(bot, owner_id: int) -> tuple[bool, str]:
     """Bitta foydalanuvchining BIO'sini hozirgi sozlamalariga qarab yangilaydi."""
     connection = db.get_connection(owner_id)
@@ -193,12 +103,17 @@ async def apply_bio_update(bot, owner_id: int) -> tuple[bool, str]:
             business_connection_id=connection["business_connection_id"], bio=text
         )
         return True, text
-    except Exception as e:
+    except TelegramError as e:
+        logger.warning("BIO yangilash xatosi (owner=%s): %s", owner_id, e)
         return False, str(e)
 
 
 async def bio_daily_job(context: ContextTypes.DEFAULT_TYPE):
-    for row in db.get_all_bio_targets():
+    """Har kuni (Toshkent vaqti bilan 00:05) barcha faol BIO hisoblagichlarni yangilaydi."""
+    rows = db.get_all_bio_targets()
+    logger.info("BIO kunlik yangilash boshlandi: %d ta ulanish", len(rows))
+    updated, failed = 0, 0
+    for row in rows:
         text = compute_bio_text(row["bio_countdown_target"], row["birthday_month"], row["birthday_day"])
         if text is None:
             continue
@@ -206,8 +121,11 @@ async def bio_daily_job(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.set_business_account_bio(
                 business_connection_id=row["business_connection_id"], bio=text
             )
-        except Exception as e:
-            print(f"[bot] BIO yangilash xatosi owner={row['owner_user_id']}: {e}")
+            updated += 1
+        except TelegramError as e:
+            failed += 1
+            logger.warning("BIO yangilash xatosi (owner=%s): %s", row["owner_user_id"], e)
+    logger.info("BIO kunlik yangilash tugadi: %d muvaffaqiyatli, %d xato", updated, failed)
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +188,8 @@ async def _display_name_for(bot, user_id: int) -> str:
             return f"@{chat.username}"
         if chat.full_name:
             return chat.full_name
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Chat ma'lumoti olinmadi (user=%s): %s", user_id, e)
     return f"ID {user_id}"
 
 
@@ -354,8 +272,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         chat_id=inviter_id,
                         text="\U0001F389 Sizning havolangiz orqali yangi odam botga qo'shildi!",
                     )
-                except Exception:
-                    pass
+                except TelegramError as e:
+                    logger.info("Referral bildirishnomasi yuborilmadi (inviter=%s): %s", inviter_id, e)
 
     conn = db.get_connection(owner_id)
     if conn and conn["is_enabled"]:
@@ -553,10 +471,13 @@ async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAU
     source_chat_id = update.effective_chat.id
     source_message_id = update.effective_message.message_id
 
+    all_user_ids = [uid for uid in db.get_all_user_ids() if uid != owner_id]
+    logger.info("Reklama boshlandi: %d foydalanuvchiga yuboriladi", len(all_user_ids))
+
     sent, failed = 0, 0
-    for user_id in db.get_all_user_ids():
-        if user_id == owner_id:
-            continue
+    for user_id in all_user_ids:
+        # Telegram'ning flood-limitiga tegib qolmaslik uchun har xabar orasida
+        # kichik pauza — katta ro'yxatlarda "429 Too Many Requests" xavfini kamaytiradi.
         try:
             await context.bot.copy_message(
                 chat_id=user_id,
@@ -564,9 +485,27 @@ async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAU
                 message_id=source_message_id,
             )
             sent += 1
-        except Exception:
+        except RetryAfter as e:
+            # Telegram "shuncha soniya kut" desa — kutib, shu foydalanuvchiga qayta urinamiz
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await context.bot.copy_message(
+                    chat_id=user_id, from_chat_id=source_chat_id, message_id=source_message_id
+                )
+                sent += 1
+            except TelegramError as e2:
+                failed += 1
+                logger.info("Reklama yuborilmadi (user=%s): %s", user_id, e2)
+        except Forbidden:
+            # Foydalanuvchi botni bloklagan/o'chirgan — kutilgan holat, log shart emas
             failed += 1
+        except TelegramError as e:
+            failed += 1
+            logger.info("Reklama yuborilmadi (user=%s): %s", user_id, e)
 
+        await asyncio.sleep(0.05)  # ~20 xabar/soniya — Telegram limitidan pastroq
+
+    logger.info("Reklama tugadi: %d muvaffaqiyatli, %d xato", sent, failed)
     await update.effective_message.reply_text(
         f"\u2705 Reklama yuborildi.\nMuvaffaqiyatli: {sent}\nYuborib bo'lmadi (bloklagan/o'chirilgan): {failed}"
     )
@@ -607,8 +546,8 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=conn.user_chat_id,
                     text="Akkount uzildi. Avtojavob endi ishlamaydi.",
                 )
-        except Exception:
-            pass
+        except TelegramError as e:
+            logger.info("Ulanish xabarnomasi yuborilmadi (owner=%s): %s", conn.user.id, e)
         return
 
     # Mijozdan kelgan xabar
@@ -643,8 +582,8 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 business_connection_id=bm.business_connection_id,
             )
             db.mark_replied(owner_id, chat_id)
-        except Exception as e:
-            print(f"[bot] avtojavob xatosi owner={owner_id}: {e}")
+        except TelegramError as e:
+            logger.warning("Avtojavob yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
 
 
 def build_app() -> Application:
@@ -663,9 +602,19 @@ def build_app() -> Application:
     # to'sqinlik qilmasdan tinglaydi.
     app.add_handler(TypeHandler(Update, on_raw_update), group=1)
 
-    # BIO hisoblagichni kuniga bir marta avtomatik yangilash (kun sanog'i o'zgarishi uchun)
+    # BIO hisoblagichni kuniga bir marta, Toshkent vaqti bilan 00:05'da yangilaydi
+    # (interval-based emas, aniq soatga bog'langan — shu bilan server qachon
+    # ishga tushganidan qat'iy nazar barqaror jadval saqlanadi).
     if app.job_queue is not None:
-        app.job_queue.run_repeating(bio_daily_job, interval=24 * 60 * 60, first=15)
+        app.job_queue.run_daily(
+            bio_daily_job,
+            time=dtime(hour=0, minute=5, tzinfo=TASHKENT_TZ),
+        )
+    else:
+        logger.warning(
+            "JobQueue mavjud emas — BIO hisoblagich avtomatik yangilanmaydi. "
+            "requirements.txt'da 'python-telegram-bot[job-queue]' borligini tekshiring."
+        )
 
     return app
 
@@ -689,8 +638,6 @@ def start_health_server():
 
 
 if __name__ == "__main__":
-    import asyncio
-
     try:
         asyncio.get_event_loop()
     except RuntimeError:
@@ -703,5 +650,5 @@ if __name__ == "__main__":
 
     db.init_db()
     app = build_app()
-    print("Bot ishga tushdi. Foydalanuvchilar /start yozishi mumkin.")
+    logger.info("Bot ishga tushdi. Foydalanuvchilar /start yozishi mumkin.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
