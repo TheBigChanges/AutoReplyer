@@ -8,43 +8,77 @@ qilinganda) ma'lumot yo'qolmasligi uchun — chunki bepul Render'da mahalliy
 fayl (SQLite) saqlanib qolishi kafolatlanmaydi, tashqi Postgres esa doimiy.
 """
 
+import logging
 import os
 import time
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+logger = logging.getLogger("autoreplyer.db")
 
 DEFAULT_COOLDOWN_HOURS = 3.0
 DEFAULT_AUTO_REPLY_TEXT = "Salom! Hozirda oflaynman, imkon qadar tezroq javob beraman \U0001F64F"
 
-_conn = None
+# update_settings() orqali o'zgartirish mumkin bo'lgan ustunlar ro'yxati.
+# Bu whitelist — kwargs orqali ixtiyoriy SQL ustun nomi yuborib bo'lmasligini
+# kafolatlaydi (funksiya kelajakda tashqi/umumiyroq ishlatilib qolsa ham xavfsiz).
+ALLOWED_SETTINGS_FIELDS = {
+    "offline",
+    "cooldown_hours",
+    "auto_reply_text",
+    "bio_countdown_target",
+    "birthday_month",
+    "birthday_day",
+}
+
+_pool: "psycopg2.pool.SimpleConnectionPool | None" = None
+
+
+def _get_pool() -> "psycopg2.pool.SimpleConnectionPool":
+    """Connection pool'ni "lazy" (birinchi so'rovda) yaratadi — shu bilan
+    DATABASE_URL faqat chindan bazaga murojaat qilinganda o'qiladi. Bu
+    modulni (masalan testlarda) DATABASE_URL o'rnatilmagan holda ham xavfsiz
+    import qilish imkonini beradi."""
+    global _pool
+    if _pool is None:
+        database_url = os.environ["DATABASE_URL"]
+        _pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=database_url)
+    return _pool
+
+
+class _PooledConnection:
+    """Pool'dan bitta ulanishni olib, `with` bloki tugagach avtomatik
+    qaytaradigan yordamchi. Ulanish uzilgan/buzilgan bo'lsa pool'ga
+    qaytarmasdan yopib tashlaydi, shunda keyingi so'rov yangi ulanish oladi."""
+
+    def __enter__(self):
+        self._pool = _get_pool()
+        self._conn = self._pool.getconn()
+        self._conn.autocommit = True
+        return self._conn
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                logger.warning("Buzilgan ulanishni yopishda xato", exc_info=True)
+            self._pool.putconn(self._conn, close=True)
+        else:
+            self._pool.putconn(self._conn)
+        return False
 
 
 def get_conn():
-    """Ulanishni qaytaradi, agar o'chib qolgan/uzilgan bo'lsa qayta ulaydi."""
-    global _conn
-    if _conn is not None and not _conn.closed:
-        try:
-            with _conn.cursor() as cur:
-                cur.execute("SELECT 1")
-            return _conn
-        except Exception:
-            try:
-                _conn.close()
-            except Exception:
-                pass
-            _conn = None
-
-    _conn = psycopg2.connect(DATABASE_URL)
-    _conn.autocommit = True
-    return _conn
+    """Eski kod bilan moslik uchun: `with get_conn() as conn:` shaklida
+    ishlatiladi — pool'dan bitta ulanish beradi va bloki tugagach qaytaradi."""
+    return _PooledConnection()
 
 
 def init_db():
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS connections (
@@ -133,8 +167,7 @@ def upsert_connection(
     is_enabled: bool,
     can_edit_bio: bool = False,
 ):
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO connections (owner_user_id, business_connection_id, can_reply, is_enabled, can_edit_bio, connected_at)
@@ -151,16 +184,14 @@ def upsert_connection(
 
 
 def get_connection(owner_user_id: int):
-    conn = get_conn()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT * FROM connections WHERE owner_user_id = %s", (owner_user_id,))
         row = cur.fetchone()
         return dict(row) if row else None
 
 
 def get_connection_by_business_id(business_connection_id: str):
-    conn = get_conn()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             "SELECT * FROM connections WHERE business_connection_id = %s", (business_connection_id,)
         )
@@ -172,8 +203,7 @@ def get_connection_by_business_id(business_connection_id: str):
 # Settings
 # --------------------------------------------------------------------------
 def ensure_settings(owner_user_id: int):
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO settings (owner_user_id, offline, cooldown_hours, auto_reply_text)
@@ -186,18 +216,19 @@ def ensure_settings(owner_user_id: int):
 
 def get_settings(owner_user_id: int) -> dict:
     ensure_settings(owner_user_id)
-    conn = get_conn()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT * FROM settings WHERE owner_user_id = %s", (owner_user_id,))
         return dict(cur.fetchone())
 
 
 def update_settings(owner_user_id: int, **kwargs):
+    invalid = set(kwargs) - ALLOWED_SETTINGS_FIELDS
+    if invalid:
+        raise ValueError(f"Ruxsat etilmagan settings ustuni: {invalid}")
     ensure_settings(owner_user_id)
     fields = ", ".join(f"{k} = %s" for k in kwargs)
     values = list(kwargs.values()) + [owner_user_id]
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"UPDATE settings SET {fields} WHERE owner_user_id = %s", values)
 
 
@@ -205,8 +236,7 @@ def update_settings(owner_user_id: int, **kwargs):
 # Reply cooldown cache
 # --------------------------------------------------------------------------
 def already_replied_recently(owner_user_id: int, chat_id: int) -> bool:
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT last_reply_at FROM replied_cache WHERE owner_user_id = %s AND chat_id = %s",
             (owner_user_id, chat_id),
@@ -219,8 +249,7 @@ def already_replied_recently(owner_user_id: int, chat_id: int) -> bool:
 
 
 def mark_replied(owner_user_id: int, chat_id: int):
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO replied_cache (owner_user_id, chat_id, last_reply_at)
@@ -239,8 +268,7 @@ def record_referral(referred_user_id: int, inviter_user_id: int) -> bool:
     yoki o'zini-o'zi taklif qilmoqchi bo'lsa — False qaytaradi (hisoblanmaydi)."""
     if referred_user_id == inviter_user_id:
         return False
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO referrals (referred_user_id, inviter_user_id, created_at)
@@ -253,8 +281,7 @@ def record_referral(referred_user_id: int, inviter_user_id: int) -> bool:
 
 
 def get_referral_count(inviter_user_id: int) -> int:
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT COUNT(*) FROM referrals WHERE inviter_user_id = %s", (inviter_user_id,)
         )
@@ -263,8 +290,7 @@ def get_referral_count(inviter_user_id: int) -> int:
 
 def get_all_referral_counts():
     """[(inviter_user_id, count), ...] — ko'p taklif qilganlar oldinda."""
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT inviter_user_id, COUNT(*) AS cnt
@@ -280,8 +306,7 @@ def get_all_referral_counts():
 # Foydalanuvchilar (admin /stats va /reklama uchun)
 # --------------------------------------------------------------------------
 def record_user(user_id: int):
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO users (user_id, first_seen)
@@ -293,15 +318,13 @@ def record_user(user_id: int):
 
 
 def get_user_count() -> int:
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM users")
         return cur.fetchone()[0]
 
 
 def get_all_user_ids():
-    conn = get_conn()
-    with conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT user_id FROM users ORDER BY user_id")
         return [row[0] for row in cur.fetchall()]
 
@@ -311,8 +334,7 @@ def get_all_user_ids():
 # --------------------------------------------------------------------------
 def get_all_bio_targets():
     """BIO'sini avtomatik yangilash kerak bo'lgan barcha ulanishlar."""
-    conn = get_conn()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
             SELECT c.owner_user_id, c.business_connection_id,
