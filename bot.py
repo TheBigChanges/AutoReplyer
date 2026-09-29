@@ -457,9 +457,51 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Bekor qilindi.")
 
 
+async def cmd_reklama_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    job = db.get_latest_broadcast_job()
+    if not job:
+        await update.message.reply_text("Hali birorta ham reklama yuborilmagan.")
+        return
+    await update.message.reply_text(
+        f"Holat: {job['status']}\n"
+        f"Jami: {job['total_count']}\n"
+        f"Yuborildi: {job['sent_count']}\n"
+        f"Xato: {job['failed_count']}"
+    )
+
+
+async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Oxirgi reklamada yuborib bo'lmagan foydalanuvchilarga qayta urinadi."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    job = db.get_latest_broadcast_job()
+    if not job or job["status"] != "completed":
+        await update.message.reply_text(
+            "Qayta urinish uchun avval tugallangan reklama bo'lishi kerak (/reklama_status bilan tekshiring)."
+        )
+        return
+    failed_ids = db.get_broadcast_failed_user_ids(job["id"])
+    if not failed_ids:
+        await update.message.reply_text("Xato bilan yuborilgan foydalanuvchi yo'q.")
+        return
+
+    await update.message.reply_text(f"{len(failed_ids)} ta foydalanuvchiga qayta urinilmoqda...")
+    new_job_id = db.create_broadcast_job(job["source_chat_id"], job["source_message_id"], len(failed_ids))
+    asyncio.create_task(
+        run_broadcast_job(
+            context.bot, new_job_id, job["source_chat_id"], job["source_message_id"],
+            reply_to_chat_id=update.effective_chat.id, user_ids_override=failed_ids,
+        )
+    )
+
+
 async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin /reklama bosgandan keyin yuborgan XOHLAGAN turdagi xabarni ushlab,
-    barcha foydalanuvchilarga nusxalab yuboradi."""
+    job sifatida bazaga yozadi va yuborishni FONDA (background task) boshlaydi —
+    shu bilan buyruqning o'zi darhol qaytadi va katta ro'yxatlarda ham botni
+    "qotirib" qo'ymaydi."""
     if update.effective_user is None or update.effective_message is None:
         return
     owner_id = update.effective_user.id
@@ -470,45 +512,120 @@ async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAU
 
     source_chat_id = update.effective_chat.id
     source_message_id = update.effective_message.message_id
+    total = db.get_user_count()
 
-    all_user_ids = [uid for uid in db.get_all_user_ids() if uid != owner_id]
-    logger.info("Reklama boshlandi: %d foydalanuvchiga yuboriladi", len(all_user_ids))
+    job_id = db.create_broadcast_job(source_chat_id, source_message_id, total)
+    await update.effective_message.reply_text(
+        f"\U0001F4E4 Reklama fonda yuborilmoqda ({total} ta foydalanuvchiga).\n"
+        "Progressni /reklama_status bilan tekshirishingiz mumkin."
+    )
+    asyncio.create_task(
+        run_broadcast_job(context.bot, job_id, source_chat_id, source_message_id, reply_to_chat_id=source_chat_id)
+    )
 
+
+async def run_broadcast_job(
+    bot,
+    job_id: int,
+    source_chat_id: int,
+    source_message_id: int,
+    reply_to_chat_id: int | None = None,
+    user_ids_override: list[int] | None = None,
+    start_after_user_id: int = 0,
+):
+    """Reklamani bo'lib-bo'lib (keyset pagination), xabarlar orasida kichik
+    pauza bilan yuboradi. Har bir urinishdan keyin progress bazaga yoziladi —
+    shuning uchun process qayta ishga tushib qolsa ham (Render restart va h.k.),
+    keyingi safar shu joydan davom ettirish mumkin (resume_pending_broadcasts).
+    `user_ids_override` berilsa (masalan /reklama_retry), faqat o'sha
+    ro'yxatga yuboriladi va keyset pagination ishlatilmaydi."""
+    logger.info("Reklama job#%d boshlandi (last_user_id=%d)", job_id, start_after_user_id)
     sent, failed = 0, 0
-    for user_id in all_user_ids:
-        # Telegram'ning flood-limitiga tegib qolmaslik uchun har xabar orasida
-        # kichik pauza — katta ro'yxatlarda "429 Too Many Requests" xavfini kamaytiradi.
-        try:
-            await context.bot.copy_message(
-                chat_id=user_id,
-                from_chat_id=source_chat_id,
-                message_id=source_message_id,
-            )
-            sent += 1
-        except RetryAfter as e:
-            # Telegram "shuncha soniya kut" desa — kutib, shu foydalanuvchiga qayta urinamiz
-            await asyncio.sleep(e.retry_after + 1)
+    last_user_id = start_after_user_id
+    remaining_override = list(user_ids_override) if user_ids_override is not None else None
+
+    while True:
+        if remaining_override is not None:
+            batch, remaining_override = remaining_override, []
+        else:
+            batch = db.get_user_ids_after(last_user_id, limit=200)
+        if not batch:
+            break
+
+        for user_id in batch:
+            if user_ids_override is None:
+                last_user_id = max(last_user_id, user_id)
+
+            if user_id == ADMIN_ID:
+                continue
+
             try:
-                await context.bot.copy_message(
+                await bot.copy_message(
                     chat_id=user_id, from_chat_id=source_chat_id, message_id=source_message_id
                 )
                 sent += 1
-            except TelegramError as e2:
+            except RetryAfter as e:
+                # Telegram "shuncha soniya kut" desa — kutib, shu foydalanuvchiga qayta urinamiz
+                await asyncio.sleep(e.retry_after + 1)
+                try:
+                    await bot.copy_message(
+                        chat_id=user_id, from_chat_id=source_chat_id, message_id=source_message_id
+                    )
+                    sent += 1
+                except TelegramError as e2:
+                    failed += 1
+                    db.record_broadcast_failure(job_id, user_id, str(e2))
+            except Forbidden:
+                # Foydalanuvchi botni bloklagan/o'chirgan — kutilgan holat
                 failed += 1
-                logger.info("Reklama yuborilmadi (user=%s): %s", user_id, e2)
-        except Forbidden:
-            # Foydalanuvchi botni bloklagan/o'chirgan — kutilgan holat, log shart emas
-            failed += 1
-        except TelegramError as e:
-            failed += 1
-            logger.info("Reklama yuborilmadi (user=%s): %s", user_id, e)
+                db.record_broadcast_failure(job_id, user_id, "blocked/deleted")
+            except TelegramError as e:
+                failed += 1
+                db.record_broadcast_failure(job_id, user_id, str(e))
 
-        await asyncio.sleep(0.05)  # ~20 xabar/soniya — Telegram limitidan pastroq
+            db.update_broadcast_progress(job_id, last_user_id, sent_delta=1, failed_delta=0)
+            await asyncio.sleep(0.05)  # ~20 xabar/soniya — Telegram limitidan pastroq
 
-    logger.info("Reklama tugadi: %d muvaffaqiyatli, %d xato", sent, failed)
-    await update.effective_message.reply_text(
-        f"\u2705 Reklama yuborildi.\nMuvaffaqiyatli: {sent}\nYuborib bo'lmadi (bloklagan/o'chirilgan): {failed}"
-    )
+    db.set_broadcast_status(job_id, "completed")
+    logger.info("Reklama job#%d tugadi: %d muvaffaqiyatli, %d xato", job_id, sent, failed)
+
+    if reply_to_chat_id is not None:
+        try:
+            await bot.send_message(
+                chat_id=reply_to_chat_id,
+                text=(
+                    f"\u2705 Reklama tugadi (job#{job_id}).\n"
+                    f"Muvaffaqiyatli: {sent}\nYuborib bo'lmadi: {failed}"
+                    + ("\nQayta urinish uchun: /reklama_retry" if failed else "")
+                ),
+            )
+        except TelegramError:
+            pass
+
+
+async def resume_pending_broadcasts(app: Application):
+    """Server qayta ishga tushganda, oldin 'running' holatda qolib ketgan
+    reklama job'larini (masalan restart tufayli yarim qolgan) davom ettiradi."""
+    jobs = db.get_running_broadcast_jobs()
+    for job in jobs:
+        logger.info("Tugallanmagan reklama job#%d topildi — davom ettirilmoqda", job["id"])
+        asyncio.create_task(
+            run_broadcast_job(
+                app.bot,
+                job["id"],
+                job["source_chat_id"],
+                job["source_message_id"],
+                reply_to_chat_id=job["source_chat_id"],
+                start_after_user_id=job["last_user_id"],
+            )
+        )
+
+
+async def _resume_broadcasts_job_callback(context: ContextTypes.DEFAULT_TYPE):
+    """job_queue.run_once uchun to'g'ri (async) shakldagi wrapper."""
+    await resume_pending_broadcasts(context.application)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +651,13 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_reply=can_reply,
             is_enabled=conn.is_enabled,
             can_edit_bio=can_edit_bio,
+        )
+        logger.info(
+            "business account %s (owner=%s, can_reply=%s, can_edit_bio=%s)",
+            "connected" if conn.is_enabled else "disconnected",
+            conn.user.id,
+            can_reply,
+            can_edit_bio,
         )
         try:
             if conn.is_enabled:
@@ -582,6 +706,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 business_connection_id=bm.business_connection_id,
             )
             db.mark_replied(owner_id, chat_id)
+            logger.info("auto reply sent (owner=%s, chat=%s)", owner_id, chat_id)
         except TelegramError as e:
             logger.warning("Avtojavob yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
 
@@ -591,6 +716,8 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("reklama", cmd_reklama))
+    app.add_handler(CommandHandler("reklama_status", cmd_reklama_status))
+    app.add_handler(CommandHandler("reklama_retry", cmd_reklama_retry))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
@@ -610,6 +737,8 @@ def build_app() -> Application:
             bio_daily_job,
             time=dtime(hour=0, minute=5, tzinfo=TASHKENT_TZ),
         )
+        # Server qayta ishga tushganda yarim qolgan reklamalarni davom ettirish
+        app.job_queue.run_once(_resume_broadcasts_job_callback, when=5)
     else:
         logger.warning(
             "JobQueue mavjud emas — BIO hisoblagich avtomatik yangilanmaydi. "
