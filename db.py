@@ -44,7 +44,12 @@ def _get_pool() -> "psycopg2.pool.SimpleConnectionPool":
     global _pool
     if _pool is None:
         database_url = os.environ["DATABASE_URL"]
-        _pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=database_url)
+        try:
+            _pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=database_url)
+        except Exception:
+            logger.exception("Bazaga ulanib bo'lmadi (DATABASE_URL noto'g'ri yoki server javob bermayapti)")
+            raise
+        logger.info("Baza connection pool yaratildi")
     return _pool
 
 
@@ -142,6 +147,33 @@ def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 first_seen DOUBLE PRECISION
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS broadcast_jobs (
+                id SERIAL PRIMARY KEY,
+                source_chat_id BIGINT NOT NULL,
+                source_message_id BIGINT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                last_user_id BIGINT NOT NULL DEFAULT 0,
+                total_count INTEGER NOT NULL DEFAULT 0,
+                sent_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                created_at DOUBLE PRECISION,
+                updated_at DOUBLE PRECISION
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS broadcast_failures (
+                job_id INTEGER NOT NULL,
+                user_id BIGINT NOT NULL,
+                error_text TEXT,
+                failed_at DOUBLE PRECISION,
+                PRIMARY KEY (job_id, user_id)
             )
             """
         )
@@ -323,9 +355,98 @@ def get_user_count() -> int:
         return cur.fetchone()[0]
 
 
+def get_user_ids_after(last_user_id: int, limit: int = 200):
+    """Keyset pagination: `last_user_id`dan katta bo'lgan keyingi `limit` ta
+    foydalanuvchi ID'sini qaytaradi. Bu butun jadvalni bir vaqtda xotiraga
+    yuklamaslik uchun — 100,000+ foydalanuvchida ham xotira muammosi
+    tug'dirmaydi, chunki har safar faqat kichik bo'lak o'qiladi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT user_id FROM users WHERE user_id > %s ORDER BY user_id LIMIT %s",
+            (last_user_id, limit),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
 def get_all_user_ids():
+    """Eslatma: faqat /stats kabi kichik hajmli ehtiyojlar uchun — katta
+    ro'yxatlarni (masalan reklama yuborishda) get_user_ids_after() bilan
+    bo'lib-bo'lib o'qing."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT user_id FROM users ORDER BY user_id")
+        return [row[0] for row in cur.fetchall()]
+
+
+# --------------------------------------------------------------------------
+# Reklama (broadcast) job — fonda ishlaydi va qayta ishga tushirilsa davom
+# ettirila oladi (resumable), muvaffaqiyatsiz bo'lganlar alohida saqlanadi.
+# --------------------------------------------------------------------------
+def create_broadcast_job(source_chat_id: int, source_message_id: int, total_count: int) -> int:
+    now = time.time()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO broadcast_jobs
+                (source_chat_id, source_message_id, status, last_user_id, total_count, created_at, updated_at)
+            VALUES (%s, %s, 'running', 0, %s, %s, %s)
+            RETURNING id
+            """,
+            (source_chat_id, source_message_id, total_count, now, now),
+        )
+        return cur.fetchone()[0]
+
+
+def update_broadcast_progress(job_id: int, last_user_id: int, sent_delta: int, failed_delta: int):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE broadcast_jobs
+            SET last_user_id = %s,
+                sent_count = sent_count + %s,
+                failed_count = failed_count + %s,
+                updated_at = %s
+            WHERE id = %s
+            """,
+            (last_user_id, sent_delta, failed_delta, time.time(), job_id),
+        )
+
+
+def set_broadcast_status(job_id: int, status: str):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE broadcast_jobs SET status = %s, updated_at = %s WHERE id = %s",
+            (status, time.time(), job_id),
+        )
+
+
+def record_broadcast_failure(job_id: int, user_id: int, error_text: str):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO broadcast_failures (job_id, user_id, error_text, failed_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (job_id, user_id) DO NOTHING
+            """,
+            (job_id, user_id, error_text, time.time()),
+        )
+
+
+def get_latest_broadcast_job():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM broadcast_jobs ORDER BY id DESC LIMIT 1")
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_running_broadcast_jobs():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM broadcast_jobs WHERE status = 'running'")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_broadcast_failed_user_ids(job_id: int):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT user_id FROM broadcast_failures WHERE job_id = %s", (job_id,))
         return [row[0] for row in cur.fetchall()]
 
 
