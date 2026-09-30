@@ -708,6 +708,21 @@ async def _resume_broadcasts_job_callback(context: ContextTypes.DEFAULT_TYPE):
 # Business connection va business message (asosiy avtojavob logikasi)
 # ---------------------------------------------------------------------------
 async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Diagnostika: kanaldan post kelsa, aniq chat_id'ni to'g'ridan-to'g'ri
+    # adminga DM qilib yuboradi — REQUIRED_CHANNEL_ID'ni to'g'ri topish uchun
+    # eng ishonchli usul (userinfobot ba'zan noto'g'ri/eski ID berishi mumkin).
+    if update.channel_post and ADMIN_ID:
+        chat = update.channel_post.chat
+        logger.info("channel_post: chat_id=%s title=%r", chat.id, chat.title)
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"\U0001F4E1 Kanal post aniqlandi:\nNomi: {chat.title}\nID: `{chat.id}`",
+                parse_mode="Markdown",
+            )
+        except TelegramError:
+            pass
+
     # Ulanish/uzilish/huquq o'zgarishi
     if update.business_connection:
         conn = update.business_connection
