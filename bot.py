@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import threading
+from datetime import datetime
 from datetime import time as dtime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote
@@ -38,10 +39,14 @@ from telegram.ext import (
 import db
 from logic import (
     BIO_EVENT_LABELS,
+    DEFAULT_SLEEP_MESSAGE,
     compute_bio_text,
     format_cooldown,
+    format_time_range,
+    is_within_sleep_window,
     parse_birthday_input,
     parse_cooldown_input,
+    parse_time_range_input,
 )
 
 load_dotenv()
@@ -265,19 +270,49 @@ def build_panel(owner_id: int):
     s = db.get_settings(owner_id)
     status_line = "\U0001F534 OFLAYN" if s["offline"] else "\U0001F7E2 ONLAYN"
     toggle_label = "\U0001F7E2 Onlaynga o'tish" if s["offline"] else "\U0001F534 Oflaynga o'tish"
+    sleep_line = "yoqilgan \U0001F634" if s.get("sleep_mode_enabled") else "o'chirilgan"
 
     text = (
         "\U0001F39B Sizning panelingiz\n\n"
         f"Holat: {status_line}\n"
         f"Cooldown: {format_cooldown(s['cooldown_hours'])}\n"
-        f"Xabar: {s['auto_reply_text']}"
+        f"Xabar: {s['auto_reply_text']}\n"
+        f"Uxlayapman rejimi: {sleep_line}"
     )
     keyboard = [
         [InlineKeyboardButton(toggle_label, callback_data="toggle_status")],
         [InlineKeyboardButton("\u23F1 Cooldownni o'zgartirish", callback_data="edit_cooldown")],
         [InlineKeyboardButton("\U0001F4DD Xabar matnini o'zgartirish", callback_data="edit_text")],
         [InlineKeyboardButton("\U0001F382 BIO hisoblagich", callback_data="bio_menu")],
+        [InlineKeyboardButton("\U0001F634 Uxlayapman rejimi", callback_data="sleep_menu")],
         [InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_sleep_menu(owner_id: int):
+    s = db.get_settings(owner_id)
+    enabled = s.get("sleep_mode_enabled", False)
+    start_minutes = s.get("sleep_start_minutes", 23 * 60)
+    end_minutes = s.get("sleep_end_minutes", 7 * 60)
+    sleep_text = s.get("sleep_reply_text") or DEFAULT_SLEEP_MESSAGE
+
+    status_line = "\U0001F634 Yoqilgan" if enabled else "O'chirilgan"
+    toggle_label = "\u274C O'chirish" if enabled else "\u2705 Yoqish"
+
+    text = (
+        "\U0001F634 Uxlayapman rejimi\n\n"
+        f"Holat: {status_line}\n"
+        f"Vaqt oralig'i: {format_time_range(start_minutes, end_minutes)}\n"
+        f"Xabar: {sleep_text}\n\n"
+        "Bu rejim yoqilgan bo'lsa, belgilangan vaqt oralig'ida (hatto \"Onlayn\" "
+        "holatida ham) kiruvchi xabarlarga shu maxsus matn bilan avtomatik javob beriladi."
+    )
+    keyboard = [
+        [InlineKeyboardButton(toggle_label, callback_data="sleep_toggle")],
+        [InlineKeyboardButton("\u23F0 Vaqtni o'zgartirish", callback_data="sleep_edit_time")],
+        [InlineKeyboardButton("\U0001F4DD Xabar matnini o'zgartirish", callback_data="sleep_edit_text")],
+        [InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="open_panel")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
@@ -457,6 +492,30 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
+    if data == "sleep_menu":
+        text, markup = build_sleep_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "sleep_toggle":
+        s = db.get_settings(owner_id)
+        db.update_settings(owner_id, sleep_mode_enabled=not s.get("sleep_mode_enabled", False))
+        text, markup = build_sleep_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "sleep_edit_time":
+        pending_settings_action[owner_id] = "sleep_time"
+        await query.message.reply_text(
+            "Uxlash vaqt oralig'ini yuboring (masalan: 23:00-07:00):"
+        )
+        return
+
+    if data == "sleep_edit_text":
+        pending_settings_action[owner_id] = "sleep_text"
+        await query.message.reply_text("Uxlash vaqtida yuboriladigan xabarni kiriting:")
+        return
+
     text, markup = build_panel(owner_id)
     await query.edit_message_text(text, reply_markup=markup)
 
@@ -496,6 +555,29 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, markup = build_bio_menu(owner_id)
         if not ok:
             text += f"\n\n\u26A0\uFE0F BIO yangilanmadi: {info}"
+        await update.message.reply_text("Saqlandi.")
+        await update.message.reply_text(text, reply_markup=markup)
+        return
+
+    elif action == "sleep_time":
+        parsed = parse_time_range_input(value)
+        if parsed is None:
+            await update.message.reply_text(
+                "Noto'g'ri format. Masalan: 23:00-07:00"
+            )
+            return
+        start_minutes, end_minutes = parsed
+        db.update_settings(owner_id, sleep_start_minutes=start_minutes, sleep_end_minutes=end_minutes)
+        pending_settings_action.pop(owner_id, None)
+        text, markup = build_sleep_menu(owner_id)
+        await update.message.reply_text("Saqlandi.")
+        await update.message.reply_text(text, reply_markup=markup)
+        return
+
+    elif action == "sleep_text":
+        db.update_settings(owner_id, sleep_reply_text=value)
+        pending_settings_action.pop(owner_id, None)
+        text, markup = build_sleep_menu(owner_id)
         await update.message.reply_text("Saqlandi.")
         await update.message.reply_text(text, reply_markup=markup)
         return
@@ -780,7 +862,18 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         settings = db.get_settings(owner_id)
-        if not settings["offline"]:
+
+        now = datetime.now(TASHKENT_TZ)
+        now_minutes = now.hour * 60 + now.minute
+        sleeping = settings.get("sleep_mode_enabled") and is_within_sleep_window(
+            now_minutes, settings.get("sleep_start_minutes", 0), settings.get("sleep_end_minutes", 0)
+        )
+
+        if sleeping:
+            reply_text = settings.get("sleep_reply_text") or DEFAULT_SLEEP_MESSAGE
+        elif settings["offline"]:
+            reply_text = settings["auto_reply_text"]
+        else:
             return
 
         if bm.from_user and bm.from_user.is_bot:
@@ -793,11 +886,13 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=settings["auto_reply_text"],
+                text=reply_text,
                 business_connection_id=bm.business_connection_id,
             )
             db.mark_replied(owner_id, chat_id)
-            logger.info("auto reply sent (owner=%s, chat=%s)", owner_id, chat_id)
+            logger.info(
+                "auto reply sent (owner=%s, chat=%s, sleeping=%s)", owner_id, chat_id, sleeping
+            )
         except TelegramError as e:
             logger.warning("Avtojavob yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
 
