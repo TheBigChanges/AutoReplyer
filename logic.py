@@ -119,3 +119,43 @@ def parse_birthday_input(text: str) -> tuple[int, int] | None:
     except ValueError:
         return None
     return month, day
+
+
+# ---------------------------------------------------------------------------
+# Uxlash rejimi
+# ---------------------------------------------------------------------------
+DEFAULT_SLEEP_START_MINUTES = 23 * 60  # 23:00
+DEFAULT_SLEEP_END_MINUTES = 7 * 60     # 07:00
+DEFAULT_SLEEP_MESSAGE = "\U0001F634 Men hozir uxlayapman, ertalab uyg'onishim bilan albatta javob beraman!"
+
+
+def parse_time_range_input(text: str) -> tuple[int, int] | None:
+    """'23:00-07:00', '23-07', '23:00 - 7:00' kabi formatlarni
+    (boshlanish_daqiqa, tugash_daqiqa) — kun boshidan hisoblab — qilib qaytaradi."""
+    match = re.match(r"^\s*(\d{1,2})(?::(\d{2}))?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*$", text.strip())
+    if not match:
+        return None
+    sh, sm, eh, em = match.groups()
+    start_h, end_h = int(sh), int(eh)
+    start_m = int(sm) if sm else 0
+    end_m = int(em) if em else 0
+    if not (0 <= start_h <= 23 and 0 <= end_h <= 23 and 0 <= start_m <= 59 and 0 <= end_m <= 59):
+        return None
+    return start_h * 60 + start_m, end_h * 60 + end_m
+
+
+def format_time_range(start_minutes: int, end_minutes: int) -> str:
+    sh, sm = divmod(start_minutes, 60)
+    eh, em = divmod(end_minutes, 60)
+    return f"{sh:02d}:{sm:02d}\u2013{eh:02d}:{em:02d}"
+
+
+def is_within_sleep_window(now_minutes: int, start_minutes: int, end_minutes: int) -> bool:
+    """Joriy vaqt (kun boshidan daqiqada) uyqu oralig'ida ekanini tekshiradi.
+    Yarim tunni kesib o'tadigan oraliqlarni (masalan 23:00 -> 07:00) ham
+    to'g'ri hisoblaydi."""
+    if start_minutes == end_minutes:
+        return False  # nol uzunlikdagi oraliq — hech qachon faol emas
+    if start_minutes < end_minutes:
+        return start_minutes <= now_minutes < end_minutes
+    return now_minutes >= start_minutes or now_minutes < end_minutes
