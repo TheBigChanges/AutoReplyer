@@ -16,6 +16,8 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 
+from logic import DEFAULT_SLEEP_MESSAGE
+
 logger = logging.getLogger("autoreplyer.db")
 
 DEFAULT_COOLDOWN_HOURS = 3.0
@@ -31,6 +33,10 @@ ALLOWED_SETTINGS_FIELDS = {
     "bio_countdown_target",
     "birthday_month",
     "birthday_day",
+    "sleep_mode_enabled",
+    "sleep_start_minutes",
+    "sleep_end_minutes",
+    "sleep_reply_text",
 }
 
 _pool: "psycopg2.pool.SimpleConnectionPool | None" = None
@@ -119,6 +125,18 @@ def init_db():
         )
         cur.execute(
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_day INTEGER"
+        )
+        cur.execute(
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS sleep_mode_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        cur.execute(
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS sleep_start_minutes INTEGER NOT NULL DEFAULT 1380"
+        )
+        cur.execute(
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS sleep_end_minutes INTEGER NOT NULL DEFAULT 420"
+        )
+        cur.execute(
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS sleep_reply_text TEXT NOT NULL DEFAULT ''"
         )
         cur.execute(
             """
@@ -238,11 +256,11 @@ def ensure_settings(owner_user_id: int):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO settings (owner_user_id, offline, cooldown_hours, auto_reply_text)
-            VALUES (%s, FALSE, %s, %s)
+            INSERT INTO settings (owner_user_id, offline, cooldown_hours, auto_reply_text, sleep_reply_text)
+            VALUES (%s, FALSE, %s, %s, %s)
             ON CONFLICT (owner_user_id) DO NOTHING
             """,
-            (owner_user_id, DEFAULT_COOLDOWN_HOURS, DEFAULT_AUTO_REPLY_TEXT),
+            (owner_user_id, DEFAULT_COOLDOWN_HOURS, DEFAULT_AUTO_REPLY_TEXT, DEFAULT_SLEEP_MESSAGE),
         )
 
 
