@@ -59,6 +59,27 @@ BOT_USERNAME = os.environ.get("BOT_USERNAME", "bot_username_bu_yerga")
 # Sizning shaxsiy Telegram user ID'ingiz — faqat shu odam referral statistikasini
 # (barcha foydalanuvchilar bo'yicha) ko'ra oladi. @userinfobot'dan olish mumkin.
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+# Majburiy obuna (force-subscribe): kanal ID'si (masalan -1001234567890) va
+# unga olib boruvchi havola. Ikkalasi ham bo'lmasa, tekshiruv butunlay
+# o'chirilgan hisoblanadi. Bot bu kanalda ADMIN bo'lishi SHART — aks holda
+# a'zolikni tekshira olmaydi.
+_required_channel_id_raw = os.environ.get("REQUIRED_CHANNEL_ID", "").strip()
+if _required_channel_id_raw:
+    try:
+        REQUIRED_CHANNEL_ID: int | str | None = int(_required_channel_id_raw)
+    except ValueError:
+        REQUIRED_CHANNEL_ID = _required_channel_id_raw  # "@channel_username" shaklida ham bo'lishi mumkin
+else:
+    REQUIRED_CHANNEL_ID = None
+REQUIRED_CHANNEL_LINK = os.environ.get("REQUIRED_CHANNEL_LINK", "").strip() or None
+
+if bool(REQUIRED_CHANNEL_ID) != bool(REQUIRED_CHANNEL_LINK):
+    logger.warning(
+        "REQUIRED_CHANNEL_ID va REQUIRED_CHANNEL_LINK ikkalasi ham birga sozlanishi kerak — "
+        "hozircha faqat bittasi bor, shuning uchun majburiy obuna tekshiruvi O'CHIRILGAN."
+    )
+    REQUIRED_CHANNEL_ID = None
+    REQUIRED_CHANNEL_LINK = None
 
 # owner_user_id -> "cooldown" | "text"  (panel orqali nimani tahrirlayotgani)
 pending_settings_action: dict[int, str] = {}
@@ -131,6 +152,53 @@ async def bio_daily_job(context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # Menyu va panel
 # ---------------------------------------------------------------------------
+async def is_subscribed(bot, user_id: int) -> bool:
+    """Majburiy kanalga a'zoligini tekshiradi. Sozlanmagan bo'lsa — har doim
+    True (tekshiruv o'chirilgan). Xato chiqsa (masalan bot kanalda admin
+    emas) — butun botni to'sib qo'ymaslik uchun xavfsiz tomonga (ruxsat
+    berilgan deb) og'amiz, lekin loglab qo'yamiz, chunki bu sozlama xatosi
+    belgisi bo'lishi mumkin."""
+    if REQUIRED_CHANNEL_ID is None:
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL_ID, user_id=user_id)
+        return member.status not in ("left", "kicked")
+    except TelegramError as e:
+        logger.warning(
+            "Obuna tekshiruvida xato (user=%s, channel=%s): %s — bot kanalda admin ekanini tekshiring",
+            user_id, REQUIRED_CHANNEL_ID, e,
+        )
+        return True
+
+
+def build_subscribe_gate_markup():
+    keyboard = [
+        [InlineKeyboardButton("\U0001F4E2 Kanalga o'tish", url=REQUIRED_CHANNEL_LINK)],
+        [InlineKeyboardButton("\u2705 Tekshirish", callback_data="check_subscription")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+SUBSCRIBE_GATE_TEXT = (
+    "\U0001F512 Botdan foydalanish uchun avval kanalimizga obuna bo'ling.\n\n"
+    "Obuna bo'lgach, pastdagi \"\u2705 Tekshirish\" tugmasini bosing."
+)
+
+
+def build_start_view(owner_id: int):
+    """Bosh menyu matni va tugmalarini qaytaradi (obunadan o'tgan foydalanuvchi uchun)."""
+    conn = db.get_connection(owner_id)
+    if conn and conn["is_enabled"]:
+        greeting = "Assalomu alaykum! Kerakli bo'limni tanlang:"
+    else:
+        greeting = (
+            "Assalomu alaykum!\n\n"
+            "Bu bot orqali o'z Telegram akkountingizni ulab, siz oflayn bo'lganingizda "
+            "kiruvchi shaxsiy xabarlarga avtomatik javob berishni sozlashingiz mumkin."
+        )
+    return greeting, main_menu_markup(owner_id)
+
+
 def main_menu_markup(owner_id: int):
     conn = db.get_connection(owner_id)
     rows = []
@@ -259,6 +327,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     db.record_user(owner_id)
 
+    if not await is_subscribed(context.bot, owner_id):
+        await update.message.reply_text(SUBSCRIBE_GATE_TEXT, reply_markup=build_subscribe_gate_markup())
+        return
+
     if context.args:
         arg = context.args[0]
         if arg.startswith("ref_"):
@@ -275,16 +347,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except TelegramError as e:
                     logger.info("Referral bildirishnomasi yuborilmadi (inviter=%s): %s", inviter_id, e)
 
-    conn = db.get_connection(owner_id)
-    if conn and conn["is_enabled"]:
-        greeting = "Assalomu alaykum! Kerakli bo'limni tanlang:"
-    else:
-        greeting = (
-            "Assalomu alaykum!\n\n"
-            "Bu bot orqali o'z Telegram akkountingizni ulab, siz oflayn bo'lganingizda "
-            "kiruvchi shaxsiy xabarlarga avtomatik javob berishni sozlashingiz mumkin."
-        )
-    await update.message.reply_text(greeting, reply_markup=main_menu_markup(owner_id))
+    greeting, markup = build_start_view(owner_id)
+    await update.message.reply_text(greeting, reply_markup=markup)
 
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -293,6 +357,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.record_user(owner_id)
     await query.answer()
     data = query.data
+
+    if data == "check_subscription":
+        if await is_subscribed(context.bot, owner_id):
+            await query.answer("\u2705 Obuna tasdiqlandi!")
+            greeting, markup = build_start_view(owner_id)
+            await query.edit_message_text(greeting, reply_markup=markup)
+        else:
+            await query.answer(
+                "\u274C Siz hali kanalga obuna bo'lmagansiz. Avval obuna bo'lib, keyin qayta bosing.",
+                show_alert=True,
+            )
+        return
 
     if data == "how_connect":
         await query.edit_message_text(HOW_CONNECT_TEXT, reply_markup=main_menu_markup(owner_id))
