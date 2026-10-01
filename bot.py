@@ -794,11 +794,14 @@ async def _broadcast_loop(
             if user_id == ADMIN_ID:
                 continue
 
+            sent_delta, failed_delta = 0, 0
+
             try:
                 await bot.copy_message(
                     chat_id=user_id, from_chat_id=source_chat_id, message_id=source_message_id
                 )
                 sent += 1
+                sent_delta = 1
             except RetryAfter as e:
                 # Telegram "shuncha soniya kut" desa — kutib, shu foydalanuvchiga qayta urinamiz
                 await asyncio.sleep(e.retry_after + 1)
@@ -807,18 +810,22 @@ async def _broadcast_loop(
                         chat_id=user_id, from_chat_id=source_chat_id, message_id=source_message_id
                     )
                     sent += 1
+                    sent_delta = 1
                 except TelegramError as e2:
                     failed += 1
+                    failed_delta = 1
                     db.record_broadcast_failure(job_id, user_id, str(e2))
             except Forbidden:
                 # Foydalanuvchi botni bloklagan/o'chirgan — kutilgan holat
                 failed += 1
+                failed_delta = 1
                 db.record_broadcast_failure(job_id, user_id, "blocked/deleted")
             except TelegramError as e:
                 failed += 1
+                failed_delta = 1
                 db.record_broadcast_failure(job_id, user_id, str(e))
 
-            db.update_broadcast_progress(job_id, last_user_id, sent_delta=1, failed_delta=0)
+            db.update_broadcast_progress(job_id, last_user_id, sent_delta=sent_delta, failed_delta=failed_delta)
             await asyncio.sleep(0.05)  # ~20 xabar/soniya — Telegram limitidan pastroq
 
     return sent, failed
