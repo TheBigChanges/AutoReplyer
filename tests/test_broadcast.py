@@ -25,6 +25,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://fake/fake")
 
 import bot  # noqa: E402
 import db  # noqa: E402
+from telegram.error import BadRequest, Forbidden  # noqa: E402
 
 
 class TestBroadcastJobFailureHandling(unittest.TestCase):
@@ -93,6 +94,53 @@ class TestBroadcastJobFailureHandling(unittest.TestCase):
             )
 
         self.assertEqual(status_calls, [(1, "completed")])
+
+    def test_progress_deltas_match_actual_outcome_not_hardcoded(self):
+        """Regressiya testi: oldin har bir urinishdan keyin har doim
+        sent_delta=1, failed_delta=0 yuborilar edi — hatto muvaffaqiyatsiz
+        (Forbidden/TelegramError) holatlarda ham. Endi delta aniq natijaga
+        mos bo'lishi SHART."""
+        progress_calls = []
+
+        def fake_update_progress(job_id, last_user_id, sent_delta, failed_delta):
+            progress_calls.append((last_user_id, sent_delta, failed_delta))
+
+        # 4 ta foydalanuvchi: muvaffaqiyatli, Forbidden, boshqa TelegramError, yana muvaffaqiyatli
+        batches = iter([[101, 102, 103, 104], []])
+
+        def fake_get_user_ids_after(last_id, limit=200):
+            return next(batches, [])
+
+        async def fake_copy_message(chat_id, from_chat_id, message_id):
+            if chat_id == 102:
+                raise Forbidden("blocked")
+            if chat_id == 103:
+                raise BadRequest("chat not found")
+            return None
+
+        fake_bot = AsyncMock()
+        fake_bot.copy_message.side_effect = fake_copy_message
+
+        with patch.object(db, "set_broadcast_status"), patch.object(
+            db, "get_user_ids_after", side_effect=fake_get_user_ids_after
+        ), patch.object(
+            db, "update_broadcast_progress", side_effect=fake_update_progress
+        ), patch.object(db, "record_broadcast_failure"):
+            asyncio.run(
+                bot.run_broadcast_job(
+                    fake_bot, job_id=9, source_chat_id=1, source_message_id=2, reply_to_chat_id=None
+                )
+            )
+
+        self.assertEqual(
+            progress_calls,
+            [
+                (101, 1, 0),  # muvaffaqiyatli
+                (102, 0, 1),  # Forbidden — failed bo'lishi kerak, sent emas
+                (103, 0, 1),  # boshqa TelegramError — failed
+                (104, 1, 0),  # muvaffaqiyatli
+            ],
+        )
 
 
 if __name__ == "__main__":
