@@ -44,7 +44,7 @@ class TestFormatCooldown(unittest.TestCase):
         self.assertEqual(format_cooldown(2.5), "2 soat 30 daqiqa")
 
     def test_zero(self):
-        self.assertEqual(format_cooldown(0), "0 daqiqa")
+        self.assertEqual(format_cooldown(0), "Har doim javob beradi (cooldown yo'q)")
 
     def test_roundtrip_with_parser(self):
         for text, expected in [
