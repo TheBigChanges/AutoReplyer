@@ -712,15 +712,21 @@ async def run_broadcast_job(
     source_chat_id: int,
     source_message_id: int,
     reply_to_chat_id: int | None = None,
-    user_ids_override: list[int] | None = None,
+    retry_of_job_id: int | None = None,
     start_after_user_id: int = 0,
 ):
     """Reklamani bo'lib-bo'lib (keyset pagination), xabarlar orasida kichik
     pauza bilan yuboradi. Har bir urinishdan keyin progress bazaga yoziladi —
     shuning uchun process qayta ishga tushib qolsa ham (Render restart va h.k.),
     keyingi safar shu joydan davom ettirish mumkin (resume_pending_broadcasts).
-    `user_ids_override` berilsa (masalan /reklama_retry), faqat o'sha
-    ro'yxatga yuboriladi va keyset pagination ishlatilmaydi.
+
+    `retry_of_job_id` berilsa (masalan /reklama_retry), faqat o'sha job'da
+    muvaffaqiyatsiz bo'lgan foydalanuvchilarga yuboriladi — bu cheklov
+    `broadcast_jobs.retry_of_job_id` ustunida BAZADA saqlanadi (RAM'da
+    emas), shuning uchun server restart bo'lib resume_pending_broadcasts()
+    qayta ishga tushirsa ham, retry job hamon faqat o'sha cheklangan
+    ro'yxatdan davom etadi, tasodifan BARCHA foydalanuvchiga ketib
+    qolmaydi.
 
     Butun funksiya tashqi try/except bilan o'ralgan: kutilmagan xato
     (masalan baza uzilib qolishi, dastur xatosi) chiqsa ham, job holati
@@ -729,7 +735,7 @@ async def run_broadcast_job(
     (muvaffaqiyatsiz) urinib, cheksiz tsiklga aylanishi mumkin edi."""
     try:
         sent, failed = await _broadcast_loop(
-            bot, job_id, source_chat_id, source_message_id, user_ids_override, start_after_user_id
+            bot, job_id, source_chat_id, source_message_id, retry_of_job_id, start_after_user_id
         )
     except Exception:
         logger.exception("Reklama job#%d kutilmagan xato bilan to'xtadi", job_id)
@@ -769,7 +775,7 @@ async def _broadcast_loop(
     job_id: int,
     source_chat_id: int,
     source_message_id: int,
-    user_ids_override: list[int] | None,
+    retry_of_job_id: int | None,
     start_after_user_id: int,
 ) -> tuple[int, int]:
     """Haqiqiy yuborish tsikli. Kutilmagan xatoni ushlamaydi — ularni
@@ -777,19 +783,17 @@ async def _broadcast_loop(
     logger.info("Reklama job#%d boshlandi (last_user_id=%d)", job_id, start_after_user_id)
     sent, failed = 0, 0
     last_user_id = start_after_user_id
-    remaining_override = list(user_ids_override) if user_ids_override is not None else None
 
     while True:
-        if remaining_override is not None:
-            batch, remaining_override = remaining_override, []
+        if retry_of_job_id is not None:
+            batch = db.get_failed_user_ids_after(retry_of_job_id, last_user_id, limit=200)
         else:
             batch = db.get_user_ids_after(last_user_id, limit=200)
         if not batch:
             break
 
         for user_id in batch:
-            if user_ids_override is None:
-                last_user_id = max(last_user_id, user_id)
+            last_user_id = max(last_user_id, user_id)
 
             if user_id == ADMIN_ID:
                 continue
