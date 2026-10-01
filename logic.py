@@ -14,7 +14,9 @@ from datetime import date
 # Cooldown
 # ---------------------------------------------------------------------------
 def format_cooldown(hours: float) -> str:
-    """0.5 -> '30 daqiqa', 1.0 -> '1 soat', 2.5 -> '2 soat 30 daqiqa'."""
+    """0.5 -> '30 daqiqa', 1.0 -> '1 soat', 2.5 -> '2 soat 30 daqiqa', 0 -> 'Har doim javob beradi'."""
+    if hours <= 0:
+        return "Har doim javob beradi (cooldown yo'q)"
     total_minutes = round(hours * 60)
     h, m = divmod(total_minutes, 60)
     parts = []
