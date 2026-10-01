@@ -631,15 +631,37 @@ async def cmd_reklama_status(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Oxirgi reklamada yuborib bo'lmagan foydalanuvchilarga qayta urinadi."""
+    """Oxirgi reklamani qayta urinadi:
+    - `failed` (kutilmagan xato bilan to'xtagan) bo'lsa — xuddi shu job'ni
+      qolgan joydan (`last_user_id`dan) davom ettiradi.
+    - `completed` bo'lsa — faqat individual yuborib bo'linmagan
+      foydalanuvchilarga qayta uradi."""
     if update.effective_user.id != ADMIN_ID:
         return
     job = db.get_latest_broadcast_job()
-    if not job or job["status"] != "completed":
+    if not job:
+        await update.message.reply_text("Hali birorta ham reklama yuborilmagan.")
+        return
+
+    if job["status"] == "failed":
         await update.message.reply_text(
-            "Qayta urinish uchun avval tugallangan reklama bo'lishi kerak (/reklama_status bilan tekshiring)."
+            f"Job#{job['id']} qolgan joydan (user_id > {job['last_user_id']}) davom ettirilmoqda..."
+        )
+        db.set_broadcast_status(job["id"], "running")
+        asyncio.create_task(
+            run_broadcast_job(
+                context.bot, job["id"], job["source_chat_id"], job["source_message_id"],
+                reply_to_chat_id=update.effective_chat.id, start_after_user_id=job["last_user_id"],
+            )
         )
         return
+
+    if job["status"] != "completed":
+        await update.message.reply_text(
+            f"Joriy reklama hali tugamagan (holat: {job['status']}). /reklama_status bilan tekshiring."
+        )
+        return
+
     failed_ids = db.get_broadcast_failed_user_ids(job["id"])
     if not failed_ids:
         await update.message.reply_text("Xato bilan yuborilgan foydalanuvchi yo'q.")
@@ -696,7 +718,60 @@ async def run_broadcast_job(
     shuning uchun process qayta ishga tushib qolsa ham (Render restart va h.k.),
     keyingi safar shu joydan davom ettirish mumkin (resume_pending_broadcasts).
     `user_ids_override` berilsa (masalan /reklama_retry), faqat o'sha
-    ro'yxatga yuboriladi va keyset pagination ishlatilmaydi."""
+    ro'yxatga yuboriladi va keyset pagination ishlatilmaydi.
+
+    Butun funksiya tashqi try/except bilan o'ralgan: kutilmagan xato
+    (masalan baza uzilib qolishi, dastur xatosi) chiqsa ham, job holati
+    doim 'running'dan chiqib ketadi ('completed' yoki 'failed') — aks
+    holda u abadiy 'running' bo'lib qolib, har restart'da qayta-qayta
+    (muvaffaqiyatsiz) urinib, cheksiz tsiklga aylanishi mumkin edi."""
+    try:
+        sent, failed = await _broadcast_loop(
+            bot, job_id, source_chat_id, source_message_id, user_ids_override, start_after_user_id
+        )
+    except Exception:
+        logger.exception("Reklama job#%d kutilmagan xato bilan to'xtadi", job_id)
+        db.set_broadcast_status(job_id, "failed")
+        if reply_to_chat_id is not None:
+            try:
+                await bot.send_message(
+                    chat_id=reply_to_chat_id,
+                    text=(
+                        f"\u26A0\uFE0F Reklama job#{job_id} kutilmagan xato bilan to'xtadi.\n"
+                        "Qaytadan boshlash uchun /reklama yozing."
+                    ),
+                )
+            except TelegramError:
+                pass
+        return
+
+    db.set_broadcast_status(job_id, "completed")
+    logger.info("Reklama job#%d tugadi: %d muvaffaqiyatli, %d xato", job_id, sent, failed)
+
+    if reply_to_chat_id is not None:
+        try:
+            await bot.send_message(
+                chat_id=reply_to_chat_id,
+                text=(
+                    f"\u2705 Reklama tugadi (job#{job_id}).\n"
+                    f"Muvaffaqiyatli: {sent}\nYuborib bo'lmadi: {failed}"
+                    + ("\nQayta urinish uchun: /reklama_retry" if failed else "")
+                ),
+            )
+        except TelegramError:
+            pass
+
+
+async def _broadcast_loop(
+    bot,
+    job_id: int,
+    source_chat_id: int,
+    source_message_id: int,
+    user_ids_override: list[int] | None,
+    start_after_user_id: int,
+) -> tuple[int, int]:
+    """Haqiqiy yuborish tsikli. Kutilmagan xatoni ushlamaydi — ularni
+    chaqiruvchi (`run_broadcast_job`) ushlab, job holatini belgilaydi."""
     logger.info("Reklama job#%d boshlandi (last_user_id=%d)", job_id, start_after_user_id)
     sent, failed = 0, 0
     last_user_id = start_after_user_id
@@ -744,21 +819,7 @@ async def run_broadcast_job(
             db.update_broadcast_progress(job_id, last_user_id, sent_delta=1, failed_delta=0)
             await asyncio.sleep(0.05)  # ~20 xabar/soniya — Telegram limitidan pastroq
 
-    db.set_broadcast_status(job_id, "completed")
-    logger.info("Reklama job#%d tugadi: %d muvaffaqiyatli, %d xato", job_id, sent, failed)
-
-    if reply_to_chat_id is not None:
-        try:
-            await bot.send_message(
-                chat_id=reply_to_chat_id,
-                text=(
-                    f"\u2705 Reklama tugadi (job#{job_id}).\n"
-                    f"Muvaffaqiyatli: {sent}\nYuborib bo'lmadi: {failed}"
-                    + ("\nQayta urinish uchun: /reklama_retry" if failed else "")
-                ),
-            )
-        except TelegramError:
-            pass
+    return sent, failed
 
 
 async def resume_pending_broadcasts(app: Application):
