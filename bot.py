@@ -446,7 +446,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\u2022 2 soat 30 daqiqa\n"
             "\u2022 45 daqiqa\n"
             "\u2022 1:30 (1 soat 30 daqiqa)\n"
-            "\u2022 3 (shunchaki 3 soat)"
+            "\u2022 3 (shunchaki 3 soat)\n\n"
+            "\u26A0\uFE0F 0 qabul qilinmaydi — spamning oldini olish uchun eng kami 1 daqiqa bo'lishi kerak."
         )
         return
 
@@ -531,9 +532,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "cooldown":
         hours = parse_cooldown_input(value)
-        if hours is None or hours < 0:
+        if hours is None or hours <= 0:
             await update.message.reply_text(
-                "Noto'g'ri format. Masalan: '2 soat 30 daqiqa', '45 daqiqa', '1:30' yoki '3'"
+                "Noto'g'ri format yoki 0. Spamning oldini olish uchun cooldown 0 bo'lishi mumkin emas "
+                "— eng kami 1 daqiqa kiriting. Masalan: '2 soat 30 daqiqa', '45 daqiqa', '1 daqiqa', '1:30' yoki '3'"
             )
             return
         db.update_settings(owner_id, cooldown_hours=hours)
