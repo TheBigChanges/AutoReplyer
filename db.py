@@ -185,6 +185,16 @@ def init_db():
             """
         )
         cur.execute(
+            # NULL bo'lsa — bu oddiy, hamma foydalanuvchiga ketadigan job.
+            # Son bo'lsa — bu o'sha ID'li job'ning FAQAT muvaffaqiyatsiz
+            # (broadcast_failures) foydalanuvchilariga qaratilgan retry job.
+            # Bu qiymat bazada saqlangani uchun, server restart bo'lib
+            # resume_pending_broadcasts() qayta ishga tushirganda ham,
+            # retry job hamon faqat o'sha cheklangan ro'yxatdan davom
+            # etadi — RAM'dagi vaqtinchalik ro'yxatga bog'liq emas.
+            "ALTER TABLE broadcast_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id INTEGER"
+        )
+        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS broadcast_failures (
                 job_id INTEGER NOT NULL,
@@ -395,21 +405,42 @@ def get_all_user_ids():
         return [row[0] for row in cur.fetchall()]
 
 
+def get_failed_user_ids_after(source_job_id: int, last_user_id: int, limit: int = 200):
+    """Retry job uchun: `source_job_id`da muvaffaqiyatsiz bo'lgan
+    foydalanuvchilardan `last_user_id`dan kattalarini qaytaradi. Bu bazadan
+    o'qiladi (RAM'dagi vaqtinchalik ro'yxat emas), shuning uchun server
+    restart bo'lsa ham retry job to'g'ri (faqat shu cheklangan ro'yxatdan)
+    davom etaveradi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_id FROM broadcast_failures
+            WHERE job_id = %s AND user_id > %s
+            ORDER BY user_id
+            LIMIT %s
+            """,
+            (source_job_id, last_user_id, limit),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
 # --------------------------------------------------------------------------
 # Reklama (broadcast) job — fonda ishlaydi va qayta ishga tushirilsa davom
 # ettirila oladi (resumable), muvaffaqiyatsiz bo'lganlar alohida saqlanadi.
 # --------------------------------------------------------------------------
-def create_broadcast_job(source_chat_id: int, source_message_id: int, total_count: int) -> int:
+def create_broadcast_job(
+    source_chat_id: int, source_message_id: int, total_count: int, retry_of_job_id: int | None = None
+) -> int:
     now = time.time()
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO broadcast_jobs
-                (source_chat_id, source_message_id, status, last_user_id, total_count, created_at, updated_at)
-            VALUES (%s, %s, 'running', 0, %s, %s, %s)
+                (source_chat_id, source_message_id, status, last_user_id, total_count, retry_of_job_id, created_at, updated_at)
+            VALUES (%s, %s, 'running', 0, %s, %s, %s, %s)
             RETURNING id
             """,
-            (source_chat_id, source_message_id, total_count, now, now),
+            (source_chat_id, source_message_id, total_count, retry_of_job_id, now, now),
         )
         return cur.fetchone()[0]
 
