@@ -100,6 +100,51 @@ AutoReplyer/
     └── test_sleep.py
 ```
 
+## ⚡ Quick Start
+
+Get AutoReplyer running in just a few steps.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/TheBigChanges/AutoReplyer.git
+cd AutoReplyer
+```
+
+### 2. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Configure environment variables
+
+Create a `.env` file and add:
+
+```env
+BOT_TOKEN=your_bot_token
+DATABASE_URL=your_postgresql_url
+ADMIN_ID=your_telegram_id
+```
+
+### 4. Start the bot
+
+```bash
+python bot.py
+```
+
+### 5. Open Telegram
+
+Open your bot in Telegram and run:
+
+```text
+/start
+```
+
+That's it. 🎉
+
+AutoReplyer is now ready to be configured and used with your Telegram Business account.
+
 ## 🚀 Installation
 
 Clone the repository:
