@@ -221,6 +221,8 @@ class TestRetryScoping(unittest.TestCase):
 
         with patch.object(db, "get_latest_broadcast_job", return_value=old_job), patch.object(
             db, "get_broadcast_failed_user_ids", return_value=[111, 222]
+        ), patch.object(
+            db, "get_running_broadcast_jobs", return_value=[]
         ), patch.object(db, "create_broadcast_job", side_effect=fake_create_job), patch(
             "bot.run_broadcast_job", side_effect=fake_run_broadcast_job
         ):
@@ -266,6 +268,109 @@ class TestRetryScoping(unittest.TestCase):
             "resume_pending_broadcasts retry_of_job_id'ni yo'qotib qo'ydi — "
             "bu holda resumed job BUTUN foydalanuvchilar bazasiga ketib qoladi!",
         )
+
+
+class TestConcurrentBroadcastGuard(unittest.TestCase):
+    """Bir vaqtning o'zida ikkita reklama job boshlanib, foydalanuvchilarga
+    bir xil xabar ikki marta yuborilib ketmasligini tekshiradi."""
+
+    def setUp(self):
+        # Testlar orasida pending_admin_action (global dict) toza boshlansin
+        bot.pending_admin_action.pop(bot.ADMIN_ID, None)
+
+    def tearDown(self):
+        bot.pending_admin_action.pop(bot.ADMIN_ID, None)
+
+    def _fake_update(self):
+        update = AsyncMock()
+        update.effective_user.id = bot.ADMIN_ID
+        update.effective_chat.id = 555
+        update.message = AsyncMock()
+        update.effective_message = update.message
+        update.effective_message.message_id = 999
+        return update
+
+    def test_on_admin_broadcast_content_refuses_when_job_already_running(self):
+        """Eng hal qiluvchi qo'riqchi: job chindan ham shu yerda yaratiladi."""
+        already_running = {"id": 10, "sent_count": 3, "total_count": 100}
+        create_calls = []
+
+        def fake_create_job(*args, **kwargs):
+            create_calls.append((args, kwargs))
+            return 11
+
+        update = self._fake_update()
+        context = AsyncMock()
+        bot.pending_admin_action[bot.ADMIN_ID] = "broadcast"
+
+        with patch.object(db, "get_running_broadcast_jobs", return_value=[already_running]), patch.object(
+            db, "create_broadcast_job", side_effect=fake_create_job
+        ), patch.object(db, "get_user_count", return_value=1000):
+            asyncio.run(bot.on_admin_broadcast_content(update, context))
+
+        self.assertEqual(create_calls, [], "Job#10 hali ishlayotganida ikkinchi job yaratilmasligi SHART")
+        self.assertTrue(update.effective_message.reply_text.called)
+        warning_text = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("10", warning_text)
+
+    def test_on_admin_broadcast_content_proceeds_when_nothing_running(self):
+        """Hech narsa ishlamayotganda — odatdagidek job yaratilishi kerak."""
+        create_calls = []
+
+        def fake_create_job(*args, **kwargs):
+            create_calls.append((args, kwargs))
+            return 11
+
+        update = self._fake_update()
+        context = AsyncMock()
+        bot.pending_admin_action[bot.ADMIN_ID] = "broadcast"
+
+        async def scenario():
+            await bot.on_admin_broadcast_content(update, context)
+            await asyncio.sleep(0)
+
+        with patch.object(db, "get_running_broadcast_jobs", return_value=[]), patch.object(
+            db, "create_broadcast_job", side_effect=fake_create_job
+        ), patch.object(db, "get_user_count", return_value=1000), patch("bot.run_broadcast_job", new=AsyncMock()):
+            asyncio.run(scenario())
+
+        self.assertEqual(len(create_calls), 1)
+
+    def test_cmd_reklama_refuses_early_when_job_already_running(self):
+        """/reklama buyrug'ining o'zi ham erta ogohlantirishi kerak
+        (admin xabar yozib o'tirmasdan oldin bilsin)."""
+        already_running = {"id": 10, "sent_count": 3, "total_count": 100}
+        update = self._fake_update()
+        context = AsyncMock()
+
+        with patch.object(db, "get_running_broadcast_jobs", return_value=[already_running]):
+            asyncio.run(bot.cmd_reklama(update, context))
+
+        self.assertNotIn(bot.ADMIN_ID, bot.pending_admin_action)
+
+    def test_cmd_reklama_retry_completed_branch_refuses_when_job_already_running(self):
+        already_running = {"id": 10, "sent_count": 3, "total_count": 100}
+        old_job = {
+            "id": 100, "status": "completed", "source_chat_id": 1,
+            "source_message_id": 2, "last_user_id": 0,
+        }
+        create_calls = []
+
+        def fake_create_job(*args, **kwargs):
+            create_calls.append(kwargs)
+            return 101
+
+        update = self._fake_update()
+        context = AsyncMock()
+
+        with patch.object(db, "get_latest_broadcast_job", return_value=old_job), patch.object(
+            db, "get_broadcast_failed_user_ids", return_value=[111, 222]
+        ), patch.object(
+            db, "get_running_broadcast_jobs", return_value=[already_running]
+        ), patch.object(db, "create_broadcast_job", side_effect=fake_create_job):
+            asyncio.run(bot.cmd_reklama_retry(update, context))
+
+        self.assertEqual(create_calls, [])
 
 
 if __name__ == "__main__":
