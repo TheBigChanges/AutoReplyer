@@ -653,7 +653,9 @@ async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(
             run_broadcast_job(
                 context.bot, job["id"], job["source_chat_id"], job["source_message_id"],
-                reply_to_chat_id=update.effective_chat.id, start_after_user_id=job["last_user_id"],
+                reply_to_chat_id=update.effective_chat.id,
+                retry_of_job_id=job.get("retry_of_job_id"),
+                start_after_user_id=job["last_user_id"],
             )
         )
         return
@@ -670,11 +672,13 @@ async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(f"{len(failed_ids)} ta foydalanuvchiga qayta urinilmoqda...")
-    new_job_id = db.create_broadcast_job(job["source_chat_id"], job["source_message_id"], len(failed_ids))
+    new_job_id = db.create_broadcast_job(
+        job["source_chat_id"], job["source_message_id"], len(failed_ids), retry_of_job_id=job["id"]
+    )
     asyncio.create_task(
         run_broadcast_job(
             context.bot, new_job_id, job["source_chat_id"], job["source_message_id"],
-            reply_to_chat_id=update.effective_chat.id, user_ids_override=failed_ids,
+            reply_to_chat_id=update.effective_chat.id, retry_of_job_id=job["id"],
         )
     )
 
@@ -848,6 +852,7 @@ async def resume_pending_broadcasts(app: Application):
                 job["source_chat_id"],
                 job["source_message_id"],
                 reply_to_chat_id=job["source_chat_id"],
+                retry_of_job_id=job.get("retry_of_job_id"),
                 start_after_user_id=job["last_user_id"],
             )
         )
