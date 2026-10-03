@@ -931,7 +931,15 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if can_reply is None and rights is not None:
             can_reply = bool(getattr(rights, "can_reply", False))
         if can_reply is None:
-            can_reply = True
+            # Fail-closed: ruxsatni aniqlab bo'lmasa, "yo'q" deb hisoblaymiz —
+            # aks holda (fail-open, True) Telegram API javobi kutilmagan
+            # shaklda kelgan holatda ham botga xabar yuborish huquqi
+            # "sukut bo'yicha" berilib qolishi mumkin edi.
+            logger.warning(
+                "can_reply aniqlanmadi (owner=%s) — xavfsizlik uchun False deb qabul qilinmoqda",
+                conn.user.id,
+            )
+            can_reply = False
 
         can_edit_bio = bool(getattr(rights, "can_edit_bio", False)) if rights is not None else False
 
