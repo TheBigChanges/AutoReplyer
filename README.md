@@ -258,7 +258,7 @@ To run AutoReplyer, you need:
 Clone the repository:
 
 ```bash
-git clone https://github.com/dilshodbekabdukarimov877-dotcom/AutoReplyer.git
+git clone https://github.com/TheBigChanges/AutoReplyer
 cd AutoReplyer
 ```
 
@@ -755,7 +755,7 @@ The license will be determined by the project owner later.
 
 GitHub:
 
-github.com/dilshodbekabdukarimov877-dotcom
+github.com/TheBigChanges
 
 ---
 
