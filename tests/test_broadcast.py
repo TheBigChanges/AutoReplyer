@@ -143,5 +143,130 @@ class TestBroadcastJobFailureHandling(unittest.TestCase):
         )
 
 
+class TestRetryScoping(unittest.TestCase):
+    """`retry_of_job_id` bazada to'g'ri saqlanib, keyin to'g'ri o'qilishini
+    tekshiradi — bu aynan sodir bo'lgan bug: retry job restart'dan keyin
+    cheklangan ro'yxat o'rniga BUTUN foydalanuvchilar bazasiga ketib
+    qolishi mumkin edi, chunki bog'lanish RAM'dagi parametrda emas,
+    bazada saqlanishi kerak edi."""
+
+    def test_broadcast_loop_uses_failed_user_ids_when_retry_of_job_id_set(self):
+        """_broadcast_loop'ga retry_of_job_id berilsa, u get_user_ids_after
+        (butun jadval) emas, aynan get_failed_user_ids_after (cheklangan
+        ro'yxat) orqali o'qishi SHART."""
+        calls = {"all_users": 0, "failed_only": 0}
+
+        def fake_get_user_ids_after(last_id, limit=200):
+            calls["all_users"] += 1
+            return []
+
+        def fake_get_failed_user_ids_after(source_job_id, last_id, limit=200):
+            calls["failed_only"] += 1
+            self.assertEqual(source_job_id, 100)  # aynan ASL job'ning ID'si
+            return []
+
+        fake_bot = AsyncMock()
+
+        with patch.object(db, "get_user_ids_after", side_effect=fake_get_user_ids_after), patch.object(
+            db, "get_failed_user_ids_after", side_effect=fake_get_failed_user_ids_after
+        ):
+            asyncio.run(
+                bot._broadcast_loop(
+                    fake_bot,
+                    job_id=101,
+                    source_chat_id=1,
+                    source_message_id=2,
+                    retry_of_job_id=100,
+                    start_after_user_id=0,
+                )
+            )
+
+        self.assertEqual(calls["failed_only"], 1)
+        self.assertEqual(calls["all_users"], 0)
+
+    def test_cmd_reklama_retry_passes_retry_of_job_id_on_completed_job(self):
+        """/reklama_retry (completed job uchun) yangi job yaratganda
+        retry_of_job_id'ni HAM create_broadcast_job'ga, HAM
+        run_broadcast_job'ga uzatishi SHART — aks holda yangi job bazada
+        oddiy (cheklanmagan) broadcast sifatida qolib ketadi."""
+        old_job = {
+            "id": 100,
+            "status": "completed",
+            "source_chat_id": 1,
+            "source_message_id": 2,
+            "last_user_id": 0,
+        }
+        create_calls = []
+        run_calls = []
+
+        def fake_create_job(*args, **kwargs):
+            create_calls.append(kwargs)
+            return 101
+
+        async def fake_run_broadcast_job(*args, **kwargs):
+            run_calls.append(kwargs)
+
+        update = AsyncMock()
+        update.effective_user.id = bot.ADMIN_ID
+        update.effective_chat.id = 555
+        update.message = AsyncMock()
+        context = AsyncMock()
+
+        async def scenario():
+            await bot.cmd_reklama_retry(update, context)
+            # asyncio.create_task() bilan rejalashtirilgan fon vazifasiga
+            # ishga tushish (va tugash, chunki fake'da ichki await yo'q)
+            # imkoniyati berish uchun bitta "tick" kutamiz.
+            await asyncio.sleep(0)
+
+        with patch.object(db, "get_latest_broadcast_job", return_value=old_job), patch.object(
+            db, "get_broadcast_failed_user_ids", return_value=[111, 222]
+        ), patch.object(db, "create_broadcast_job", side_effect=fake_create_job), patch(
+            "bot.run_broadcast_job", side_effect=fake_run_broadcast_job
+        ):
+            asyncio.run(scenario())
+
+        self.assertEqual(create_calls[0].get("retry_of_job_id"), 100)
+        self.assertEqual(len(run_calls), 1, "run_broadcast_job fon vazifasi bajarilmadi")
+        self.assertEqual(run_calls[0].get("retry_of_job_id"), 100)
+
+    def test_resume_pending_broadcasts_preserves_retry_of_job_id(self):
+        """Server restart'dan keyin resume_pending_broadcasts() bazadagi
+        'running' job'ni topganda, uning retry_of_job_id'sini ham
+        run_broadcast_job'ga uzatishi SHART — aks holda retry job
+        restart'dan keyin to'satdan BARCHA foydalanuvchiga ketib qolishi
+        mumkin edi (aynan xabar qilingan bug)."""
+        running_retry_job = {
+            "id": 101,
+            "source_chat_id": 1,
+            "source_message_id": 2,
+            "last_user_id": 50,
+            "retry_of_job_id": 100,  # bu job aslida job#100'ning retry'si
+        }
+
+        run_calls = []
+
+        async def fake_run_broadcast_job(*args, **kwargs):
+            run_calls.append(kwargs)
+
+        fake_app = AsyncMock()
+
+        async def scenario():
+            await bot.resume_pending_broadcasts(fake_app)
+            await asyncio.sleep(0)  # rejalashtirilgan fon vazifasi tugashi uchun
+
+        with patch.object(db, "get_running_broadcast_jobs", return_value=[running_retry_job]), patch(
+            "bot.run_broadcast_job", side_effect=fake_run_broadcast_job
+        ):
+            asyncio.run(scenario())
+
+        self.assertEqual(len(run_calls), 1, "run_broadcast_job fon vazifasi bajarilmadi")
+        self.assertEqual(
+            run_calls[0].get("retry_of_job_id"), 100,
+            "resume_pending_broadcasts retry_of_job_id'ni yo'qotib qo'ydi — "
+            "bu holda resumed job BUTUN foydalanuvchilar bazasiga ketib qoladi!",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
