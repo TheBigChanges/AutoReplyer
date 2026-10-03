@@ -600,8 +600,34 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"\U0001F465 Botdan jami foydalanuvchilar soni: {count}")
 
 
+def _get_running_broadcast_job():
+    """Agar hozir allaqachon 'running' holatdagi biror reklama job bo'lsa,
+    o'shani qaytaradi (bo'lmasa None). Bir vaqtning o'zida ikkita reklama
+    ketib, bir xil xabar ikki marta yuborilib ketmasligi uchun — yangi job
+    yaratishdan OLDIN shu tekshiriladi."""
+    jobs = db.get_running_broadcast_jobs()
+    return jobs[0] if jobs else None
+
+
+async def _reject_if_broadcast_already_running(reply_target) -> bool:
+    """True qaytarsa — demak allaqachon reklama ishlamoqda va chaqiruvchi
+    yangi job boshlamasligi kerak (xabar reply_target orqali yuboriladi)."""
+    running = _get_running_broadcast_job()
+    if running is None:
+        return False
+    await reply_target.reply_text(
+        f"\u26A0\uFE0F Hozir allaqachon reklama job#{running['id']} ishlamoqda "
+        f"({running['sent_count']}/{running['total_count']} yuborildi).\n"
+        "Bir vaqtda ikkita reklama yuborilib, xabar takrorlanib ketmasligi uchun "
+        "avval shu tugashini kuting (/reklama_status bilan tekshiring)."
+    )
+    return True
+
+
 async def cmd_reklama(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
+        return
+    if await _reject_if_broadcast_already_running(update.message):
         return
     pending_admin_action[update.effective_user.id] = "broadcast"
     await update.message.reply_text(
@@ -646,6 +672,8 @@ async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if job["status"] == "failed":
+        if await _reject_if_broadcast_already_running(update.message):
+            return
         await update.message.reply_text(
             f"Job#{job['id']} qolgan joydan (user_id > {job['last_user_id']}) davom ettirilmoqda..."
         )
@@ -669,6 +697,9 @@ async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     failed_ids = db.get_broadcast_failed_user_ids(job["id"])
     if not failed_ids:
         await update.message.reply_text("Xato bilan yuborilgan foydalanuvchi yo'q.")
+        return
+
+    if await _reject_if_broadcast_already_running(update.message):
         return
 
     await update.message.reply_text(f"{len(failed_ids)} ta foydalanuvchiga qayta urinilmoqda...")
@@ -695,6 +726,13 @@ async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAU
         return
 
     pending_admin_action.pop(owner_id, None)
+
+    # Eng hal qiluvchi tekshiruv shu yerda — aynan shu funksiya job yaratadi.
+    # /reklama buyrug'ida ham tekshirilgan edi, lekin orada (admin xabar
+    # yozayotganda) boshqa job tugab/boshlanib ulgurishi mumkin, shuning
+    # uchun bu yerda QAYTA tekshiriladi.
+    if await _reject_if_broadcast_already_running(update.effective_message):
+        return
 
     source_chat_id = update.effective_chat.id
     source_message_id = update.effective_message.message_id
