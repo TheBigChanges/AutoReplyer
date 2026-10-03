@@ -1,172 +1,88 @@
 # 🤖 AutoReplyer
 
-**AutoReplyer** — Telegram Business akkauntingiz uchun aqlli avtomatik javob beruvchi bot.
+**AutoReplyer** — a smart automatic reply bot for your Telegram Business account.
 
-Siz offline bo‘lsangiz, uxlayotgan bo‘lsangiz yoki javob berishga vaqtingiz bo‘lmasa — **AutoReplyer sizning o‘rningizga javob beradi.**
+When you are offline, sleeping, or simply don't have time to reply — **AutoReplyer replies on your behalf.**
 
-> ⚡ Bir marta sozlang. Qolganini AutoReplyer qiladi.
-
----
+> ⚡ Set it up once. AutoReplyer does the rest.
 
 ## ✨ Features
 
 ### 📴 Offline Auto-Reply
 
-Telegram Business akkauntingizga kimdir yozsa va siz **offline rejimda** bo‘lsangiz, AutoReplyer avtomatik javob yuboradi.
-
-O‘zingiz xohlagan javob matnini sozlashingiz mumkin.
+Automatically replies to incoming messages when you are offline.
 
 ### 😴 Sleep Mode
 
-Uyqu vaqtingizni belgilang:
-
-```text
-23:00–07:00
-```
-
-Belgilangan vaqt davomida AutoReplyer avtomatik ravishda **Sleep Mode** javobini yuboradi.
-
-Sleep Mode siz online bo‘lganingizda ham ishlashi mumkin.
+Set your sleeping hours and let AutoReplyer automatically respond while you are sleeping.
 
 ### ⏱ Smart Cooldown
 
-Bir xil chatga ketma-ket javob yuborib, spamga aylanib qolmasligi uchun cooldown tizimi mavjud.
-
-Masalan:
-
-```text
-3 soat
-45 daqiqa
-1 soat 30 daqiqa
-```
-
-Cooldown davomida bir chatga qayta avtomatik javob yuborilmaydi.
+Prevents sending repeated replies to the same chat within a configured time period.
 
 ### 🎂 BIO Countdown
 
-Telegram BIO orqali muhim sanalargacha qolgan kunlarni ko‘rsatish mumkin:
+Shows countdowns to:
 
-* 🎆 Yangi yil
-* 🌷 Navro‘z
-* 🎂 Tug‘ilgan kun
+* 🎉 New Year
+* 🌱 Navruz
+* 🎂 Birthday
 
-Masalan:
+directly in your Telegram profile BIO.
 
-```text
-🎂 Tug‘ilgan kunimga 12 kun qoldi!
-```
+### 💼 Telegram Business Integration
 
-### 👤 Telegram Business Integration
+Works with Telegram Business accounts and automatically handles incoming Business messages.
 
-AutoReplyer Telegram Business akkauntingiz bilan ulanadi va Business API orqali xabarlarni boshqaradi.
+### 👥 Referral System
 
-Bot:
-
-* Business akkauntni ulaydi
-* Kerakli huquqlarni tekshiradi
-* Business message'larni qabul qiladi
-* Avtomatik javob yuboradi
-* Ulanish holatini kuzatadi
-
-### 🎁 Referral System
-
-Foydalanuvchilar botni boshqalarga tavsiya qilishi mumkin.
-
-Referral tizimi orqali:
-
-* taklif qilgan foydalanuvchilarni hisoblash
-* referral statistikasi
-* foydalanuvchilarni kuzatish
-
-imkoniyatlari mavjud.
+Built-in referral functionality for growing your user base.
 
 ### 📢 Admin Broadcast
 
-Admin barcha foydalanuvchilarga xabar yuborishi mumkin.
-
-Qo‘llab-quvvatlanadi:
-
-* 📝 Text
-* 🖼 Image
-* 🎥 Video
-* 📎 Boshqa Telegram message turlari
-
-Broadcast tizimi katta foydalanuvchilar soni uchun **batch/keyset pagination** asosida ishlaydi.
+Administrators can send announcements to bot users with progress tracking.
 
 ### 🔄 Resumable Broadcast
 
-Agar server restart bo‘lsa yoki broadcast kutilmaganda to‘xtasa, job holati PostgreSQL'da saqlanadi.
+If a broadcast is interrupted, it can continue from where it stopped.
 
-Shuning uchun tizim keyinchalik broadcastni davom ettira oladi.
+### ♻️ Failed User Retry
 
-### 🔁 Failed User Retry
-
-Xabar yuborilmagan foydalanuvchilar alohida saqlanadi.
-
-Admin:
-
-```text
-/reklama_retry
-```
-
-orqali muvaffaqiyatsiz yuborilgan foydalanuvchilarga qayta urinishi mumkin.
+Failed deliveries can be retried without sending the message again to users who already received it.
 
 ### 📊 Broadcast Statistics
 
-Admin broadcast holatini tekshirishi mumkin:
+Track sent messages, failed deliveries, and broadcast progress.
 
-```text
-/reklama_status
-```
-
-Natijada:
-
-```text
-Holat: completed
-Jami: 1000
-Yuborildi: 970
-Xato: 30
-```
-
-kabi ma'lumotlar ko‘rsatiladi.
-
----
-
-## 🧠 How It Works
-
-AutoReplyer quyidagi oqim asosida ishlaydi:
+## 🔄 How It Works
 
 ```text
 Telegram Business Account
-          │
-          ▼
+          ↓
       AutoReplyer
-          │
-          ├── Online / Offline
-          ├── Sleep Mode
-          ├── Cooldown
-          └── Custom Reply
-          │
-          ▼
-      Telegram User
+          ↓
+   Check user status
+          ↓
+ ┌────────┴─────────┐
+ │                  │
+Offline          Sleeping
+ │                  │
+ └────────┬─────────┘
+          ↓
+     Send Reply
 ```
 
-Barcha muhim ma'lumotlar **PostgreSQL** bazasida saqlanadi.
-
----
+AutoReplyer checks the configured conditions and sends the appropriate response automatically.
 
 ## 🛠 Tech Stack
 
-| Technology             | Purpose             |
-| ---------------------- | ------------------- |
-| 🐍 Python              | Backend             |
-| 🤖 python-telegram-bot | Telegram Bot API    |
-| 🐘 PostgreSQL          | Persistent database |
-| ⚡ asyncio              | Background tasks    |
-| 🌐 Render              | Deployment          |
-| 🧪 unittest            | Testing             |
-
----
+* Python
+* Telegram Bot API
+* Telegram Business API
+* PostgreSQL
+* SQLite
+* asyncio
+* python-telegram-bot
 
 ## 📁 Project Structure
 
@@ -184,210 +100,115 @@ AutoReplyer/
     └── test_sleep.py
 ```
 
-### `bot.py`
-
-Telegram botning asosiy logikasi:
-
-* commands
-* Telegram Business integration
-* auto-reply
-* Sleep Mode
-* broadcast
-* admin functions
-
-### `db.py`
-
-PostgreSQL bilan ishlash:
-
-* users
-* settings
-* connections
-* referrals
-* cooldown cache
-* broadcast jobs
-* broadcast failures
-
-### `logic.py`
-
-Side-effect'siz helper funksiyalar:
-
-* cooldown parsing
-* time parsing
-* Sleep Mode calculation
-* BIO countdown
-
-### `tests/`
-
-Loyihaning asosiy funksiyalarini tekshiruvchi testlar.
-
----
-
 ## 🚀 Installation
 
-Repository'ni clone qiling:
+Clone the repository:
 
 ```bash
 git clone https://github.com/TheBigChanges/AutoReplyer.git
 cd AutoReplyer
 ```
 
-Virtual environment yarating:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-Dependencies o‘rnating:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
+Create your environment variables:
 
-## 🔐 Environment Variables
-
-Quyidagi environment variable'lar kerak:
-
-```env
-BOT_TOKEN=your_telegram_bot_token
-DATABASE_URL=your_postgresql_database_url
-ADMIN_ID=your_telegram_user_id
-REQUIRED_CHANNEL_ID=your_channel_id
+```text
+BOT_TOKEN=your_bot_token
+DATABASE_URL=your_postgresql_url
+ADMIN_ID=your_telegram_id
 ```
 
-**Bot token va database credentials'ni hech qachon GitHub'ga joylamang.**
-
----
-
-## ▶️ Run
+Then start the bot:
 
 ```bash
 python bot.py
 ```
 
-Production deployment uchun Render yoki boshqa Python hosting xizmatidan foydalanish mumkin.
+## 🧪 Tests
 
----
-
-## 🧪 Run Tests
-
-Barcha testlarni ishga tushirish:
+Run the test suite:
 
 ```bash
-python -m unittest discover -s tests -v
+pytest
 ```
 
-Yoki alohida:
+The project includes tests for:
 
-```bash
-python -m unittest tests.test_sleep -v
-```
+* BIO countdown
+* Broadcast system
+* Cooldown system
+* Sleep Mode
 
----
+## 🤖 Commands
 
-## 🤖 Bot Commands
-
-### User
+### User Commands
 
 ```text
 /start
+/help
 ```
 
-Botni ishga tushirish va boshqaruv panelini ochish.
-
-### Admin
+### Admin Commands
 
 ```text
 /stats
-```
-
-Foydalanuvchilar statistikasini ko‘rish.
-
-```text
 /reklama
-```
-
-Broadcast yaratish.
-
-```text
 /reklama_status
-```
-
-Joriy broadcast holatini ko‘rish.
-
-```text
 /reklama_retry
-```
-
-Yuborilmagan foydalanuvchilarga qayta urinib ko‘rish.
-
-```text
 /cancel
 ```
 
-Joriy admin amalini bekor qilish.
+## 🔐 Security & Reliability
 
----
+AutoReplyer is designed with reliability and safe message handling in mind.
 
-## 🔒 Security & Reliability
+It includes:
 
-AutoReplyer quyidagi himoya va ishonchlilik mexanizmlaridan foydalanadi:
-
-* PostgreSQL persistent storage
-* Settings whitelist
-* Telegram Business permissions checking
+* PostgreSQL persistence
+* Connection pooling
 * Per-chat cooldown
-* Failed broadcast tracking
-* Resumable broadcast jobs
-* Background broadcast processing
-* Error handling
-* Telegram API error handling
-* Input validation
-
----
+* Failed delivery tracking
+* Broadcast job tracking
+* Resumable broadcasts
+* Retry support
+* Telegram Business permissions handling
+* Health-check server
 
 ## 📈 Built for Growth
 
-AutoReplyer kichik foydalanuvchi bazasidan boshlab kattaroq audience'ga kengaytirish uchun ishlab chiqilgan.
+AutoReplyer is designed to support a growing number of users while keeping the broadcast and reply systems manageable and reliable.
 
-Broadcast tizimida foydalanuvchilar birdaniga RAM'ga yuklanmaydi — ular **batch va keyset pagination** orqali bosqichma-bosqich qayta ishlanadi.
-
-Bu katta foydalanuvchilar bazasida memory usage'ni nazorat qilishga yordam beradi.
-
----
+Its modular structure also makes it easier to add new features in the future.
 
 ## 💡 Why AutoReplyer?
 
-Telegram Business akkauntingizni doim qo‘lda nazorat qilish shart emas.
+Instead of manually replying to every message, let AutoReplyer handle repetitive responses automatically.
 
-AutoReplyer siz uchun:
+Whether you are:
 
-**📩 xabarlarni kutadi
-🤖 avtomatik javob beradi
-😴 uyqu vaqtida ishlaydi
-⏱ spamni kamaytiradi
-🎂 BIO'ni yangilaydi
-📢 admin broadcastlarni boshqaradi**
+* Away from Telegram
+* Sleeping
+* Busy
+* Unable to reply immediately
 
----
+AutoReplyer keeps your Telegram Business account responsive.
 
-## 🌐 Repository
+## 🔗 Repository
 
 **GitHub:**
 https://github.com/TheBigChanges/AutoReplyer
 
----
-
 ## 📄 License
 
-This project is currently maintained by **TheBigChanges**.
+This project is open source.
 
----
+## ⭐ Support the Project
 
-### ⭐ Support the Project
+If you find AutoReplyer useful, consider giving the repository a ⭐ on GitHub.
 
-Agar AutoReplyer foydali bo‘lsa, repository'ga ⭐ **Star** qoldirishni unutmang!
-
-Har bir star loyiha rivojlanishiga yordam beradi. 🚀
+Every star helps the project grow.
