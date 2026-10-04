@@ -674,10 +674,18 @@ async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if job["status"] == "failed":
         if await _reject_if_broadcast_already_running(update.message):
             return
+        try:
+            db.set_broadcast_status(job["id"], "running")
+        except db.BroadcastAlreadyRunningError:
+            # Baza darajasidagi haqiqiy kafolat: tez-tez tasodifan ikkita
+            # so'rov bir-biriga yugurib qolsa ham, bu yerda rad etiladi.
+            await update.message.reply_text(
+                "\u26A0\uFE0F Boshqa reklama shu orada ishga tushib ulgurdi. /reklama_status bilan tekshiring."
+            )
+            return
         await update.message.reply_text(
             f"Job#{job['id']} qolgan joydan (user_id > {job['last_user_id']}) davom ettirilmoqda..."
         )
-        db.set_broadcast_status(job["id"], "running")
         asyncio.create_task(
             run_broadcast_job(
                 context.bot, job["id"], job["source_chat_id"], job["source_message_id"],
@@ -702,10 +710,17 @@ async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await _reject_if_broadcast_already_running(update.message):
         return
 
+    try:
+        new_job_id = db.create_broadcast_job(
+            job["source_chat_id"], job["source_message_id"], len(failed_ids), retry_of_job_id=job["id"]
+        )
+    except db.BroadcastAlreadyRunningError:
+        await update.message.reply_text(
+            "\u26A0\uFE0F Boshqa reklama shu orada ishga tushib ulgurdi. /reklama_status bilan tekshiring."
+        )
+        return
+
     await update.message.reply_text(f"{len(failed_ids)} ta foydalanuvchiga qayta urinilmoqda...")
-    new_job_id = db.create_broadcast_job(
-        job["source_chat_id"], job["source_message_id"], len(failed_ids), retry_of_job_id=job["id"]
-    )
     asyncio.create_task(
         run_broadcast_job(
             context.bot, new_job_id, job["source_chat_id"], job["source_message_id"],
@@ -727,10 +742,8 @@ async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAU
 
     pending_admin_action.pop(owner_id, None)
 
-    # Eng hal qiluvchi tekshiruv shu yerda — aynan shu funksiya job yaratadi.
-    # /reklama buyrug'ida ham tekshirilgan edi, lekin orada (admin xabar
-    # yozayotganda) boshqa job tugab/boshlanib ulgurishi mumkin, shuning
-    # uchun bu yerda QAYTA tekshiriladi.
+    # Tezkor (UX) tekshiruv — aksariyat holatlarda shu yerda to'xtaydi,
+    # admin xabar yozib o'tirmasdan oldinroq bilib qoladi.
     if await _reject_if_broadcast_already_running(update.effective_message):
         return
 
@@ -738,7 +751,19 @@ async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAU
     source_message_id = update.effective_message.message_id
     total = db.get_user_count()
 
-    job_id = db.create_broadcast_job(source_chat_id, source_message_id, total)
+    # Haqiqiy, atomik kafolat shu yerda: create_broadcast_job() bazadagi
+    # partial unique index'ga tiraladi. Ikkita so'rov deyarli bir vaqtda
+    # kelib, yuqoridagi tekshiruvning ikkalasi ham "running yo'q" deb
+    # ko'rsatib ulgursa ham (klassik TOCTOU poyga holati), faqat BITTASI
+    # haqiqatan INSERT qila oladi — ikkinchisi shu yerda ushlanadi.
+    try:
+        job_id = db.create_broadcast_job(source_chat_id, source_message_id, total)
+    except db.BroadcastAlreadyRunningError:
+        await update.effective_message.reply_text(
+            "\u26A0\uFE0F Boshqa reklama shu orada ishga tushib ulgurdi. /reklama_status bilan tekshiring."
+        )
+        return
+
     await update.effective_message.reply_text(
         f"\U0001F4E4 Reklama fonda yuborilmoqda ({total} ta foydalanuvchiga).\n"
         "Progressni /reklama_status bilan tekshirishingiz mumkin."
