@@ -13,10 +13,18 @@ import os
 import time
 
 import psycopg2
+import psycopg2.errors
 import psycopg2.extras
 import psycopg2.pool
 
 from logic import DEFAULT_SLEEP_MESSAGE
+
+
+class BroadcastAlreadyRunningError(Exception):
+    """Bir vaqtning o'zida faqat bitta reklama job 'running' holatida bo'lishi
+    mumkin — buni bazaning o'zi (partial unique index) kafolatlaydi, shuning
+    uchun bu xato chiqsa, bu haqiqiy race condition emas, balki shunchaki
+    boshqa reklama allaqachon ishlab turgani degani."""
 
 logger = logging.getLogger("autoreplyer.db")
 
@@ -193,6 +201,31 @@ def init_db():
             # retry job hamon faqat o'sha cheklangan ro'yxatdan davom
             # etadi — RAM'dagi vaqtinchalik ro'yxatga bog'liq emas.
             "ALTER TABLE broadcast_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id INTEGER"
+        )
+        # Bir martalik tozalash: agar shu tuzatishdan OLDIN (bug tufayli) bir
+        # nechta 'running' job qolib ketgan bo'lsa, pastdagi UNIQUE INDEX
+        # yaratishning o'zi xato berib qoladi — shuning uchun avval faqat ENG
+        # YANGI running job'ni qoldirib, qolganlarini 'failed'ga o'tkazamiz
+        # (kerak bo'lsa adminga /reklama_retry orqali alohida qayta urinish imkoni qoladi).
+        cur.execute(
+            """
+            UPDATE broadcast_jobs
+            SET status = 'failed', updated_at = %s
+            WHERE status = 'running' AND id NOT IN (
+                SELECT id FROM broadcast_jobs WHERE status = 'running' ORDER BY id DESC LIMIT 1
+            )
+            """,
+            (time.time(),),
+        )
+        cur.execute(
+            # MUHIM: bu — ikkita /reklama bir vaqtda ketib qolishining oldini
+            # oluvchi haqiqiy himoya. Oddiy "avval tekshir, keyin yoz" (TOCTOU)
+            # usuli ikkita tezkor so'rov bir-biriga yugurib qolsa yetarli emas;
+            # partial unique index esa bazaning o'zida "status='running' bo'lgan
+            # qator ko'pi bilan bitta bo'lsin" qoidasini majburlaydi — ikkinchi
+            # urinish INSERT/UPDATE darajasida rad etiladi.
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_single_running_broadcast "
+            "ON broadcast_jobs (status) WHERE status = 'running'"
         )
         cur.execute(
             """
@@ -432,17 +465,29 @@ def create_broadcast_job(
     source_chat_id: int, source_message_id: int, total_count: int, retry_of_job_id: int | None = None
 ) -> int:
     now = time.time()
+    new_id = None
+    violated = False
+    # try/except ATAYIN `with` blokining ICHIDA — shunda UniqueViolation
+    # bo'lsa ham `with`dan hech qanday exception chiqmaydi va _PooledConnection
+    # ulanishni (soppa-sog' bo'lsa ham) yopib tashlash o'rniga pool'ga
+    # normal qaytaradi (bu xato juda tez-tez, kutilgan holat bo'lishi mumkin).
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO broadcast_jobs
-                (source_chat_id, source_message_id, status, last_user_id, total_count, retry_of_job_id, created_at, updated_at)
-            VALUES (%s, %s, 'running', 0, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (source_chat_id, source_message_id, total_count, retry_of_job_id, now, now),
-        )
-        return cur.fetchone()[0]
+        try:
+            cur.execute(
+                """
+                INSERT INTO broadcast_jobs
+                    (source_chat_id, source_message_id, status, last_user_id, total_count, retry_of_job_id, created_at, updated_at)
+                VALUES (%s, %s, 'running', 0, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (source_chat_id, source_message_id, total_count, retry_of_job_id, now, now),
+            )
+            new_id = cur.fetchone()[0]
+        except psycopg2.errors.UniqueViolation:
+            violated = True
+    if violated:
+        raise BroadcastAlreadyRunningError("Hozir allaqachon boshqa reklama 'running' holatida")
+    return new_id
 
 
 def update_broadcast_progress(job_id: int, last_user_id: int, sent_delta: int, failed_delta: int):
@@ -461,11 +506,21 @@ def update_broadcast_progress(job_id: int, last_user_id: int, sent_delta: int, f
 
 
 def set_broadcast_status(job_id: int, status: str):
+    """status='running'ga o'tkazishda, agar boshqa job allaqachon 'running'
+    bo'lsa, partial unique index tufayli BroadcastAlreadyRunningError
+    chiqadi (masalan /reklama_retry orqali 'failed' job'ni qayta tiklashda).
+    'completed'/'failed'ga o'tkazishda bu konflikt hech qachon bo'lmaydi."""
+    violated = False
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE broadcast_jobs SET status = %s, updated_at = %s WHERE id = %s",
-            (status, time.time(), job_id),
-        )
+        try:
+            cur.execute(
+                "UPDATE broadcast_jobs SET status = %s, updated_at = %s WHERE id = %s",
+                (status, time.time(), job_id),
+            )
+        except psycopg2.errors.UniqueViolation:
+            violated = True
+    if violated:
+        raise BroadcastAlreadyRunningError("Hozir allaqachon boshqa reklama 'running' holatida")
 
 
 def record_broadcast_failure(job_id: int, user_id: int, error_text: str):
