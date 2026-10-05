@@ -23,6 +23,17 @@ class TestParseCooldownInput(unittest.TestCase):
     def test_colon_format(self):
         self.assertEqual(parse_cooldown_input("1:30"), 1.5)
         self.assertEqual(parse_cooldown_input("0:45"), 0.75)
+        self.assertAlmostEqual(parse_cooldown_input("0:59"), 59 / 60)
+
+    def test_colon_format_invalid_minutes_rejected(self):
+        # Daqiqa qismi 60 yoki undan katta bo'lsa — noto'g'ri format,
+        # "1:90"ni 2.5 soat deb "tushunib" qabul qilib yubormasligi kerak.
+        self.assertIsNone(parse_cooldown_input("1:90"))
+        self.assertIsNone(parse_cooldown_input("0:60"))
+        self.assertIsNone(parse_cooldown_input("2:100"))
+
+    def test_colon_format_negative_rejected(self):
+        self.assertIsNone(parse_cooldown_input("-1:30"))
 
     def test_comma_decimal(self):
         self.assertEqual(parse_cooldown_input("1,5"), 1.5)
