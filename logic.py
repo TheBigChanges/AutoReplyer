@@ -43,9 +43,16 @@ def parse_cooldown_input(text: str) -> float | None:
     if ":" in text:
         try:
             h_str, m_str = text.split(":", 1)
-            return float(h_str) + float(m_str) / 60
+            h = float(h_str)
+            m = float(m_str)
         except ValueError:
             return None
+        # Daqiqa qismi 0–59 oralig'ida bo'lishi kerak — "1:90" kabi
+        # noto'g'ri formatni jim qabul qilib, 2.5 soat deb hisoblab
+        # yubormasligi uchun (bu foydalanuvchi niyatini buzib talqin qilish).
+        if h < 0 or m < 0 or m >= 60:
+            return None
+        return h + m / 60
 
     # Oddiy raqam -> soat sifatida
     try:
