@@ -79,7 +79,15 @@ class _PooledConnection:
         return self._conn
 
     def __exit__(self, exc_type, exc, tb):
-        if exc_type is not None:
+        # Faqat chindan ham ULANISH buzilgan bo'lsa (tarmoq uzilishi va h.k.)
+        # ulanishni tashlab yuboramiz. Oddiy SQL xatosi (masalan constraint
+        # buzilishi — UniqueViolation) autocommit rejimida ulanishni
+        # "ifloslantirmaydi", shuning uchun uni pool'ga qaytarib, bekorga
+        # yangi ulanish ochishdan saqlanamiz.
+        is_connection_broken = exc_type is not None and issubclass(
+            exc_type, (psycopg2.OperationalError, psycopg2.InterfaceError)
+        )
+        if is_connection_broken:
             try:
                 self._conn.close()
             except Exception:
