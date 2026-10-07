@@ -14,6 +14,12 @@ from datetime import date
 # ---------------------------------------------------------------------------
 # Cooldown
 # ---------------------------------------------------------------------------
+# Spamning oldini olish uchun eng kichik ruxsat etilgan cooldown (1 daqiqa).
+# Bu qoida shu yerda (logic qatlamida) turadi, shuning uchun UI'dagi matn
+# ("eng kami 1 daqiqa") va haqiqiy tekshiruv doim mos bo'ladi.
+MIN_COOLDOWN_HOURS = 1 / 60
+
+
 def format_cooldown(hours: float) -> str:
     """0.5 -> '30 daqiqa', 1.0 -> '1 soat', 2.5 -> '2 soat 30 daqiqa', 0 -> 'Har doim javob beradi'."""
     if hours <= 0:
@@ -31,7 +37,8 @@ def format_cooldown(hours: float) -> str:
 def parse_cooldown_input(text: str) -> float | None:
     """Turli formatlarni qabul qiladi va soat (float) qilib qaytaradi, yoki None.
 
-    Natija FAQAT chekli (finite) son bo'lishi kafolatlanadi: "nan", "inf",
+    Natija FAQAT chekli (finite) va kamida MIN_COOLDOWN_HOURS (1 daqiqa) bo'lgan
+    son bo'ladi, aks holda None. Chekli bo'lish talabi: "nan", "inf",
     "1e999", "nan:5", "1:nan" yoki juda uzun raqamlar (float'da inf bo'lib
     ketadigan) None qaytaradi. Aks holda bunday qiymat bazaga yozilib, cooldown
     tekshiruvini buzardi (nan -> cooldown ishlamaydi, inf -> bot abadiy jim)
@@ -39,12 +46,22 @@ def parse_cooldown_input(text: str) -> float | None:
     value = _parse_cooldown_raw(text)
     if value is None or not math.isfinite(value):
         return None
+    # 1 daqiqadan kam (jumladan 0 va manfiy) qabul qilinmaydi. Kichik tolerantlik
+    # float yaxlitlash xatosi ("0:01" kabi aniq 1 daqiqa) rad etilmasligi uchun.
+    if value * 60 < 1 - 1e-9:
+        return None
     return value
 
 
 def _parse_cooldown_raw(text: str) -> float | None:
     """parse_cooldown_input() uchun ichki yordamchi: chekli ekanligini TEKSHIRMAYDI."""
     text = text.strip().lower()
+
+    # Hech bir to'g'ri format minus belgisini ishlatmaydi. Regex esa "-0.5 soat"dagi
+    # minusni ko'rmay, uni jimgina 0.5 soat deb o'qib yuborardi (foydalanuvchi
+    # niyatini buzib talqin qilish) — shuning uchun oldindan rad etamiz.
+    if "-" in text:
+        return None
 
     # "2 soat 30 daqiqa", "1s 30d", "45 daqiqa", "3 soat" kabi formatlar
     hours_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:soat|s|h|hour)\b", text)
