@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from logic import format_cooldown, parse_cooldown_input
+from logic import MIN_COOLDOWN_HOURS, format_cooldown, parse_cooldown_input
 
 
 class TestParseCooldownInput(unittest.TestCase):
@@ -85,6 +85,37 @@ class TestNonFiniteCooldownRejected(unittest.TestCase):
                 if hours is not None:
                     self.assertTrue(math.isfinite(hours))
                     format_cooldown(hours)  # xato otmasligi kerak
+
+
+class TestMinimumCooldown(unittest.TestCase):
+    """Regressiya: UI "eng kami 1 daqiqa" deb aytardi, lekin parse_cooldown_input
+    "0.001" (~3.6 soniya), "0.01" (36 soniya) yoki "0.5 daqiqa"ni qabul qilardi
+    — bot.py'dagi `hours <= 0` faqat nolni to'sardi. Endi qoida logic
+    qatlamining o'zida."""
+
+    def test_sub_minute_values_rejected(self):
+        for text in ("0.001", "0.01", "0.5 daqiqa", "30 soniya", "0:00", "0 daqiqa", "0", "0.0"):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_cooldown_input(text))
+
+    def test_negative_rejected(self):
+        for text in ("-1", "-0.5 soat"):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_cooldown_input(text))
+
+    def test_exactly_one_minute_accepted_in_every_format(self):
+        for text in ("1 daqiqa", "1d", "1m", "0:01", "0 soat 1 daqiqa", "0.0166667"):
+            with self.subTest(text=text):
+                hours = parse_cooldown_input(text)
+                self.assertIsNotNone(hours)
+                self.assertGreaterEqual(hours * 60, 1 - 1e-6)
+
+    def test_just_above_minimum_accepted(self):
+        self.assertAlmostEqual(parse_cooldown_input("1.5 daqiqa"), 1.5 / 60)
+        self.assertAlmostEqual(parse_cooldown_input("0.02"), 0.02)  # 1.2 daqiqa
+
+    def test_constant_is_one_minute(self):
+        self.assertAlmostEqual(MIN_COOLDOWN_HOURS * 60, 1.0)
 
 
 class TestFormatCooldown(unittest.TestCase):
