@@ -1049,8 +1049,14 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         chat_id = bm.chat.id
-        if db.already_replied_recently(owner_id, chat_id):
-            return
+
+        # Cooldown huquqini YUBORISHDAN OLDIN atomik band qilamiz (bitta SQL).
+        # Oldingi "tekshir -> yubor -> belgila" ketma-ketligida ikkita xabar
+        # (yoki ikkita instance) bir vaqtda kelsa, ikkalasi ham "cooldown yo'q"
+        # deb ko'rib, ikki marta javob yuborishi mumkin edi.
+        claimed_at = db.try_claim_reply(owner_id, chat_id, settings["cooldown_hours"])
+        if claimed_at is None:
+            return  # cooldown hali tugamagan
 
         try:
             await context.bot.send_message(
@@ -1058,12 +1064,15 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=reply_text,
                 business_connection_id=bm.business_connection_id,
             )
-            db.mark_replied(owner_id, chat_id)
-            logger.info(
-                "auto reply sent (owner=%s, chat=%s, sleeping=%s)", owner_id, chat_id, sleeping
-            )
-        except TelegramError as e:
-            logger.warning("Avtojavob yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
+        except Exception as e:
+            # Yuborib bo'lmadi — band qilingan huquqni qaytaramiz, aks holda
+            # javob berilmagan bo'lsa ham keyingi xabarlar cooldown'da qolib ketardi.
+            db.release_reply_claim(owner_id, chat_id, claimed_at)
+            if isinstance(e, TelegramError):
+                logger.warning("Avtojavob yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
+                return
+            raise
+        logger.info("auto reply sent (owner=%s, chat=%s, sleeping=%s)", owner_id, chat_id, sleeping)
 
 
 def build_app() -> Application:
