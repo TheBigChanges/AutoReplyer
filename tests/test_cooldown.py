@@ -1,3 +1,4 @@
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -42,6 +43,48 @@ class TestParseCooldownInput(unittest.TestCase):
         self.assertIsNone(parse_cooldown_input("yoq"))
         self.assertIsNone(parse_cooldown_input(""))
         self.assertIsNone(parse_cooldown_input("abc:def"))
+
+
+class TestNonFiniteCooldownRejected(unittest.TestCase):
+    """Regressiya: parse_cooldown_input("nan") / ("inf") oldin float('nan') /
+    float('inf') qaytarardi. bot.py'dagi `hours <= 0` tekshiruvi nan'ni
+    to'xtatmasdi, natijada:
+      - nan: `(now - last) < nan * 3600` har doim False -> cooldown ishlamaydi;
+      - inf: har doim True -> birinchi javobdan keyin bot abadiy jim;
+      - format_cooldown() nan/inf'da ValueError/OverflowError bilan yiqilib,
+        foydalanuvchi paneli ochilmay qolardi."""
+
+    def test_nan_and_inf_words_rejected(self):
+        for text in ("nan", "NaN", "inf", "-inf", "infinity", "+inf"):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_cooldown_input(text))
+
+    def test_overflowing_exponent_rejected(self):
+        self.assertIsNone(parse_cooldown_input("1e999"))
+
+    def test_nan_inside_colon_format_rejected(self):
+        self.assertIsNone(parse_cooldown_input("nan:5"))
+        self.assertIsNone(parse_cooldown_input("1:nan"))
+        self.assertIsNone(parse_cooldown_input("inf:30"))
+
+    def test_absurdly_long_digit_string_rejected(self):
+        # 400 xonali raqam float()'da inf bo'lib ketadi
+        self.assertIsNone(parse_cooldown_input("9" * 400))
+        self.assertIsNone(parse_cooldown_input("9" * 400 + " soat"))
+
+    def test_normal_values_still_work(self):
+        self.assertEqual(parse_cooldown_input("3"), 3.0)
+        self.assertEqual(parse_cooldown_input("1:30"), 1.5)
+        self.assertEqual(parse_cooldown_input("2 soat 30 daqiqa"), 2.5)
+
+    def test_every_accepted_result_is_finite_and_formattable(self):
+        # Qabul qilingan har qanday natija format_cooldown()'ni yiqitmasligi kerak
+        for text in ("nan", "inf", "1e999", "nan:5", "1:nan", "3", "45 daqiqa", "1:30"):
+            with self.subTest(text=text):
+                hours = parse_cooldown_input(text)
+                if hours is not None:
+                    self.assertTrue(math.isfinite(hours))
+                    format_cooldown(hours)  # xato otmasligi kerak
 
 
 class TestFormatCooldown(unittest.TestCase):
