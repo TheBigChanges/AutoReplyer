@@ -97,7 +97,12 @@ def days_until_next(month: int, day: int, today: date | None = None) -> int:
     return (target - today).days
 
 
-def compute_bio_text(target: str, birthday_month, birthday_day) -> str | None:
+def compute_bio_text(
+    target: str, birthday_month, birthday_day, today: date | None = None
+) -> str | None:
+    """`today` berilmasa serverning mahalliy sanasi olinadi (Render'da UTC).
+    Foydalanuvchi uchun to'g'ri kun hisobi kerak bo'lsa, chaqiruvchi o'z
+    vaqt zonasidagi sanani uzatishi kerak."""
     if target in FIXED_EVENT_DATES:
         month, day = FIXED_EVENT_DATES[target]
     elif target == "birthday":
@@ -107,7 +112,7 @@ def compute_bio_text(target: str, birthday_month, birthday_day) -> str | None:
     else:
         return None
 
-    days = days_until_next(month, day)
+    days = days_until_next(month, day, today=today)
     label = BIO_EVENT_LABELS[target]
     emoji = BIO_EVENT_EMOJIS.get(target, "")
     if days == 0:
