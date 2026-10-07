@@ -59,6 +59,12 @@ logger = logging.getLogger("autoreplyer")
 
 TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
 
+
+def today_tashkent():
+    """Toshkent vaqti bo'yicha bugungi sana. Server (Render) UTC'da ishlasa ham,
+    BIO hisoblagich foydalanuvchining haqiqiy kuni bilan hisoblanishi uchun."""
+    return datetime.now(TASHKENT_TZ).date()
+
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "bot_username_bu_yerga")
 # Sizning shaxsiy Telegram user ID'ingiz — faqat shu odam referral statistikasini
@@ -120,7 +126,9 @@ async def apply_bio_update(bot, owner_id: int) -> tuple[bool, str]:
     if not target:
         return False, "BIO hisoblagich o'chirilgan."
 
-    text = compute_bio_text(target, settings.get("birthday_month"), settings.get("birthday_day"))
+    text = compute_bio_text(
+        target, settings.get("birthday_month"), settings.get("birthday_day"), today=today_tashkent()
+    )
     if text is None:
         return False, "Tug'ilgan kun sanasi kiritilmagan."
 
@@ -140,7 +148,9 @@ async def bio_daily_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("BIO kunlik yangilash boshlandi: %d ta ulanish", len(rows))
     updated, failed = 0, 0
     for row in rows:
-        text = compute_bio_text(row["bio_countdown_target"], row["birthday_month"], row["birthday_day"])
+        text = compute_bio_text(
+            row["bio_countdown_target"], row["birthday_month"], row["birthday_day"], today=today_tashkent()
+        )
         if text is None:
             continue
         try:
@@ -334,7 +344,9 @@ def build_bio_menu(owner_id: int):
 
     if target:
         label = BIO_EVENT_LABELS.get(target, target)
-        preview = compute_bio_text(target, s.get("birthday_month"), s.get("birthday_day"))
+        preview = compute_bio_text(
+            target, s.get("birthday_month"), s.get("birthday_day"), today=today_tashkent()
+        )
         status = f"Yoqilgan: {label}\nHozirgi matn: {preview or '(sana kiritilmagan)'}"
     else:
         status = "Hozircha o'chirilgan."
@@ -390,9 +402,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     owner_id = query.from_user.id
     db.record_user(owner_id)
-    await query.answer()
     data = query.data
 
+    # MUHIM: Telegram har bir callback_query'ga FAQAT BIR MARTA javob (answer)
+    # qabul qiladi — ikkinchi chaqiruv e'tiborsiz qoldiriladi. Shuning uchun
+    # matnli/alert bilan javob beradigan shoxlar umumiy `query.answer()`
+    # dan OLDIN, har biri o'zi bir marta javob berib, tugaydi. Qolgan hamma
+    # tugmalar uchun pastdagi umumiy answer() chaqiriladi.
     if data == "check_subscription":
         if await is_subscribed(context.bot, owner_id):
             await query.answer("\u2705 Obuna tasdiqlandi!")
@@ -404,6 +420,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_alert=True,
             )
         return
+
+    if data == "admin_referrals" and owner_id != ADMIN_ID:
+        await query.answer("Ruxsat yo'q.", show_alert=True)
+        return
+
+    await query.answer()
 
     if data == "how_connect":
         await query.edit_message_text(HOW_CONNECT_TEXT, reply_markup=main_menu_markup(owner_id))
@@ -428,9 +450,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "admin_referrals":
-        if owner_id != ADMIN_ID:
-            await query.answer("Ruxsat yo'q.", show_alert=True)
-            return
         text, markup = await build_admin_referrals_view(context.bot)
         await query.edit_message_text(text, reply_markup=markup)
         return
