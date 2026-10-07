@@ -67,6 +67,28 @@ class TestComputeBioText(unittest.TestCase):
         self.assertTrue(navroz_text.startswith("\U0001F337"))    # 🌷
 
 
+class TestComputeBioTextUsesGivenToday(unittest.TestCase):
+    """Regressiya: compute_bio_text() oldin `today` qabul qilmasdi va doim
+    serverning date.today()'iga tayanardi (Render'da UTC). Toshkent kuni
+    bilan hisoblash uchun endi sana tashqaridan uzatiladi."""
+
+    def test_one_day_before_new_year(self):
+        text = compute_bio_text("new_year", None, None, today=date(2026, 12, 31))
+        self.assertIn("1 kun qoldi", text)
+
+    def test_on_new_year_day(self):
+        text = compute_bio_text("new_year", None, None, today=date(2027, 1, 1))
+        self.assertIn("Bugun yangi yil", text)
+
+    def test_birthday_uses_given_today(self):
+        text = compute_bio_text("birthday", 3, 15, today=date(2026, 3, 10))
+        self.assertIn("5 kun qoldi", text)
+
+    def test_navroz_uses_given_today(self):
+        text = compute_bio_text("navroz", None, None, today=date(2026, 3, 20))
+        self.assertIn("1 kun qoldi", text)
+
+
 class TestParseBirthdayInput(unittest.TestCase):
     def test_dot_format(self):
         self.assertEqual(parse_birthday_input("15.03"), (3, 15))
