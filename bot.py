@@ -136,32 +136,59 @@ async def apply_bio_update(bot, owner_id: int) -> tuple[bool, str]:
         await bot.set_business_account_bio(
             business_connection_id=connection["business_connection_id"], bio=text
         )
+        db.update_settings(owner_id, bio_updated_on=today_tashkent().isoformat())
         return True, text
     except TelegramError as e:
         logger.warning("BIO yangilash xatosi (owner=%s): %s", owner_id, e)
         return False, str(e)
 
 
-async def bio_daily_job(context: ContextTypes.DEFAULT_TYPE):
-    """Har kuni (Toshkent vaqti bilan 00:05) barcha faol BIO hisoblagichlarni yangilaydi."""
+async def refresh_bios(bot, only_stale: bool) -> tuple[int, int]:
+    """Faol BIO hisoblagichlarni yangilaydi. Muvaffaqiyatli yangilangan har bir
+    ulanish uchun bugungi (Toshkent) sana `bio_updated_on` ga yoziladi.
+
+    only_stale=True — faqat bugun HALI yangilanmaganlarni (startup "yetkazib
+    olish" rejimi); False — hammasini (kunlik 00:05 job). Startup'da faqat
+    eskirganlarni yangilash har restartda hamma foydalanuvchi uchun Telegram
+    API'ni bekorga qayta-qayta chaqirmaslik uchun."""
+    today = today_tashkent()
+    today_iso = today.isoformat()
     rows = db.get_all_bio_targets()
-    logger.info("BIO kunlik yangilash boshlandi: %d ta ulanish", len(rows))
+    if only_stale:
+        rows = [r for r in rows if r.get("bio_updated_on") != today_iso]
     updated, failed = 0, 0
     for row in rows:
         text = compute_bio_text(
-            row["bio_countdown_target"], row["birthday_month"], row["birthday_day"], today=today_tashkent()
+            row["bio_countdown_target"], row["birthday_month"], row["birthday_day"], today=today
         )
         if text is None:
             continue
         try:
-            await context.bot.set_business_account_bio(
+            await bot.set_business_account_bio(
                 business_connection_id=row["business_connection_id"], bio=text
             )
+            db.update_settings(row["owner_user_id"], bio_updated_on=today_iso)
             updated += 1
         except TelegramError as e:
             failed += 1
             logger.warning("BIO yangilash xatosi (owner=%s): %s", row["owner_user_id"], e)
+    return updated, failed
+
+
+async def bio_daily_job(context: ContextTypes.DEFAULT_TYPE):
+    """Har kuni (Toshkent vaqti bilan 00:05) barcha faol BIO hisoblagichlarni yangilaydi."""
+    logger.info("BIO kunlik yangilash boshlandi")
+    updated, failed = await refresh_bios(context.bot, only_stale=False)
     logger.info("BIO kunlik yangilash tugadi: %d muvaffaqiyatli, %d xato", updated, failed)
+
+
+async def bio_startup_job(context: ContextTypes.DEFAULT_TYPE):
+    """Server ishga tushganda BIR marta: agar 00:05 da server o'chiq bo'lgani
+    uchun bugungi yangilash o'tkazib yuborilgan bo'lsa, shuni darhol yetkazadi
+    (faqat bugun hali yangilanmaganlarni). So'ng odatdagi 00:05 jadvali davom etadi."""
+    logger.info("BIO startup tekshiruvi boshlandi")
+    updated, failed = await refresh_bios(context.bot, only_stale=True)
+    logger.info("BIO startup tekshiruvi tugadi: %d yangilandi, %d xato", updated, failed)
 
 
 # ---------------------------------------------------------------------------
@@ -899,7 +926,18 @@ async def _broadcast_loop(
     start_after_user_id: int,
 ) -> tuple[int, int]:
     """Haqiqiy yuborish tsikli. Kutilmagan xatoni ushlamaydi — ularni
-    chaqiruvchi (`run_broadcast_job`) ushlab, job holatini belgilaydi."""
+    chaqiruvchi (`run_broadcast_job`) ushlab, job holatini belgilaydi.
+
+    YETKAZISH KAFOLATI: "kamida bir marta" (at-least-once), "aynan bir marta"
+    (exactly-once) EMAS — Telegram copy_message uchun idempotency kaliti
+    bermaydi, shuning uchun bu texnik jihatdan to'liq mumkin emas. Progress
+    har bir foydalanuvchidan KEYIN yoziladi, demak yuborish va DB yozuvi
+    orasida process o'lib qolsa, restartdan keyin AYNAN SHU BITTA foydalanuvchi
+    xabarni ikkinchi marta olishi mumkin (har bir crash uchun ko'pi bilan 1 ta).
+    Shunga o'xshash noaniqlik: TimedOut/NetworkError xatosida xabar aslida
+    yetib borgan bo'lishi mumkin, lekin "xato" deb yoziladi va /reklama_retry
+    uni qayta yuboradi. Tanlov ataylab shunday: foydalanuvchi reklamani
+    umuman olmay qolishidan ko'ra, kamdan-kam holatda ikki marta olgani yaxshiroq."""
     logger.info("Reklama job#%d boshlandi (last_user_id=%d)", job_id, start_after_user_id)
     sent, failed = 0, 0
     last_user_id = start_after_user_id
@@ -1138,6 +1176,8 @@ def build_app() -> Application:
         )
         # Server qayta ishga tushganda yarim qolgan reklamalarni davom ettirish
         app.job_queue.run_once(_resume_broadcasts_job_callback, when=5)
+        # Server 00:05 da o'chiq bo'lgan bo'lsa, o'tkazib yuborilgan BIO yangilanishini yetkazish
+        app.job_queue.run_once(bio_startup_job, when=10)
     else:
         logger.warning(
             "JobQueue mavjud emas — BIO hisoblagich avtomatik yangilanmaydi. "
