@@ -337,6 +337,7 @@ def update_settings(owner_user_id: int, **kwargs):
 # Reply cooldown cache
 # --------------------------------------------------------------------------
 def already_replied_recently(owner_user_id: int, chat_id: int) -> bool:
+    """ESKI, atomik EMAS (tekshir-keyin-yoz). Yangi kodda try_claim_reply() ishlating."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT last_reply_at FROM replied_cache WHERE owner_user_id = %s AND chat_id = %s",
@@ -350,6 +351,7 @@ def already_replied_recently(owner_user_id: int, chat_id: int) -> bool:
 
 
 def mark_replied(owner_user_id: int, chat_id: int):
+    """ESKI (atomik EMAS). Yangi kodda try_claim_reply() ishlating."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -358,6 +360,53 @@ def mark_replied(owner_user_id: int, chat_id: int):
             ON CONFLICT (owner_user_id, chat_id) DO UPDATE SET last_reply_at = EXCLUDED.last_reply_at
             """,
             (owner_user_id, chat_id, time.time()),
+        )
+
+
+def try_claim_reply(owner_user_id: int, chat_id: int, cooldown_hours: float) -> float | None:
+    """Javob berish huquqini ATOMIK ravishda "band qiladi" (check-then-act
+    poyga holatisiz).
+
+    Eski usul (already_replied_recently -> send -> mark_replied) uchta alohida
+    qadam edi: ikkita xabar (yoki ikkita instance) deyarli bir vaqtda kelsa,
+    ikkalasi ham "cooldown yo'q" deb ko'rib, ikki marta javob yuborishi
+    mumkin edi. Bu yerda tekshirish va yozish BITTA SQL buyrug'ida bajariladi:
+    bir vaqtda kelgan ikkinchi so'rov birinchisining qatorini kutadi, so'ng
+    yangilangan qiymatni ko'rib, cooldown ichida ekanini aniqlaydi.
+
+    Qaytaradi: huquq olingan bo'lsa — band qilingan vaqt (timestamp; xabar
+    yuborilmasa release_reply_claim()ga uzatiladi), cooldown hali tugamagan
+    bo'lsa — None (javob BERMASLIK kerak)."""
+    now = time.time()
+    threshold = now - cooldown_hours * 3600
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO replied_cache (owner_user_id, chat_id, last_reply_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (owner_user_id, chat_id) DO UPDATE
+                SET last_reply_at = EXCLUDED.last_reply_at
+                WHERE replied_cache.last_reply_at IS NULL
+                   OR replied_cache.last_reply_at <= %s
+            RETURNING last_reply_at
+            """,
+            (owner_user_id, chat_id, now, threshold),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def release_reply_claim(owner_user_id: int, chat_id: int, claimed_at: float):
+    """Xabar yuborilmay qolsa (masalan Telegram xatosi) band qilingan huquqni
+    qaytaradi — shunda keyingi xabarga baribir javob beriladi. Faqat AYNAN
+    shu claim hali o'zgarmagan bo'lsa o'chiradi (`last_reply_at = claimed_at`),
+    shuning uchun boshqa so'rovning yangi claim'ini bekor qilib yubormaydi.
+    (Claim faqat cooldown tugagan bo'lsa olinadi, shuning uchun qatorni
+    o'chirish — oldingi holatga qaytarish bilan bir xil natija beradi.)"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM replied_cache WHERE owner_user_id = %s AND chat_id = %s AND last_reply_at = %s",
+            (owner_user_id, chat_id, claimed_at),
         )
 
 
