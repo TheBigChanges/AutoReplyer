@@ -7,6 +7,7 @@ xavfsiz import qilish mumkin.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import date
 
@@ -28,7 +29,21 @@ def format_cooldown(hours: float) -> str:
 
 
 def parse_cooldown_input(text: str) -> float | None:
-    """Turli formatlarni qabul qiladi va soat (float) qilib qaytaradi, yoki None."""
+    """Turli formatlarni qabul qiladi va soat (float) qilib qaytaradi, yoki None.
+
+    Natija FAQAT chekli (finite) son bo'lishi kafolatlanadi: "nan", "inf",
+    "1e999", "nan:5", "1:nan" yoki juda uzun raqamlar (float'da inf bo'lib
+    ketadigan) None qaytaradi. Aks holda bunday qiymat bazaga yozilib, cooldown
+    tekshiruvini buzardi (nan -> cooldown ishlamaydi, inf -> bot abadiy jim)
+    va format_cooldown() yiqilib, foydalanuvchi panelini ochib bo'lmay qolardi."""
+    value = _parse_cooldown_raw(text)
+    if value is None or not math.isfinite(value):
+        return None
+    return value
+
+
+def _parse_cooldown_raw(text: str) -> float | None:
+    """parse_cooldown_input() uchun ichki yordamchi: chekli ekanligini TEKSHIRMAYDI."""
     text = text.strip().lower()
 
     # "2 soat 30 daqiqa", "1s 30d", "45 daqiqa", "3 soat" kabi formatlar
