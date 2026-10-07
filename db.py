@@ -45,6 +45,7 @@ ALLOWED_SETTINGS_FIELDS = {
     "sleep_start_minutes",
     "sleep_end_minutes",
     "sleep_reply_text",
+    "bio_updated_on",
 }
 
 _pool: "psycopg2.pool.SimpleConnectionPool | None" = None
@@ -153,6 +154,12 @@ def init_db():
         )
         cur.execute(
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS sleep_reply_text TEXT NOT NULL DEFAULT ''"
+        )
+        # BIO oxirgi marta qaysi sanada (Toshkent, ISO "YYYY-MM-DD") muvaffaqiyatli
+        # yangilangani. Server 00:05 da o'chiq bo'lib qolsa, startup'da faqat
+        # shu sana bugundan eski bo'lganlarni "yetkazib" yangilash uchun.
+        cur.execute(
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS bio_updated_on TEXT"
         )
         cur.execute(
             """
@@ -620,7 +627,7 @@ def get_all_bio_targets():
         cur.execute(
             """
             SELECT c.owner_user_id, c.business_connection_id,
-                   s.bio_countdown_target, s.birthday_month, s.birthday_day
+                   s.bio_countdown_target, s.birthday_month, s.birthday_day, s.bio_updated_on
             FROM connections c
             JOIN settings s ON s.owner_user_id = c.owner_user_id
             WHERE c.is_enabled = TRUE AND c.can_edit_bio = TRUE
