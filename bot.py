@@ -398,6 +398,40 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(greeting, reply_markup=markup)
 
 
+HELP_TEXT = (
+    "\U0001F916 AutoReplyer — siz oflayn bo'lganingizda Telegram akkountingizdagi "
+    "shaxsiy xabarlarga avtomatik javob beradi.\n\n"
+    "Imkoniyatlar:\n"
+    "\u2022 Oflayn avtojavob (cooldown bilan — bir chatga qayta-qayta yozmaydi)\n"
+    "\u2022 Uxlayapman rejimi — tungi vaqt oralig'ida alohida javob\n"
+    "\u2022 BIO hisoblagich — Yangi yil, Navro'z yoki tug'ilgan kuningizgacha qolgan kunlar\n"
+    "\u2022 Referal bonus\n\n"
+    "Buyruqlar:\n"
+    "/start — bosh menyu va panel\n"
+    "/help — shu yo'riqnoma\n\n"
+    "Akkountni ulash: /start yozing va \"Qanday ulash mumkin?\" tugmasini bosing."
+)
+
+ADMIN_HELP_TEXT = (
+    "\n\n\U0001F510 Admin buyruqlari:\n"
+    "/stats — foydalanuvchilar soni\n"
+    "/reklama — barcha foydalanuvchilarga xabar yuborish\n"
+    "/reklama_status — oxirgi reklama holati\n"
+    "/reklama_retry — oxirgi reklamani qayta urinish\n"
+    "/cancel — joriy admin amalini bekor qilish"
+)
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    db.record_user(user_id)
+    text = HELP_TEXT
+    # Admin buyruqlari faqat adminning o'ziga ko'rsatiladi
+    if ADMIN_ID and user_id == ADMIN_ID:
+        text += ADMIN_HELP_TEXT
+    await update.message.reply_text(text)
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     owner_id = query.from_user.id
@@ -1078,6 +1112,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("reklama", cmd_reklama))
     app.add_handler(CommandHandler("reklama_status", cmd_reklama_status))
