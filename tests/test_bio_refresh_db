@@ -1,0 +1,83 @@
+"""
+`settings.bio_updated_on` ustuni haqiqiy Postgres'da: init_db() uni yaratadi,
+update_settings() whitelist'dan o'tkazadi, get_all_bio_targets() qaytaradi.
+Faqat TEST_DATABASE_URL o'rnatilgan bo'lsa ishlaydi (aks holda skip).
+"""
+
+import os
+import random
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+TEST_DB_URL = os.environ.get("TEST_DATABASE_URL")
+
+if TEST_DB_URL:
+    import psycopg2
+
+    os.environ.setdefault("BOT_TOKEN", "123:dummy")
+    _previous_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = TEST_DB_URL
+    import db  # noqa: E402
+
+    if _previous_url is None:
+        os.environ.pop("DATABASE_URL", None)
+    else:
+        os.environ["DATABASE_URL"] = _previous_url
+
+
+class _FreshConnection:
+    def __enter__(self):
+        self._conn = psycopg2.connect(TEST_DB_URL)
+        self._conn.autocommit = True
+        return self._conn
+
+    def __exit__(self, *exc):
+        self._conn.close()
+        return False
+
+
+@unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL o'rnatilmagan — haqiqiy Postgres testlari o'tkazib yuborildi")
+class TestBioUpdatedOnColumn(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._patch = patch.object(db, "get_conn", lambda: _FreshConnection())
+        cls._patch.start()
+        db.init_db()
+        db.init_db()  # ikkinchi marta ham xatosiz ishlashi kerak (IF NOT EXISTS)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._patch.stop()
+
+    def setUp(self):
+        self.owner = random.randint(10**12, 10**13)
+        db.upsert_connection(self.owner, "bc-test", can_reply=True, is_enabled=True, can_edit_bio=True)
+        db.update_settings(self.owner, bio_countdown_target="new_year")
+
+    def tearDown(self):
+        with _FreshConnection() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM connections WHERE owner_user_id = %s", (self.owner,))
+            cur.execute("DELETE FROM settings WHERE owner_user_id = %s", (self.owner,))
+
+    def _my_row(self):
+        rows = [r for r in db.get_all_bio_targets() if r["owner_user_id"] == self.owner]
+        self.assertEqual(len(rows), 1)
+        return rows[0]
+
+    def test_new_row_has_no_update_date(self):
+        row = self._my_row()
+        self.assertIn("bio_updated_on", row)
+        self.assertIsNone(row["bio_updated_on"])
+
+    def test_update_date_roundtrip(self):
+        db.update_settings(self.owner, bio_updated_on="2027-01-01")
+        self.assertEqual(self._my_row()["bio_updated_on"], "2027-01-01")
+        self.assertEqual(db.get_settings(self.owner)["bio_updated_on"], "2027-01-01")
+
+
+if __name__ == "__main__":
+    unittest.main()
