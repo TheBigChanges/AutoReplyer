@@ -28,6 +28,8 @@ class BroadcastAlreadyRunningError(Exception):
 
 logger = logging.getLogger("autoreplyer.db")
 
+_UNSET = object()  # record_user(): "bu maydon berilmagan" (None — "bu maydon bo'sh" dan farq qiladi)
+
 DEFAULT_COOLDOWN_HOURS = 3.0
 DEFAULT_AUTO_REPLY_TEXT = "Salom! Hozirda oflaynman, imkon qadar tezroq javob beraman \U0001F64F"
 
@@ -191,6 +193,33 @@ def init_db():
             )
             """
         )
+        # Admin /block uchun: @username bo'yicha topish va ro'yxatda ko'rsatish
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users (lower(username))")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS blocked_users (
+                user_id BIGINT PRIMARY KEY,
+                reason TEXT NOT NULL DEFAULT '',
+                blocked_by BIGINT,
+                blocked_at DOUBLE PRECISION
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS block_appeals (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                message TEXT NOT NULL,
+                created_at DOUBLE PRECISION
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_block_appeals_user ON block_appeals (user_id, created_at)"
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS broadcast_jobs (
@@ -300,8 +329,16 @@ def get_connection(owner_user_id: int):
 
 def get_connection_by_business_id(business_connection_id: str):
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        # is_blocked: ulanish egasi admin tomonidan bloklanganmi (bloklangan odamga
+        # avtojavob berilmaydi). Shu bitta so'rovga qo'shilgan — qo'shimcha DB chaqiruvi yo'q.
         cur.execute(
-            "SELECT * FROM connections WHERE business_connection_id = %s", (business_connection_id,)
+            """
+            SELECT c.*,
+                   EXISTS (SELECT 1 FROM blocked_users b WHERE b.user_id = c.owner_user_id) AS is_blocked
+            FROM connections c
+            WHERE c.business_connection_id = %s
+            """,
+            (business_connection_id,),
         )
         row = cur.fetchone()
         return dict(row) if row else None
@@ -462,21 +499,73 @@ def get_all_referral_counts():
 # --------------------------------------------------------------------------
 # Foydalanuvchilar (admin /stats va /reklama uchun)
 # --------------------------------------------------------------------------
-def record_user(user_id: int):
+def record_user(user_id: int, username=_UNSET, full_name=_UNSET):
+    """Foydalanuvchini yozadi. `username`/`full_name` berilsa (None ham —
+    "yo'q" ma'nosida), ular yangilanadi: /block @username shu orqali ID topadi.
+    Berilmasa — faqat mavjudligi yoziladi (eski xatti-harakat)."""
+    if username is _UNSET and full_name is _UNSET:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (user_id, first_seen)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                (user_id, time.time()),
+            )
+        return
+
+    columns, values, updates = ["user_id", "first_seen"], [user_id, time.time()], []
+    if username is not _UNSET:
+        username = (username or "").lstrip("@") or None
+        columns.append("username")
+        values.append(username)
+        updates.append("username = EXCLUDED.username")
+    if full_name is not _UNSET:
+        columns.append("full_name")
+        values.append(full_name or None)
+        updates.append("full_name = EXCLUDED.full_name")
+
     with get_conn() as conn, conn.cursor() as cur:
+        if username:
+            # Username boshqa odamga o'tgan bo'lishi mumkin — eski egasidan olib
+            # tashlaymiz, shunda @username bo'yicha qidiruv bir ma'noli bo'ladi.
+            cur.execute(
+                "UPDATE users SET username = NULL WHERE lower(username) = lower(%s) AND user_id <> %s",
+                (username, user_id),
+            )
         cur.execute(
-            """
-            INSERT INTO users (user_id, first_seen)
-            VALUES (%s, %s)
-            ON CONFLICT (user_id) DO NOTHING
-            """,
-            (user_id, time.time()),
+            f"INSERT INTO users ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
+            f"ON CONFLICT (user_id) DO UPDATE SET {', '.join(updates)}",
+            values,
         )
 
 
-def get_user_count() -> int:
+def get_user(user_id: int):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT user_id, username, full_name FROM users WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_user_id_by_username(username: str):
+    """@username -> user_id (bazada saqlangan bo'lsa), aks holda None."""
+    username = username.lstrip("@")
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM users")
+        cur.execute("SELECT user_id FROM users WHERE lower(username) = lower(%s)", (username,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def get_user_count(exclude_blocked: bool = False) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        if exclude_blocked:
+            cur.execute(
+                "SELECT COUNT(*) FROM users u "
+                "WHERE NOT EXISTS (SELECT 1 FROM blocked_users b WHERE b.user_id = u.user_id)"
+            )
+        else:
+            cur.execute("SELECT COUNT(*) FROM users")
         return cur.fetchone()[0]
 
 
@@ -487,7 +576,10 @@ def get_user_ids_after(last_user_id: int, limit: int = 200):
     tug'dirmaydi, chunki har safar faqat kichik bo'lak o'qiladi."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT user_id FROM users WHERE user_id > %s ORDER BY user_id LIMIT %s",
+            # Bloklangan foydalanuvchilar reklama olmaydi
+            "SELECT user_id FROM users u WHERE user_id > %s "
+            "AND NOT EXISTS (SELECT 1 FROM blocked_users b WHERE b.user_id = u.user_id) "
+            "ORDER BY user_id LIMIT %s",
             (last_user_id, limit),
         )
         return [row[0] for row in cur.fetchall()]
@@ -511,8 +603,9 @@ def get_failed_user_ids_after(source_job_id: int, last_user_id: int, limit: int 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT user_id FROM broadcast_failures
+            SELECT user_id FROM broadcast_failures f
             WHERE job_id = %s AND user_id > %s
+              AND NOT EXISTS (SELECT 1 FROM blocked_users b WHERE b.user_id = f.user_id)
             ORDER BY user_id
             LIMIT %s
             """,
@@ -632,6 +725,79 @@ def get_all_bio_targets():
             JOIN settings s ON s.owner_user_id = c.owner_user_id
             WHERE c.is_enabled = TRUE AND c.can_edit_bio = TRUE
               AND s.bio_countdown_target IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM blocked_users b WHERE b.user_id = c.owner_user_id)
             """
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+# --------------------------------------------------------------------------
+# Bloklash (admin) va apellyatsiya (bloklangan foydalanuvchining izohi)
+# --------------------------------------------------------------------------
+def block_user(user_id: int, reason: str, blocked_by: int) -> bool:
+    """True — yangi bloklandi; False — allaqachon bloklangan edi (hech narsa o'zgarmaydi)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO blocked_users (user_id, reason, blocked_by, blocked_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            (user_id, reason or "", blocked_by, time.time()),
+        )
+        return cur.rowcount > 0
+
+
+def unblock_user(user_id: int) -> bool:
+    """True — blokdan chiqarildi; False — u bloklanmagan edi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM blocked_users WHERE user_id = %s", (user_id,))
+        return cur.rowcount > 0
+
+
+def get_block(user_id: int):
+    """Bloklangan bo'lsa {'user_id','reason','blocked_by','blocked_at'}, aks holda None."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM blocked_users WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def list_blocked(limit: int = 30):
+    """Eng oxirgi bloklanganlar oldinda; username/ism bo'lsa qo'shib beradi."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT b.user_id, b.reason, b.blocked_at, u.username, u.full_name
+            FROM blocked_users b
+            LEFT JOIN users u ON u.user_id = b.user_id
+            ORDER BY b.blocked_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def count_blocked() -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM blocked_users")
+        return cur.fetchone()[0]
+
+
+def add_appeal(user_id: int, message: str) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO block_appeals (user_id, message, created_at) VALUES (%s, %s, %s) RETURNING id",
+            (user_id, message, time.time()),
+        )
+        return cur.fetchone()[0]
+
+
+def count_recent_appeals(user_id: int, since_ts: float) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM block_appeals WHERE user_id = %s AND created_at >= %s",
+            (user_id, since_ts),
+        )
+        return cur.fetchone()[0]
