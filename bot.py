@@ -16,7 +16,9 @@ online/offline, cooldown, avtojavob matni.
 import asyncio
 import logging
 import os
+import re
 import threading
+import time
 from datetime import datetime
 from datetime import time as dtime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -28,6 +30,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -96,6 +99,14 @@ if bool(REQUIRED_CHANNEL_ID) != bool(REQUIRED_CHANNEL_LINK):
 pending_settings_action: dict[int, str] = {}
 # owner_user_id -> "broadcast"  (admin /reklama oqimida)
 pending_admin_action: dict[int, str] = {}
+
+
+def track_user(user):
+    """Foydalanuvchini (va uning username/ismini) bazaga yozadi. Username
+    saqlanishi sababli admin /block @username bilan odamni topa oladi."""
+    if user is None:
+        return
+    db.record_user(user.id, username=user.username, full_name=user.full_name)
 
 HOW_CONNECT_TEXT = (
     "\U0001F517 Akkountni ulash — qadamma-qadam:\n\n"
@@ -399,7 +410,7 @@ def build_bio_menu(owner_id: int):
 # ---------------------------------------------------------------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
-    db.record_user(owner_id)
+    track_user(update.effective_user)
 
     if not await is_subscribed(context.bot, owner_id):
         await update.message.reply_text(SUBSCRIBE_GATE_TEXT, reply_markup=build_subscribe_gate_markup())
@@ -442,6 +453,9 @@ HELP_TEXT = (
 ADMIN_HELP_TEXT = (
     "\n\n\U0001F510 Admin buyruqlari:\n"
     "/stats — foydalanuvchilar soni\n"
+    "/block @username [sabab] — foydalanuvchini bloklash (yoki /block 123456789)\n"
+    "/unblock @username — blokdan chiqarish\n"
+    "/blocked — bloklanganlar ro'yxati\n"
     "/reklama — barcha foydalanuvchilarga xabar yuborish\n"
     "/reklama_status — oxirgi reklama holati\n"
     "/reklama_retry — oxirgi reklamani qayta urinish\n"
@@ -451,7 +465,7 @@ ADMIN_HELP_TEXT = (
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    db.record_user(user_id)
+    track_user(update.effective_user)
     text = HELP_TEXT
     # Admin buyruqlari faqat adminning o'ziga ko'rsatiladi
     if ADMIN_ID and user_id == ADMIN_ID:
@@ -462,7 +476,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     owner_id = query.from_user.id
-    db.record_user(owner_id)
+    track_user(query.from_user)
     data = query.data
 
     # MUHIM: Telegram har bir callback_query'ga FAQAT BIR MARTA javob (answer)
@@ -484,6 +498,36 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "admin_referrals" and owner_id != ADMIN_ID:
         await query.answer("Ruxsat yo'q.", show_alert=True)
+        return
+
+    if data == "appeal_start":
+        # Bloklangan foydalanuvchining bosishi block_gate'da ushlanadi. Bu yerga
+        # faqat bloklanmagan (masalan blokdan chiqarilgan) odam eski tugmani
+        # bossa keladi.
+        await query.answer("Siz bloklanmagansiz.", show_alert=True)
+        return
+
+    if data.startswith("unblock:"):
+        if owner_id != ADMIN_ID:
+            await query.answer("Ruxsat yo'q.", show_alert=True)
+            return
+        try:
+            target_id = int(data.split(":", 1)[1])
+        except ValueError:
+            await query.answer("Noto'g'ri tugma.", show_alert=True)
+            return
+        changed = await do_unblock(context.bot, target_id)
+        await query.answer(
+            "\u2705 Blokdan chiqarildi." if changed else "Bu foydalanuvchi allaqachon blokdan chiqarilgan."
+        )
+        original = getattr(query.message, "text", None) or ""
+        suffix = (
+            "\u2705 Blokdan chiqarildi." if changed else "\u2139\uFE0F Allaqachon blokdan chiqarilgan edi."
+        )
+        try:
+            await query.edit_message_text(f"{original}\n\n{suffix}")  # tugma ham yo'qoladi
+        except TelegramError as e:
+            logger.info("Apellyatsiya xabarini yangilab bo'lmadi: %s", e)
         return
 
     await query.answer()
@@ -603,7 +647,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
-    db.record_user(owner_id)
+    track_user(update.effective_user)
     action = pending_settings_action.get(owner_id)
     if action is None:
         return  # panelga aloqasi yo'q oddiy xabar
@@ -677,7 +721,11 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     count = db.get_user_count()
-    await update.message.reply_text(f"\U0001F465 Botdan jami foydalanuvchilar soni: {count}")
+    blocked = db.count_blocked()
+    text = f"\U0001F465 Botdan jami foydalanuvchilar soni: {count}"
+    if blocked:
+        text += f"\n\U0001F6AB Shundan bloklangan: {blocked}"
+    await update.message.reply_text(text)
 
 
 def _get_running_broadcast_job():
@@ -829,7 +877,7 @@ async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAU
 
     source_chat_id = update.effective_chat.id
     source_message_id = update.effective_message.message_id
-    total = db.get_user_count()
+    total = db.get_user_count(exclude_blocked=True)
 
     # Haqiqiy, atomik kafolat shu yerda: create_broadcast_job() bazadagi
     # partial unique index'ga tiraladi. Ikkita so'rov deyarli bir vaqtda
@@ -1020,6 +1068,288 @@ async def _resume_broadcasts_job_callback(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
+# Admin: foydalanuvchini bloklash (/block, /unblock, /blocked) va apellyatsiya
+# ---------------------------------------------------------------------------
+BLOCK_REASON_MAX_LENGTH = 300
+APPEAL_MAX_LENGTH = 1000
+APPEAL_MAX_PER_DAY = 3
+APPEAL_PENDING_TTL_SECONDS = 15 * 60
+BLOCK_NOTICE_COOLDOWN_SECONDS = 60
+
+# user_id -> izoh yozish boshlangan vaqt (bloklangan odam "Izoh qoldirish"ni bosgan)
+pending_appeal: dict[int, float] = {}
+# user_id -> oxirgi marta "Siz bloklangansiz" deb javob berilgan vaqt (bot spamga aylanmasligi uchun)
+_last_block_notice: dict[int, float] = {}
+
+_USERNAME_RE = re.compile(r"^@?([A-Za-z][A-Za-z0-9_]{3,31})$")
+
+
+def format_user_label(user_id: int, username: str | None = None, full_name: str | None = None) -> str:
+    names = " / ".join(x for x in (f"@{username}" if username else None, full_name) if x)
+    return f"{names} (ID {user_id})" if names else f"ID {user_id}"
+
+
+def _label_for(user_id: int) -> str:
+    info = db.get_user(user_id) or {}
+    return format_user_label(user_id, info.get("username"), info.get("full_name"))
+
+
+async def _try_send(bot, chat_id: int, text: str, reply_markup=None) -> bool:
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        return True
+    except TelegramError as e:
+        logger.info("Xabar yuborilmadi (chat=%s): %s", chat_id, e)
+        return False
+
+
+async def resolve_target_user(bot, raw: str) -> tuple[int | None, str | None]:
+    """'@username' yoki raqamli ID'dan user_id topadi. (user_id, None) yoki (None, xato_matni)."""
+    raw = raw.strip()
+    if raw.isdigit():
+        user_id = int(raw)
+        if user_id <= 0:
+            return None, "Noto'g'ri ID."
+        return user_id, None
+
+    match = _USERNAME_RE.match(raw)
+    if not match:
+        return None, "Noto'g'ri format. @username yoki raqamli ID yuboring."
+    username = match.group(1)
+
+    user_id = db.get_user_id_by_username(username)
+    if user_id is not None:
+        return user_id, None
+
+    # Bazada yo'q — Telegramning o'zidan so'rab ko'ramiz (har doim ham ishlamaydi)
+    try:
+        chat = await bot.get_chat(f"@{username}")
+    except TelegramError:
+        chat = None
+    if chat is not None and getattr(chat, "type", None) == "private":
+        return chat.id, None
+    return None, (
+        f"@{username} topilmadi. Bu odam botga hali yozmagan bo'lishi mumkin — "
+        "raqamli ID'si bilan bloklang: /block 123456789 [sabab]"
+    )
+
+
+def build_block_notice(reason: str):
+    text = "\U0001F6AB Siz admin tomonidan bloklandingiz.\n"
+    if reason:
+        text += f"Sabab: {reason}\n"
+    text += (
+        "\nBloklash davomida bot sizga xizmat ko'rsatmaydi: panel ishlamaydi, "
+        "avtojavob va BIO yangilash to'xtatiladi.\n\n"
+        "Agar bu xato deb o'ylasangiz, pastdagi tugma orqali izoh qoldiring — admin ko'rib chiqadi."
+    )
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("\u270D\uFE0F Izoh qoldirish", callback_data="appeal_start")]]
+    )
+    return text, markup
+
+
+async def cmd_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Foydalanish:\n/block @username [sabab]\n/block 123456789 [sabab]"
+        )
+        return
+
+    target_id, error = await resolve_target_user(context.bot, context.args[0])
+    if target_id is None:
+        await update.message.reply_text(error)
+        return
+    if target_id == ADMIN_ID:
+        await update.message.reply_text("O'zingizni bloklab bo'lmaydi.")
+        return
+
+    reason = " ".join(context.args[1:]).strip()[:BLOCK_REASON_MAX_LENGTH]
+    label = _label_for(target_id)
+
+    if not db.block_user(target_id, reason, update.effective_user.id):
+        await update.message.reply_text(
+            f"{label} allaqachon bloklangan. Blokdan chiqarish: /unblock {context.args[0]}"
+        )
+        return
+
+    # Eski, tugallanmagan panel amallari qolib ketmasligi uchun
+    pending_settings_action.pop(target_id, None)
+    pending_appeal.pop(target_id, None)
+    _last_block_notice.pop(target_id, None)
+
+    text, markup = build_block_notice(reason)
+    notified = await _try_send(context.bot, target_id, text, markup)
+    await update.message.reply_text(
+        f"\U0001F6AB {label} bloklandi.\n"
+        f"Sabab: {reason or '—'}\n"
+        + (
+            "Foydalanuvchiga xabar yuborildi."
+            if notified
+            else "Foydalanuvchiga xabar yuborib bo'lmadi (u botga yozmagan yoki botni to'xtatgan). "
+            "Baribir bloklangan: u botga yozganda bloklanganini ko'radi."
+        )
+    )
+
+
+async def do_unblock(bot, target_id: int) -> bool:
+    """Blokdan chiqaradi va foydalanuvchiga xabar beradi. True — haqiqatan chiqarildi."""
+    changed = db.unblock_user(target_id)
+    pending_appeal.pop(target_id, None)
+    _last_block_notice.pop(target_id, None)
+    if changed:
+        await _try_send(
+            bot, target_id, "\u2705 Siz blokdan chiqarildingiz. Davom etish uchun /start yozing."
+        )
+    return changed
+
+
+async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("Foydalanish:\n/unblock @username\n/unblock 123456789")
+        return
+    target_id, error = await resolve_target_user(context.bot, context.args[0])
+    if target_id is None:
+        await update.message.reply_text(error)
+        return
+    label = _label_for(target_id)
+    if await do_unblock(context.bot, target_id):
+        await update.message.reply_text(f"\u2705 {label} blokdan chiqarildi va unga xabar yuborildi.")
+    else:
+        await update.message.reply_text(f"{label} bloklanmagan.")
+
+
+async def cmd_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    limit = 30
+    rows = db.list_blocked(limit)
+    if not rows:
+        await update.message.reply_text("Bloklangan foydalanuvchi yo'q.")
+        return
+    total = db.count_blocked()
+    lines = []
+    for i, row in enumerate(rows, 1):
+        when = datetime.fromtimestamp(row["blocked_at"], TASHKENT_TZ).strftime("%d.%m.%Y") if row.get("blocked_at") else "?"
+        label = format_user_label(row["user_id"], row.get("username"), row.get("full_name"))
+        lines.append(f"{i}. {label} — {row.get('reason') or 'sababsiz'} ({when})")
+    text = f"\U0001F6AB Bloklanganlar ({total} ta):\n\n" + "\n".join(lines)
+    if total > len(rows):
+        text += f"\n\n... va yana {total - len(rows)} ta (eng oxirgi {limit} tasi ko'rsatildi)"
+    await update.message.reply_text(text)
+
+
+async def _begin_appeal(bot, user_id: int):
+    """Bloklangan foydalanuvchi "Izoh qoldirish"ni bosdi."""
+    used = db.count_recent_appeals(user_id, time.time() - 24 * 3600)
+    if used >= APPEAL_MAX_PER_DAY:
+        await _try_send(
+            bot, user_id,
+            f"Siz oxirgi 24 soat ichida {used} marta izoh qoldirgansiz. Keyinroq qayta urinib ko'ring.",
+        )
+        return
+    pending_appeal[user_id] = time.time()
+    await _try_send(
+        bot, user_id,
+        "\u270D\uFE0F Izohingizni bitta xabar qilib yuboring (ko'pi bilan "
+        f"{APPEAL_MAX_LENGTH} belgi). Nima uchun bu xato deb o'ylayotganingizni yozing.\n"
+        "Bekor qilish: /cancel",
+    )
+
+
+async def _submit_appeal(bot, user, block: dict, text: str):
+    """Izohni adminga yuboradi (blokdan chiqarish tugmasi bilan) va foydalanuvchiga tasdiq beradi."""
+    label = format_user_label(user.id, user.username, user.full_name)
+    admin_text = (
+        "\U0001F4E9 Bloklangan foydalanuvchidan izoh\n\n"
+        f"Kimdan: {label}\n"
+        f"Bloklash sababi: {block.get('reason') or '—'}\n\n"
+        f"Izoh:\n{text}"
+    )
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("\u2705 Blokdan chiqarish", callback_data=f"unblock:{user.id}")]]
+    )
+    delivered = bool(ADMIN_ID) and await _try_send(bot, ADMIN_ID, admin_text, markup)
+    if not delivered:
+        await _try_send(
+            bot, user.id,
+            "Hozir izohingizni adminga yetkazib bo'lmadi. Keyinroq qayta urinib ko'ring.",
+        )
+        return
+    db.add_appeal(user.id, text)
+    pending_appeal.pop(user.id, None)
+    await _try_send(
+        bot, user.id,
+        "\u2705 Izohingiz adminga yuborildi. Qaror qabul qilinsa, sizga xabar beriladi.",
+    )
+
+
+async def handle_blocked_update(update: Update, context: ContextTypes.DEFAULT_TYPE, block: dict):
+    user = update.effective_user
+    now = time.time()
+    query = update.callback_query
+
+    if query is not None:
+        if query.data == "appeal_start":
+            await query.answer()
+            await _begin_appeal(context.bot, user.id)
+        else:
+            await query.answer("\U0001F6AB Siz bloklangansiz.", show_alert=True)
+        return
+
+    message = update.message
+    text = (message.text or "").strip()
+
+    started = pending_appeal.get(user.id)
+    if started is not None and now - started > APPEAL_PENDING_TTL_SECONDS:
+        pending_appeal.pop(user.id, None)
+        started = None
+
+    if started is not None:
+        if text.startswith("/cancel"):
+            pending_appeal.pop(user.id, None)
+            await message.reply_text("Bekor qilindi.")
+            return
+        if text and not text.startswith("/"):
+            if len(text) > APPEAL_MAX_LENGTH:
+                await message.reply_text(
+                    f"Izoh juda uzun ({len(text)} belgi). Ko'pi bilan {APPEAL_MAX_LENGTH} belgi — qisqaroq yozing."
+                )
+                return
+            await _submit_appeal(context.bot, user, block, text)
+            return
+
+    # Oddiy xabar/buyruq: bloklangani haqida eslatma (bot spamga aylanmasligi uchun
+    # bir foydalanuvchiga daqiqada ko'pi bilan bitta)
+    if now - _last_block_notice.get(user.id, 0.0) < BLOCK_NOTICE_COOLDOWN_SECONDS:
+        return
+    _last_block_notice[user.id] = now
+    notice, markup = build_block_notice(block.get("reason") or "")
+    await message.reply_text(notice, reply_markup=markup)
+
+
+async def block_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Eng birinchi (group -2) handler: bot bilan to'g'ridan-to'g'ri muloqot
+    (xabar yoki tugma) qilayotgan bloklangan foydalanuvchini ushlab qoladi va
+    boshqa hech bir handlerga o'tkazmaydi. business_message (mijozlarning
+    xabarlari) bu yerda e'tiborga olinmaydi — ular bot foydalanuvchisi emas."""
+    if update.message is None and update.callback_query is None:
+        return
+    user = update.effective_user
+    if user is None or user.id == ADMIN_ID:
+        return
+    block = db.get_block(user.id)
+    if block is None:
+        return
+    await handle_blocked_update(update, context, block)
+    raise ApplicationHandlerStop
+
+
+# ---------------------------------------------------------------------------
 # Business connection va business message (asosiy avtojavob logikasi)
 # ---------------------------------------------------------------------------
 async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1097,6 +1427,10 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         owner_id = connection["owner_user_id"]
 
+        # Admin tomonidan bloklangan foydalanuvchining akkountiga avtojavob berilmaydi.
+        if connection.get("is_blocked"):
+            return
+
         # Bu SIZNING (akkaunt egasining) o'zi yozgan xabari — botlarga emas,
         # mijozlarga javob berishimiz kerak, shuning uchun o'tkazib yuboramiz.
         if bm.from_user and bm.from_user.id == owner_id:
@@ -1149,19 +1483,34 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("reklama", cmd_reklama))
-    app.add_handler(CommandHandler("reklama_status", cmd_reklama_status))
-    app.add_handler(CommandHandler("reklama_retry", cmd_reklama_retry))
-    app.add_handler(CommandHandler("cancel", cmd_cancel))
+
+    # Faqat oddiy `message` yangilanishlari (bot bilan shaxsiy chat): business_message
+    # (mijozlarning xabarlari), tahrirlangan xabarlar va kanal postlari handlerlarga
+    # tushmasligi uchun. Aks holda har bir mijoz "foydalanuvchi" bo'lib bazaga yozilib,
+    # reklama ro'yxatiga kirib qolardi.
+    only_messages = filters.UpdateType.MESSAGE
+
+    # Bloklangan foydalanuvchini eng birinchi to'xtatadi (qolgan hamma handlerdan oldin)
+    app.add_handler(TypeHandler(Update, block_gate), group=-2)
+
+    app.add_handler(CommandHandler("start", cmd_start, filters=only_messages))
+    app.add_handler(CommandHandler("help", cmd_help, filters=only_messages))
+    app.add_handler(CommandHandler("stats", cmd_stats, filters=only_messages))
+    app.add_handler(CommandHandler("block", cmd_block, filters=only_messages))
+    app.add_handler(CommandHandler("unblock", cmd_unblock, filters=only_messages))
+    app.add_handler(CommandHandler("blocked", cmd_blocked, filters=only_messages))
+    app.add_handler(CommandHandler("reklama", cmd_reklama, filters=only_messages))
+    app.add_handler(CommandHandler("reklama_status", cmd_reklama_status, filters=only_messages))
+    app.add_handler(CommandHandler("reklama_retry", cmd_reklama_retry, filters=only_messages))
+    app.add_handler(CommandHandler("cancel", cmd_cancel, filters=only_messages))
     app.add_handler(CallbackQueryHandler(on_button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & only_messages, on_text))
     # Admin /reklama oqimi — istalgan turdagi xabarni ushlab qolish uchun alohida,
     # ustuvor guruhda (boshqa handler'larga to'sqinlik qilmaydi, chunki guruhlar
     # bir-biridan mustaqil ishlaydi).
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_admin_broadcast_content), group=-1)
+    app.add_handler(
+        MessageHandler(filters.ALL & ~filters.COMMAND & only_messages, on_admin_broadcast_content), group=-1
+    )
     # Alohida guruhda — business_connection/business_message'larni hech narsaga
     # to'sqinlik qilmasdan tinglaydi.
     app.add_handler(TypeHandler(Update, on_raw_update), group=1)
