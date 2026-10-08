@@ -50,7 +50,7 @@ class TestHelpCommand(unittest.TestCase):
         text = update.message.reply_text.call_args[0][0]
         self.assertIn("/start", text)
         self.assertIn("/help", text)
-        for admin_cmd in ("/stats", "/reklama", "/reklama_retry"):
+        for admin_cmd in ("/stats", "/reklama", "/reklama_retry", "/block", "/unblock", "/blocked"):
             self.assertNotIn(admin_cmd, text)
 
     def test_admin_also_sees_admin_commands(self):
@@ -59,7 +59,10 @@ class TestHelpCommand(unittest.TestCase):
             asyncio.run(bot.cmd_help(update, MagicMock()))
 
         text = update.message.reply_text.call_args[0][0]
-        for cmd in ("/start", "/help", "/stats", "/reklama", "/reklama_status", "/reklama_retry", "/cancel"):
+        for cmd in (
+            "/start", "/help", "/stats", "/reklama", "/reklama_status", "/reklama_retry", "/cancel",
+            "/block", "/unblock", "/blocked",
+        ):
             self.assertIn(cmd, text)
 
     def test_unconfigured_admin_id_zero_never_matches_a_user(self):
