@@ -11,7 +11,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -108,14 +108,11 @@ class TestBotHandlesLockGracefully(unittest.TestCase):
         update.effective_message.message_id = 999
         return update
 
-    def test_on_admin_broadcast_content_handles_race_at_db_level(self):
-        """Ikkala pre-check ("running yo'q") muvaffaqiyatli o'tgan bo'lsa
-        ham (poyga holati simulyatsiyasi), create_broadcast_job() bazada
-        UniqueViolation'ga uchrasa — bot crash qilmasligi, foydalanuvchiga
-        tushunarli xabar berishi SHART."""
-        update = self._fake_update()
-        context = AsyncMock()
-        bot.pending_admin_action[bot.ADMIN_ID] = "broadcast"
+    def test_start_broadcast_handles_race_at_db_level(self):
+        """Pre-check "running yo'q" deb o'tgan bo'lsa ham, create_broadcast_job()
+        bazada UniqueViolation'ga uchrasa — bot crash qilmasligi, adminga
+        tushunarli xabar berishi SHART. (Job endi tasdiq tugmasi bosilganda,
+        start_broadcast() ichida yaratiladi.)"""
 
         def fake_create_job(*args, **kwargs):
             raise db.BroadcastAlreadyRunningError("boshqa job allaqachon running")
@@ -123,13 +120,9 @@ class TestBotHandlesLockGracefully(unittest.TestCase):
         with patch.object(db, "get_running_broadcast_jobs", return_value=[]), patch.object(
             db, "get_user_count", return_value=100
         ), patch.object(db, "create_broadcast_job", side_effect=fake_create_job):
-            # Hech qanday exception chiqmasligi kerak — shu o'zi asosiy tekshiruv
-            asyncio.run(bot.on_admin_broadcast_content(update, context))
+            result = asyncio.run(bot.start_broadcast(AsyncMock(), 555, 999))
 
-        self.assertNotIn(bot.ADMIN_ID, bot.pending_admin_action)
-        update.effective_message.reply_text.assert_called()
-        last_text = update.effective_message.reply_text.call_args[0][0]
-        self.assertIn("ishga tushib ulgurdi", last_text)
+        self.assertIn("ishga tushib ulgurdi", result)
 
     def test_cmd_reklama_retry_completed_branch_handles_race_at_db_level(self):
         old_job = {
