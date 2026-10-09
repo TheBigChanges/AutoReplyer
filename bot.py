@@ -100,6 +100,68 @@ pending_settings_action: dict[int, str] = {}
 # owner_user_id -> "broadcast"  (admin /reklama oqimida)
 pending_admin_action: dict[int, str] = {}
 
+# Tugallanmagan amal (masalan "yangi matn yuboring") shuncha vaqtdan keyin o'z-o'zidan
+# bekor bo'ladi — aks holda foydalanuvchining keyingi har qanday xabari tasodifan
+# avtojavob matniga aylanib qolardi.
+PENDING_ACTION_TTL_SECONDS = 10 * 60
+_pending_settings_set_at: dict[int, float] = {}
+_pending_admin_set_at: dict[int, float] = {}
+
+
+def set_pending_action(user_id: int, action: str):
+    pending_settings_action[user_id] = action
+    _pending_settings_set_at[user_id] = time.time()
+
+
+def clear_pending_action(user_id: int) -> bool:
+    """Tugallanmagan panel amalini bekor qiladi. True — haqiqatan nimadir bekor qilindi."""
+    _pending_settings_set_at.pop(user_id, None)
+    return pending_settings_action.pop(user_id, None) is not None
+
+
+def get_pending_action(user_id: int) -> str | None:
+    action = pending_settings_action.get(user_id)
+    if action is None:
+        return None
+    started = _pending_settings_set_at.get(user_id)
+    if started is not None and time.time() - started > PENDING_ACTION_TTL_SECONDS:
+        clear_pending_action(user_id)
+        return None
+    return action
+
+
+def set_pending_admin_action(user_id: int, action: str):
+    pending_admin_action[user_id] = action
+    _pending_admin_set_at[user_id] = time.time()
+
+
+def clear_pending_admin_action(user_id: int) -> bool:
+    _pending_admin_set_at.pop(user_id, None)
+    return pending_admin_action.pop(user_id, None) is not None
+
+
+def get_pending_admin_action(user_id: int) -> str | None:
+    action = pending_admin_action.get(user_id)
+    if action is None:
+        return None
+    started = _pending_admin_set_at.get(user_id)
+    if started is not None and time.time() - started > PENDING_ACTION_TTL_SECONDS:
+        clear_pending_admin_action(user_id)
+        return None
+    return action
+
+
+# Fonda ishlaydigan vazifalarga (reklama) kuchli havola: aks holda event loop ularga
+# faqat zaif havola saqlaydi va Python vazifani ish o'rtasida yig'ishtirib yuborishi mumkin.
+_background_tasks: set = set()
+
+
+def spawn_background(coro):
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 def track_user(user):
     """Foydalanuvchini (va uning username/ismini) bazaga yozadi. Username
@@ -224,12 +286,45 @@ async def is_subscribed(bot, user_id: int) -> bool:
         return True
 
 
-def build_subscribe_gate_markup():
+def build_subscribe_gate_markup(inviter_id: int | None = None):
+    # Taklif qilgan odamning ID'si tugma ichida (callback_data) olib yuriladi: shunda
+    # foydalanuvchi obuna bo'lib "Tekshirish"ni bosganda referal yo'qolmaydi
+    # (holat RAM'da emas — server restart bo'lsa ham saqlanadi). Limit 64 bayt.
+    check_data = f"check_subscription:{inviter_id}" if inviter_id else "check_subscription"
     keyboard = [
         [InlineKeyboardButton("\U0001F4E2 Kanalga o'tish", url=REQUIRED_CHANNEL_LINK)],
-        [InlineKeyboardButton("\u2705 Tekshirish", callback_data="check_subscription")],
+        [InlineKeyboardButton("\u2705 Tekshirish", callback_data=check_data)],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+
+def parse_referral_arg(args) -> int | None:
+    """/start ref_123 -> 123 (noto'g'ri bo'lsa None)."""
+    if not args:
+        return None
+    arg = args[0]
+    if not arg.startswith("ref_"):
+        return None
+    try:
+        inviter_id = int(arg[4:])
+    except ValueError:
+        return None
+    return inviter_id if inviter_id > 0 else None
+
+
+async def process_referral(bot, owner_id: int, inviter_id: int | None):
+    """Referalni yozadi va taklif qilgan odamga xabar beradi (faqat yangi bo'lsa)."""
+    if not inviter_id:
+        return
+    if not db.record_referral(referred_user_id=owner_id, inviter_user_id=inviter_id):
+        return
+    try:
+        await bot.send_message(
+            chat_id=inviter_id,
+            text="\U0001F389 Sizning havolangiz orqali yangi odam botga qo'shildi!",
+        )
+    except TelegramError as e:
+        logger.info("Referral bildirishnomasi yuborilmadi (inviter=%s): %s", inviter_id, e)
 
 
 SUBSCRIBE_GATE_TEXT = (
@@ -411,26 +506,18 @@ def build_bio_menu(owner_id: int):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     track_user(update.effective_user)
+    clear_pending_action(owner_id)  # /start har doim tugallanmagan amalni tozalaydi
+
+    inviter_id = parse_referral_arg(context.args)
 
     if not await is_subscribed(context.bot, owner_id):
-        await update.message.reply_text(SUBSCRIBE_GATE_TEXT, reply_markup=build_subscribe_gate_markup())
+        # Referal obuna bo'lgandan KEYIN hisoblanadi (tugma orqali olib o'tiladi)
+        await update.message.reply_text(
+            SUBSCRIBE_GATE_TEXT, reply_markup=build_subscribe_gate_markup(inviter_id)
+        )
         return
 
-    if context.args:
-        arg = context.args[0]
-        if arg.startswith("ref_"):
-            try:
-                inviter_id = int(arg[4:])
-            except ValueError:
-                inviter_id = None
-            if inviter_id and db.record_referral(referred_user_id=owner_id, inviter_user_id=inviter_id):
-                try:
-                    await context.bot.send_message(
-                        chat_id=inviter_id,
-                        text="\U0001F389 Sizning havolangiz orqali yangi odam botga qo'shildi!",
-                    )
-                except TelegramError as e:
-                    logger.info("Referral bildirishnomasi yuborilmadi (inviter=%s): %s", inviter_id, e)
+    await process_referral(context.bot, owner_id, inviter_id)
 
     greeting, markup = build_start_view(owner_id)
     await update.message.reply_text(greeting, reply_markup=markup)
@@ -456,7 +543,7 @@ ADMIN_HELP_TEXT = (
     "/block @username [sabab] — foydalanuvchini bloklash (yoki /block 123456789)\n"
     "/unblock @username — blokdan chiqarish\n"
     "/blocked — bloklanganlar ro'yxati\n"
-    "/reklama — barcha foydalanuvchilarga xabar yuborish\n"
+    "/reklama — barcha foydalanuvchilarga xabar yuborish (yuborishdan oldin tasdiqlanadi)\n"
     "/reklama_status — oxirgi reklama holati\n"
     "/reklama_retry — oxirgi reklamani qayta urinish\n"
     "/cancel — joriy admin amalini bekor qilish"
@@ -484,9 +571,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # matnli/alert bilan javob beradigan shoxlar umumiy `query.answer()`
     # dan OLDIN, har biri o'zi bir marta javob berib, tugaydi. Qolgan hamma
     # tugmalar uchun pastdagi umumiy answer() chaqiriladi.
-    if data == "check_subscription":
+    if data == "check_subscription" or data.startswith("check_subscription:"):
         if await is_subscribed(context.bot, owner_id):
             await query.answer("\u2705 Obuna tasdiqlandi!")
+            inviter_id = None
+            if ":" in data:
+                try:
+                    inviter_id = int(data.split(":", 1)[1])
+                except ValueError:
+                    inviter_id = None
+            await process_referral(context.bot, owner_id, inviter_id)
             greeting, markup = build_start_view(owner_id)
             await query.edit_message_text(greeting, reply_markup=markup)
         else:
@@ -498,6 +592,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "admin_referrals" and owner_id != ADMIN_ID:
         await query.answer("Ruxsat yo'q.", show_alert=True)
+        return
+
+    if data == "bc_cancel" or data.startswith("bc_confirm:"):
+        await handle_broadcast_confirmation(query, context, data)
         return
 
     if data == "appeal_start":
@@ -532,6 +630,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
 
+    # Har qanday boshqa tugma bosilsa, oldingi tugallanmagan amal (masalan "yangi matn
+    # yuboring") bekor bo'ladi; yangi amal boshlaydigan tugmalar pastda uni qayta o'rnatadi.
+    clear_pending_action(owner_id)
+
     if data == "how_connect":
         await query.edit_message_text(HOW_CONNECT_TEXT, reply_markup=main_menu_markup(owner_id))
         return
@@ -564,7 +666,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_settings(owner_id, offline=not s["offline"])
 
     elif data == "edit_cooldown":
-        pending_settings_action[owner_id] = "cooldown"
+        set_pending_action(owner_id, "cooldown")
         await query.message.reply_text(
             "Yangi cooldown qiymatini yuboring. Masalan:\n"
             "\u2022 2 soat 30 daqiqa\n"
@@ -576,7 +678,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "edit_text":
-        pending_settings_action[owner_id] = "text"
+        set_pending_action(owner_id, "text")
         await query.message.reply_text("Yangi avtojavob matnini yuboring:")
         return
 
@@ -605,7 +707,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += f"\n\n\u26A0\uFE0F BIO yangilanmadi: {info}"
             await query.edit_message_text(text, reply_markup=markup)
         else:
-            pending_settings_action[owner_id] = "birthday_date"
+            set_pending_action(owner_id, "birthday_date")
             await query.message.reply_text(
                 "Tug'ilgan kuningizni kun.oy formatida yuboring (masalan: 15.03 — 15-mart):"
             )
@@ -630,14 +732,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "sleep_edit_time":
-        pending_settings_action[owner_id] = "sleep_time"
+        set_pending_action(owner_id, "sleep_time")
         await query.message.reply_text(
             "Uxlash vaqt oralig'ini yuboring (masalan: 23:00-07:00):"
         )
         return
 
     if data == "sleep_edit_text":
-        pending_settings_action[owner_id] = "sleep_text"
+        set_pending_action(owner_id, "sleep_text")
         await query.message.reply_text("Uxlash vaqtida yuboriladigan xabarni kiriting:")
         return
 
@@ -648,7 +750,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     track_user(update.effective_user)
-    action = pending_settings_action.get(owner_id)
+    action = get_pending_action(owner_id)
     if action is None:
         return  # panelga aloqasi yo'q oddiy xabar
 
@@ -677,7 +779,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         month, day = parsed
         db.update_settings(owner_id, birthday_month=month, birthday_day=day, bio_countdown_target="birthday")
         ok, info = await apply_bio_update(context.bot, owner_id)
-        pending_settings_action.pop(owner_id, None)
+        clear_pending_action(owner_id)
         text, markup = build_bio_menu(owner_id)
         if not ok:
             text += f"\n\n\u26A0\uFE0F BIO yangilanmadi: {info}"
@@ -694,7 +796,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         start_minutes, end_minutes = parsed
         db.update_settings(owner_id, sleep_start_minutes=start_minutes, sleep_end_minutes=end_minutes)
-        pending_settings_action.pop(owner_id, None)
+        clear_pending_action(owner_id)
         text, markup = build_sleep_menu(owner_id)
         await update.message.reply_text("Saqlandi.")
         await update.message.reply_text(text, reply_markup=markup)
@@ -702,13 +804,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "sleep_text":
         db.update_settings(owner_id, sleep_reply_text=value)
-        pending_settings_action.pop(owner_id, None)
+        clear_pending_action(owner_id)
         text, markup = build_sleep_menu(owner_id)
         await update.message.reply_text("Saqlandi.")
         await update.message.reply_text(text, reply_markup=markup)
         return
 
-    pending_settings_action.pop(owner_id, None)
+    clear_pending_action(owner_id)
     text, markup = build_panel(owner_id)
     await update.message.reply_text("Yangilandi.")
     await update.message.reply_text(text, reply_markup=markup)
@@ -737,18 +839,22 @@ def _get_running_broadcast_job():
     return jobs[0] if jobs else None
 
 
+def _running_warning_text(running: dict) -> str:
+    return (
+        f"\u26A0\uFE0F Hozir allaqachon reklama job#{running['id']} ishlamoqda "
+        f"({running['sent_count']}/{running['total_count']} yuborildi).\n"
+        "Bir vaqtda ikkita reklama yuborilib, xabar takrorlanib ketmasligi uchun "
+        "avval shu tugashini kuting (/reklama_status bilan tekshiring)."
+    )
+
+
 async def _reject_if_broadcast_already_running(reply_target) -> bool:
     """True qaytarsa — demak allaqachon reklama ishlamoqda va chaqiruvchi
     yangi job boshlamasligi kerak (xabar reply_target orqali yuboriladi)."""
     running = _get_running_broadcast_job()
     if running is None:
         return False
-    await reply_target.reply_text(
-        f"\u26A0\uFE0F Hozir allaqachon reklama job#{running['id']} ishlamoqda "
-        f"({running['sent_count']}/{running['total_count']} yuborildi).\n"
-        "Bir vaqtda ikkita reklama yuborilib, xabar takrorlanib ketmasligi uchun "
-        "avval shu tugashini kuting (/reklama_status bilan tekshiring)."
-    )
+    await reply_target.reply_text(_running_warning_text(running))
     return True
 
 
@@ -757,17 +863,20 @@ async def cmd_reklama(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await _reject_if_broadcast_already_running(update.message):
         return
-    pending_admin_action[update.effective_user.id] = "broadcast"
+    set_pending_admin_action(update.effective_user.id, "broadcast")
     await update.message.reply_text(
         "Reklama sifatida barcha foydalanuvchilarga yuboriladigan xabarni yuboring "
-        "(matn, rasm, video — istalgan turda mumkin).\n"
+        "(matn, rasm, video — istalgan turda mumkin). 10 daqiqa ichida yuboring.\n"
+        "Yuborishdan oldin sizdan tasdiq so'raladi.\n"
         "Bekor qilish uchun /cancel yozing."
     )
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
-    if pending_admin_action.pop(owner_id, None):
+    cleared_admin = clear_pending_admin_action(owner_id)
+    cleared_panel = clear_pending_action(owner_id)
+    if cleared_admin or cleared_panel:
         await update.message.reply_text("Bekor qilindi.")
 
 
@@ -814,7 +923,7 @@ async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Job#{job['id']} qolgan joydan (user_id > {job['last_user_id']}) davom ettirilmoqda..."
         )
-        asyncio.create_task(
+        spawn_background(
             run_broadcast_job(
                 context.bot, job["id"], job["source_chat_id"], job["source_message_id"],
                 reply_to_chat_id=update.effective_chat.id,
@@ -849,7 +958,7 @@ async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(f"{len(failed_ids)} ta foydalanuvchiga qayta urinilmoqda...")
-    asyncio.create_task(
+    spawn_background(
         run_broadcast_job(
             context.bot, new_job_id, job["source_chat_id"], job["source_message_id"],
             reply_to_chat_id=update.effective_chat.id, retry_of_job_id=job["id"],
@@ -858,47 +967,107 @@ async def cmd_reklama_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin /reklama bosgandan keyin yuborgan XOHLAGAN turdagi xabarni ushlab,
-    job sifatida bazaga yozadi va yuborishni FONDA (background task) boshlaydi —
-    shu bilan buyruqning o'zi darhol qaytadi va katta ro'yxatlarda ham botni
-    "qotirib" qo'ymaydi."""
+    """Admin /reklama bosgandan keyin yuborgan XOHLAGAN turdagi xabarni ushlaydi,
+    lekin darhol YUBORMAYDI: avval "Yuborilsinmi?" deb tasdiq so'raydi. Sabab:
+    admin /reklama bosib, keyin fikridan qaytib oddiy xabar yozib yuborsa, u
+    tasodifan hammaga ketib qolmasligi kerak. Yuborish tasdiqlash tugmasi
+    bosilganda (handle_broadcast_confirmation) boshlanadi."""
     if update.effective_user is None or update.effective_message is None:
         return
     owner_id = update.effective_user.id
-    if owner_id != ADMIN_ID or pending_admin_action.get(owner_id) != "broadcast":
+    if owner_id != ADMIN_ID or get_pending_admin_action(owner_id) != "broadcast":
         return
 
-    pending_admin_action.pop(owner_id, None)
+    clear_pending_admin_action(owner_id)
 
-    # Tezkor (UX) tekshiruv — aksariyat holatlarda shu yerda to'xtaydi,
-    # admin xabar yozib o'tirmasdan oldinroq bilib qoladi.
+    # Tezkor (UX) tekshiruv: allaqachon reklama ketayotgan bo'lsa, tasdiq so'ramaymiz
     if await _reject_if_broadcast_already_running(update.effective_message):
         return
 
-    source_chat_id = update.effective_chat.id
-    source_message_id = update.effective_message.message_id
+    message = update.effective_message
+    total = db.get_user_count(exclude_blocked=True)
+    markup = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("\u2705 Yuborish", callback_data=f"bc_confirm:{message.message_id}"),
+            InlineKeyboardButton("\u274C Bekor qilish", callback_data="bc_cancel"),
+        ]]
+    )
+    await message.reply_text(
+        f"\U0001F4E3 Yuqoridagi xabar {total} ta foydalanuvchiga yuboriladi.\n\n"
+        f"Tasdiqlaysizmi? Tugmalar {BROADCAST_CONFIRM_TTL_SECONDS // 60} daqiqa amal qiladi.",
+        reply_markup=markup,
+    )
+
+
+BROADCAST_CONFIRM_TTL_SECONDS = 10 * 60
+
+
+async def start_broadcast(bot, source_chat_id: int, source_message_id: int) -> str:
+    """Reklama job'ini yaratib, yuborishni FONDA boshlaydi. Admin uchun natija matnini
+    qaytaradi (muvaffaqiyat yoki nima uchun boshlanmagani)."""
+    running = _get_running_broadcast_job()
+    if running is not None:
+        return _running_warning_text(running)
+
     total = db.get_user_count(exclude_blocked=True)
 
-    # Haqiqiy, atomik kafolat shu yerda: create_broadcast_job() bazadagi
-    # partial unique index'ga tiraladi. Ikkita so'rov deyarli bir vaqtda
-    # kelib, yuqoridagi tekshiruvning ikkalasi ham "running yo'q" deb
-    # ko'rsatib ulgursa ham (klassik TOCTOU poyga holati), faqat BITTASI
-    # haqiqatan INSERT qila oladi — ikkinchisi shu yerda ushlanadi.
+    # Haqiqiy, atomik kafolat shu yerda: create_broadcast_job() bazadagi partial
+    # unique index'ga tiraladi. Ikkita so'rov deyarli bir vaqtda kelib, yuqoridagi
+    # tekshiruvning ikkalasi ham "running yo'q" deb ko'rsatib ulgursa ham (klassik
+    # TOCTOU poyga holati), faqat BITTASI haqiqatan INSERT qila oladi.
     try:
         job_id = db.create_broadcast_job(source_chat_id, source_message_id, total)
     except db.BroadcastAlreadyRunningError:
-        await update.effective_message.reply_text(
-            "\u26A0\uFE0F Boshqa reklama shu orada ishga tushib ulgurdi. /reklama_status bilan tekshiring."
-        )
-        return
+        return "\u26A0\uFE0F Boshqa reklama shu orada ishga tushib ulgurdi. /reklama_status bilan tekshiring."
 
-    await update.effective_message.reply_text(
+    spawn_background(
+        run_broadcast_job(bot, job_id, source_chat_id, source_message_id, reply_to_chat_id=source_chat_id)
+    )
+    return (
         f"\U0001F4E4 Reklama fonda yuborilmoqda ({total} ta foydalanuvchiga).\n"
         "Progressni /reklama_status bilan tekshirishingiz mumkin."
     )
-    asyncio.create_task(
-        run_broadcast_job(context.bot, job_id, source_chat_id, source_message_id, reply_to_chat_id=source_chat_id)
-    )
+
+
+async def handle_broadcast_confirmation(query, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """'bc_confirm:<message_id>' va 'bc_cancel' tugmalari. Har bir shoxda query.answer()
+    aniq BIR marta chaqiriladi. Muddat tasdiq xabarining o'z vaqtidan olinadi
+    (RAM'da emas), shuning uchun server restart bo'lsa ham to'g'ri ishlaydi."""
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Ruxsat yo'q.", show_alert=True)
+        return
+
+    original = getattr(query.message, "text", None) or ""
+
+    async def finish(suffix: str):
+        # Xabarni yangilaydi (tugmalar ham yo'qoladi — ikki marta bosib bo'lmaydi)
+        try:
+            await query.edit_message_text(f"{original}\n\n{suffix}")
+        except TelegramError as e:
+            logger.info("Tasdiq xabarini yangilab bo'lmadi: %s", e)
+
+    if data == "bc_cancel":
+        await query.answer("Bekor qilindi.")
+        await finish("\u274C Bekor qilindi. Reklama yuborilmadi.")
+        return
+
+    try:
+        source_message_id = int(data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.answer("Noto'g'ri tugma.", show_alert=True)
+        return
+
+    sent_at = getattr(query.message, "date", None)
+    if sent_at is None or time.time() - sent_at.timestamp() > BROADCAST_CONFIRM_TTL_SECONDS:
+        await query.answer(
+            "Tasdiqlash muddati o'tdi. /reklama bilan qaytadan boshlang.", show_alert=True
+        )
+        await finish("\u231B Muddati o'tdi. Reklama yuborilmadi.")
+        return
+
+    await query.answer()
+    result = await start_broadcast(context.bot, query.message.chat_id, source_message_id)
+    await finish(result)
 
 
 async def run_broadcast_job(
@@ -1047,7 +1216,7 @@ async def resume_pending_broadcasts(app: Application):
     jobs = db.get_running_broadcast_jobs()
     for job in jobs:
         logger.info("Tugallanmagan reklama job#%d topildi — davom ettirilmoqda", job["id"])
-        asyncio.create_task(
+        spawn_background(
             run_broadcast_job(
                 app.bot,
                 job["id"],
@@ -1176,7 +1345,7 @@ async def cmd_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Eski, tugallanmagan panel amallari qolib ketmasligi uchun
-    pending_settings_action.pop(target_id, None)
+    clear_pending_action(target_id)
     pending_appeal.pop(target_id, None)
     _last_block_notice.pop(target_id, None)
 
