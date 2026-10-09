@@ -313,8 +313,9 @@ class TestConcurrentBroadcastGuard(unittest.TestCase):
         warning_text = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("10", warning_text)
 
-    def test_on_admin_broadcast_content_proceeds_when_nothing_running(self):
-        """Hech narsa ishlamayotganda — odatdagidek job yaratilishi kerak."""
+    def test_on_admin_broadcast_content_asks_for_confirmation_instead_of_sending(self):
+        """Hech narsa ishlamayotganda ham job DARHOL yaratilmaydi: avval admindan
+        tasdiq so'raladi. Job yaratilishi tasdiq tugmasi bosilganda."""
         create_calls = []
 
         def fake_create_job(*args, **kwargs):
@@ -334,7 +335,11 @@ class TestConcurrentBroadcastGuard(unittest.TestCase):
         ), patch.object(db, "get_user_count", return_value=1000), patch("bot.run_broadcast_job", new=AsyncMock()):
             asyncio.run(scenario())
 
-        self.assertEqual(len(create_calls), 1)
+        self.assertEqual(create_calls, [], "tasdiqsiz job yaratilmasligi SHART")
+        _, kwargs = update.effective_message.reply_text.call_args
+        buttons = [b.callback_data for b in kwargs["reply_markup"].inline_keyboard[0]]
+        self.assertEqual(buttons, ["bc_confirm:999", "bc_cancel"])
+        self.assertIn("1000", update.effective_message.reply_text.call_args[0][0])
 
     def test_cmd_reklama_refuses_early_when_job_already_running(self):
         """/reklama buyrug'ining o'zi ham erta ogohlantirishi kerak
