@@ -211,6 +211,20 @@ def init_db():
             )
             """
         )
+        # "Fikr/taklif" — foydalanuvchilardan adminga kelgan xabarlar (spamga qarshi limit uchun)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_messages (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                message TEXT NOT NULL,
+                created_at DOUBLE PRECISION
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback_messages (user_id, created_at)"
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS block_appeals (
@@ -885,6 +899,24 @@ def count_recent_appeals(user_id: int, since_ts: float) -> int:
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT COUNT(*) FROM block_appeals WHERE user_id = %s AND created_at >= %s",
+            (user_id, since_ts),
+        )
+        return cur.fetchone()[0]
+
+
+def add_feedback(user_id: int, message: str) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO feedback_messages (user_id, message, created_at) VALUES (%s, %s, %s) RETURNING id",
+            (user_id, message, time.time()),
+        )
+        return cur.fetchone()[0]
+
+
+def count_recent_feedback(user_id: int, since_ts: float) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM feedback_messages WHERE user_id = %s AND created_at >= %s",
             (user_id, since_ts),
         )
         return cur.fetchone()[0]
