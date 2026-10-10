@@ -167,8 +167,8 @@ def spawn_background(coro):
 def track_user(user):
     """Foydalanuvchini (va uning username/ismini) bazaga yozadi. Username
     saqlanishi sababli admin /block @username bilan odamni topa oladi."""
-    if user is None:
-        return
+    if user is None or getattr(user, "is_bot", False):
+        return  # botlar "foydalanuvchi" emas: ro'yxat, /stats va reklamaga kirmasin
     db.record_user(user.id, username=user.username, full_name=user.full_name)
 
 HOW_CONNECT_TEXT = (
@@ -542,6 +542,7 @@ ADMIN_HELP_TEXT = (
     "\n\n\U0001F510 Admin buyruqlari:\n"
     "/stats — foydalanuvchilar soni\n"
     "/users — botga start bosgan barcha foydalanuvchilar ro'yxati\n"
+    "/bots — bazaga tushib qolgan botlarni topish va tozalash\n"
     "/block @username [sabab] — foydalanuvchini bloklash (yoki /block 123456789)\n"
     "/unblock @username — blokdan chiqarish\n"
     "/blocked — bloklanganlar ro'yxati\n"
@@ -590,6 +591,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "\u274C Siz hali kanalga obuna bo'lmagansiz. Avval obuna bo'lib, keyin qayta bosing.",
                 show_alert=True,
             )
+        return
+
+    if data.startswith("rmbots:"):
+        await handle_rmbots(query, context, data)
         return
 
     if data.startswith("users:"):
@@ -1559,6 +1564,46 @@ async def handle_users_page(query, context: ContextTypes.DEFAULT_TYPE, data: str
         logger.info("/users sahifasi yangilanmadi: %s", e)
 
 
+async def cmd_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    rows = db.list_bot_like_users(50)
+    if not rows:
+        await update.message.reply_text("Bazada bot-ga o'xshash yozuv topilmadi.")
+        return
+    lines = [
+        f"{i}. {html.escape(format_user_label(r['user_id'], r.get('username'), _short(r.get('full_name'))))}"
+        for i, r in enumerate(rows, 1)
+    ]
+    text = (
+        f"\U0001F916 Username'i \"bot\" bilan tugaydigan yozuvlar ({len(rows)} ta):\n\n"
+        + "\n".join(lines)
+        + "\n\nBular bazadan o'chirilsinmi? (Odam ham username'ini shunday qo'ygan bo'lishi mumkin — ro'yxatni tekshiring.)"
+    )
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("\U0001F5D1 Hammasini o'chirish", callback_data="rmbots:yes"),
+          InlineKeyboardButton("Bekor qilish", callback_data="rmbots:no")]]
+    )
+    await update.message.reply_text(text, reply_markup=markup)
+
+
+async def handle_rmbots(query, context: ContextTypes.DEFAULT_TYPE, data: str):
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Ruxsat yo'q.", show_alert=True)
+        return
+    if data == "rmbots:yes":
+        count = db.delete_bot_like_users()
+        await query.answer(f"{count} ta yozuv o'chirildi.", show_alert=True)
+        result = f"✅ {count} ta bot yozuvi bazadan o'chirildi."
+    else:
+        await query.answer()
+        result = "Bekor qilindi."
+    try:
+        await query.edit_message_text(result)
+    except TelegramError as e:
+        logger.info("/bots xabari yangilanmadi: %s", e)
+
+
 async def on_other_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Matnsiz xabar (rasm, sticker, ...) yozib ketgan odam ham ro'yxatga tushsin."""
     track_user(update.effective_user)
@@ -1841,6 +1886,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("unblock", cmd_unblock, filters=only_messages))
     app.add_handler(CommandHandler("blocked", cmd_blocked, filters=only_messages))
     app.add_handler(CommandHandler("users", cmd_users, filters=only_messages))
+    app.add_handler(CommandHandler("bots", cmd_bots, filters=only_messages))
     app.add_handler(CommandHandler("reklama", cmd_reklama, filters=only_messages))
     app.add_handler(CommandHandler("reklama_status", cmd_reklama_status, filters=only_messages))
     app.add_handler(CommandHandler("reklama_retry", cmd_reklama_retry, filters=only_messages))
