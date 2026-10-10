@@ -14,6 +14,7 @@ online/offline, cooldown, avtojavob matni.
 """
 
 import asyncio
+import html
 import logging
 import os
 import re
@@ -27,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import Forbidden, RetryAfter, TelegramError
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -540,6 +541,7 @@ HELP_TEXT = (
 ADMIN_HELP_TEXT = (
     "\n\n\U0001F510 Admin buyruqlari:\n"
     "/stats — foydalanuvchilar soni\n"
+    "/users — botga start bosgan barcha foydalanuvchilar ro'yxati\n"
     "/block @username [sabab] — foydalanuvchini bloklash (yoki /block 123456789)\n"
     "/unblock @username — blokdan chiqarish\n"
     "/blocked — bloklanganlar ro'yxati\n"
@@ -588,6 +590,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "\u274C Siz hali kanalga obuna bo'lmagansiz. Avval obuna bo'lib, keyin qayta bosing.",
                 show_alert=True,
             )
+        return
+
+    if data.startswith("users:"):
+        await handle_users_page(query, context, data)
         return
 
     if data == "admin_referrals" and owner_id != ADMIN_ID:
@@ -1290,6 +1296,17 @@ async def resolve_target_user(bot, raw: str) -> tuple[int | None, str | None]:
     if user_id is not None:
         return user_id, None
 
+    # Eski foydalanuvchilarning username'i hali bazada bo'lmasligi mumkin (username
+    # saqlash keyinroq qo'shilgan) — ularni Telegramdan to'ldirib, qayta qidiramiz.
+    try:
+        if db.get_users_needing_info(1, time.time() - PROFILE_RETRY_AFTER_SECONDS):
+            await backfill_profiles(bot, max_users=RESOLVE_BACKFILL_LIMIT)
+            user_id = db.get_user_id_by_username(username)
+            if user_id is not None:
+                return user_id, None
+    except Exception:
+        logger.exception("Username qidiruvida profillarni to'ldirish xatosi")
+
     # Bazada yo'q — Telegramning o'zidan so'rab ko'ramiz (har doim ham ishlamaydi)
     try:
         chat = await bot.get_chat(f"@{username}")
@@ -1390,6 +1407,161 @@ async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"\u2705 {label} blokdan chiqarildi va unga xabar yuborildi.")
     else:
         await update.message.reply_text(f"{label} bloklanmagan.")
+
+
+# --------------------------------------------------------------------------
+# /users — botga start bosgan barcha foydalanuvchilar + eski foydalanuvchilarning
+# username/ismini Telegramdan to'ldirish
+# --------------------------------------------------------------------------
+USERS_PAGE_SIZE = 15
+USER_NAME_MAX_LENGTH = 30
+PROFILE_BACKFILL_BATCH = 100
+PROFILE_RETRY_AFTER_SECONDS = 7 * 24 * 3600
+RESOLVE_BACKFILL_LIMIT = 300
+_profile_backfill_running = False
+
+
+async def _refresh_profile(bot, user_id: int) -> bool:
+    """Bitta foydalanuvchining ism/username'ini Telegramdan olib saqlaydi.
+    True — Telegram javob berdi. Foydalanuvchi botni bloklagan/akkaunti o'chgan
+    bo'lsa ham "tekshirildi" deb belgilanadi (har restartda qayta urinmaslik uchun)."""
+    for attempt in range(2):
+        try:
+            chat = await bot.get_chat(user_id)
+        except RetryAfter as e:
+            if attempt == 0:
+                await asyncio.sleep(min(float(e.retry_after) + 1, 30))
+                continue
+            return False
+        except (Forbidden, BadRequest):
+            db.mark_user_info_checked(user_id)
+            return False
+        except TelegramError as e:
+            logger.info("Profil olinmadi (user=%s): %s", user_id, e)
+            return False
+        db.set_user_info(user_id, getattr(chat, "username", None), getattr(chat, "full_name", None))
+        return True
+    return False
+
+
+async def backfill_profiles(bot, max_users: int | None = None) -> tuple[int, int]:
+    """Ismi noma'lum eski foydalanuvchilarni Telegramdan to'ldiradi.
+    (urinilgan, muvaffaqiyatli) qaytaradi. Bir vaqtda faqat bitta ishlaydi."""
+    global _profile_backfill_running
+    if _profile_backfill_running:
+        return 0, 0
+    _profile_backfill_running = True
+    tried = ok = 0
+    try:
+        while max_users is None or tried < max_users:
+            limit = PROFILE_BACKFILL_BATCH if max_users is None else min(PROFILE_BACKFILL_BATCH, max_users - tried)
+            ids = db.get_users_needing_info(limit, time.time() - PROFILE_RETRY_AFTER_SECONDS)
+            if not ids:
+                break
+            for uid in ids:
+                tried += 1
+                if await _refresh_profile(bot, uid):
+                    ok += 1
+                else:
+                    # Vaqtinchalik xato bo'lsa ham shu ishga tushirishda qayta aylanib
+                    # qolmasligi uchun belgilab qo'yamiz (keyingi urinish — 7 kundan keyin)
+                    db.mark_user_info_checked(uid)
+                await asyncio.sleep(0.05)
+    finally:
+        _profile_backfill_running = False
+    if tried:
+        logger.info("Profillar to'ldirildi: %s urinish, %s muvaffaqiyatli", tried, ok)
+    return tried, ok
+
+
+async def profile_backfill_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await backfill_profiles(context.bot)
+    except Exception:
+        logger.exception("Profillarni to'ldirish xatosi")
+
+
+def _short(text: str | None) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= USER_NAME_MAX_LENGTH else text[: USER_NAME_MAX_LENGTH - 1] + "…"
+
+
+def build_users_view(page: int, total: int, blocked_total: int, rows: list, pending: int = 0):
+    pages = max(1, -(-total // USERS_PAGE_SIZE))
+    page = min(max(page, 0), pages - 1)
+    start = page * USERS_PAGE_SIZE
+    lines = [
+        f"\U0001F465 <b>Foydalanuvchilar</b>: {total} ta"
+        + (f" (\U0001F6AB bloklangan: {blocked_total})" if blocked_total else ""),
+        f"Sahifa {page + 1}/{pages} — eng yangilari birinchi",
+        "",
+    ]
+    if not rows:
+        lines.append("Hozircha hech kim yo'q.")
+    for i, row in enumerate(rows, start + 1):
+        names = " / ".join(
+            x
+            for x in (
+                f"@{html.escape(row['username'])}" if row.get("username") else None,
+                html.escape(_short(row.get("full_name"))) if row.get("full_name") else None,
+            )
+            if x
+        ) or "<i>ism noma'lum</i>"
+        when = (
+            datetime.fromtimestamp(row["first_seen"], TASHKENT_TZ).strftime("%d.%m.%Y")
+            if row.get("first_seen")
+            else "?"
+        )
+        mark = "\U0001F6AB " if row.get("is_blocked") else ""
+        lines.append(f"{i}. {mark}{names} — <code>{row['user_id']}</code> — {when}")
+    if pending:
+        lines.append(f"\n⏳ {pending} ta eski foydalanuvchining ismi/username'i yangilanmoqda — birozdan keyin sahifani qayta oching.")
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Oldingi", callback_data=f"users:{page - 1}"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton("Keyingi ➡️", callback_data=f"users:{page + 1}"))
+    markup = InlineKeyboardMarkup([nav]) if nav else None
+    return "\n".join(lines), markup
+
+
+def render_users_page(bot, page: int):
+    total = db.get_user_count()
+    pages = max(1, -(-total // USERS_PAGE_SIZE))
+    page = min(max(page, 0), pages - 1)
+    rows = db.get_users_page(page * USERS_PAGE_SIZE, USERS_PAGE_SIZE)
+    pending = len(db.get_users_needing_info(1000, time.time() - PROFILE_RETRY_AFTER_SECONDS))
+    if pending and not _profile_backfill_running:
+        spawn_background(backfill_profiles(bot))
+    return build_users_view(page, total, db.count_blocked(), rows, pending)
+
+
+async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    text, markup = render_users_page(context.bot, 0)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def handle_users_page(query, context: ContextTypes.DEFAULT_TYPE, data: str):
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Ruxsat yo'q.", show_alert=True)
+        return
+    await query.answer()
+    try:
+        page = int(data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        page = 0
+    text, markup = render_users_page(context.bot, page)
+    try:
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+    except TelegramError as e:
+        logger.info("/users sahifasi yangilanmadi: %s", e)
+
+
+async def on_other_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Matnsiz xabar (rasm, sticker, ...) yozib ketgan odam ham ro'yxatga tushsin."""
+    track_user(update.effective_user)
 
 
 async def cmd_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1668,12 +1840,14 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("block", cmd_block, filters=only_messages))
     app.add_handler(CommandHandler("unblock", cmd_unblock, filters=only_messages))
     app.add_handler(CommandHandler("blocked", cmd_blocked, filters=only_messages))
+    app.add_handler(CommandHandler("users", cmd_users, filters=only_messages))
     app.add_handler(CommandHandler("reklama", cmd_reklama, filters=only_messages))
     app.add_handler(CommandHandler("reklama_status", cmd_reklama_status, filters=only_messages))
     app.add_handler(CommandHandler("reklama_retry", cmd_reklama_retry, filters=only_messages))
     app.add_handler(CommandHandler("cancel", cmd_cancel, filters=only_messages))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & only_messages, on_text))
+    app.add_handler(MessageHandler(~filters.TEXT & only_messages & filters.ChatType.PRIVATE, on_other_message))
     # Admin /reklama oqimi — istalgan turdagi xabarni ushlab qolish uchun alohida,
     # ustuvor guruhda (boshqa handler'larga to'sqinlik qilmaydi, chunki guruhlar
     # bir-biridan mustaqil ishlaydi).
@@ -1696,6 +1870,8 @@ def build_app() -> Application:
         app.job_queue.run_once(_resume_broadcasts_job_callback, when=5)
         # Server 00:05 da o'chiq bo'lgan bo'lsa, o'tkazib yuborilgan BIO yangilanishini yetkazish
         app.job_queue.run_once(bio_startup_job, when=10)
+        # Eski foydalanuvchilarning username/ismini to'ldirish (/block @username ishlashi uchun)
+        app.job_queue.run_once(profile_backfill_job, when=20)
     else:
         logger.warning(
             "JobQueue mavjud emas — BIO hisoblagich avtomatik yangilanmaydi. "
