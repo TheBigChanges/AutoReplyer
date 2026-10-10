@@ -619,6 +619,31 @@ def mark_user_info_checked(user_id: int):
         cur.execute("UPDATE users SET info_checked_at = %s WHERE user_id = %s", (time.time(), user_id))
 
 
+_BOT_LIKE_WHERE = """
+    lower(username) LIKE '%%bot'
+    AND NOT EXISTS (SELECT 1 FROM connections c WHERE c.owner_user_id = users.user_id)
+"""
+
+
+def list_bot_like_users(limit: int = 50):
+    """Username'i 'bot' bilan tugaydigan (Telegram botlari shunday nomlanadi) va
+    akkaunti ulanmagan yozuvlar. Eski xatodan bazaga tushib qolgan botlarni topish uchun."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"SELECT user_id, username, full_name FROM users WHERE {_BOT_LIKE_WHERE} "
+            "ORDER BY user_id LIMIT %s",
+            (limit,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def delete_bot_like_users() -> int:
+    """list_bot_like_users() bilan bir xil shart bo'yicha o'chiradi. O'chirilganlar sonini qaytaradi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"DELETE FROM users WHERE {_BOT_LIKE_WHERE}")
+        return cur.rowcount
+
+
 def get_user_count(exclude_blocked: bool = False) -> int:
     with get_conn() as conn, conn.cursor() as cur:
         if exclude_blocked:
