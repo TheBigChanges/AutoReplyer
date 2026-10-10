@@ -356,9 +356,48 @@ def main_menu_markup(owner_id: int):
     else:
         rows.append([InlineKeyboardButton("\u2139\uFE0F Qanday ulash mumkin?", callback_data="how_connect")])
     rows.append([InlineKeyboardButton("\U0001F381 Referal bonus", callback_data="referral")])
+    rows.append([InlineKeyboardButton("\U0001F6DF Qo'llab-quvvatlash xizmati", callback_data="support")])
     if owner_id == ADMIN_ID:
         rows.append([InlineKeyboardButton("\U0001F4CA Referral statistikasi (admin)", callback_data="admin_referrals")])
     return InlineKeyboardMarkup(rows)
+
+
+SUPPORT_CHANNEL_LINK = "https://t.me/+P_Uv4zsFGE03NmI6"
+SUPPORT_ADMIN_USERNAME = "MyAndro1d"
+FEEDBACK_MAX_LENGTH = 1500
+FEEDBACK_MAX_PER_HOUR = 5
+
+SUPPORT_TEXT = (
+    "\U0001F6DF Qo'llab-quvvatlash xizmati\n\n"
+    "Savolingiz yoki taklifingiz bo'lsa, bemalol yozing — biz sizni eshitamiz.\n\n"
+    "• Kanal — yangiliklar va e'lonlar\n"
+    "• Admin bilan bog'lanish — shaxsiy yozishish\n"
+    "• Fikr/taklif yozish — shu bot orqali to'g'ridan-to'g'ri adminga yuboriladi"
+)
+
+
+def build_support_view():
+    markup = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("\U0001F4E2 Kanalimiz", url=SUPPORT_CHANNEL_LINK)],
+            [InlineKeyboardButton("\U0001F464 Admin bilan bog'lanish", url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")],
+            [InlineKeyboardButton("✍️ Fikr / taklif yozish", callback_data="support_feedback")],
+            [InlineKeyboardButton("⬅️ Orqaga", callback_data="back")],
+        ]
+    )
+    return SUPPORT_TEXT, markup
+
+
+async def submit_feedback(bot, user, text: str) -> str:
+    """Foydalanuvchi fikrini adminga yuboradi. Foydalanuvchiga ko'rsatiladigan javob matnini qaytaradi."""
+    if db.count_recent_feedback(user.id, time.time() - 3600) >= FEEDBACK_MAX_PER_HOUR:
+        return "⏳ Juda ko'p xabar yubordingiz. Iltimos, birozdan keyin qayta urinib ko'ring."
+    label = format_user_label(user.id, user.username, user.full_name)
+    admin_text = f"\U0001F4AC Yangi fikr/taklif\n\nKimdan: {label}\n\n{text}"
+    if not (ADMIN_ID and await _try_send(bot, ADMIN_ID, admin_text)):
+        return "Hozir xabaringizni yetkazib bo'lmadi. Keyinroq qayta urinib ko'ring."
+    db.add_feedback(user.id, text)
+    return "✅ Rahmat! Fikringiz adminga yuborildi."
 
 
 def build_referral_view(owner_id: int):
@@ -662,6 +701,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Bosh menyu:", reply_markup=main_menu_markup(owner_id))
         return
 
+    if data == "support":
+        text, markup = build_support_view()
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "support_feedback":
+        set_pending_action(owner_id, "feedback")
+        await query.message.reply_text(
+            "\u270D\uFE0F Fikr yoki taklifingizni bitta xabar qilib yozing \u2014 u adminga yetkaziladi.\n"
+            "Bekor qilish: /cancel"
+        )
+        return
+
     if data == "referral":
         text, markup = build_referral_view(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
@@ -766,6 +818,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return  # panelga aloqasi yo'q oddiy xabar
 
     value = update.message.text.strip()
+
+    if action == "feedback":
+        if len(value) > FEEDBACK_MAX_LENGTH:
+            await update.message.reply_text(
+                f"Xabar juda uzun ({len(value)} belgi). Iltimos, {FEEDBACK_MAX_LENGTH} belgidan qisqaroq yozing."
+            )
+            return  # amal saqlanadi — foydalanuvchi qisqartirib qayta yuboradi
+        clear_pending_action(owner_id)
+        reply = await submit_feedback(context.bot, update.effective_user, value)
+        await update.message.reply_text(reply)
+        return
 
     if action == "cooldown":
         hours = parse_cooldown_input(value)
