@@ -191,5 +191,67 @@ class FeedbackDbTests(unittest.TestCase):
                     cur.execute("DELETE FROM feedback_messages WHERE user_id=%s", (uid,))
 
 
+
+class AdminReplyTests(Base):
+    def setUp(self):
+        super().setUp()
+        bot.pending_admin_action.clear()
+        self.addCleanup(bot.pending_admin_action.clear)
+
+    def test_admin_message_has_reply_button(self):
+        tg = MagicMock()
+        tg.send_message = AsyncMock()
+        user = MagicMock(id=USER, username="ali", full_name="Ali")
+        with patch.object(db, "count_recent_feedback", return_value=0), patch.object(db, "add_feedback"):
+            run(bot.submit_feedback(tg, user, "salom"))
+        markup = tg.send_message.call_args.kwargs["reply_markup"]
+        self.assertEqual(_buttons(markup)[0].callback_data, f"fbreply:{USER}")
+
+    def test_button_starts_reply_for_admin_only(self):
+        u, q = _query(f"fbreply:{USER}", user_id=5)
+        with patch.object(bot, "track_user"):
+            run(bot.on_button(u, MagicMock()))
+        q.answer.assert_awaited_once()
+        self.assertIsNone(bot.get_pending_admin_action(5))
+
+        u, q = _query(f"fbreply:{USER}", user_id=ADMIN)
+        with patch.object(bot, "track_user"), patch.object(db, "get_user", return_value=None):
+            run(bot.on_button(u, MagicMock()))
+        q.answer.assert_awaited_once()
+        self.assertEqual(bot.get_pending_admin_action(ADMIN), f"feedback_reply:{USER}")
+
+    def test_admin_text_delivered_to_user(self):
+        bot.set_pending_admin_action(ADMIN, f"feedback_reply:{USER}")
+        tg = MagicMock()
+        tg.send_message = AsyncMock()
+        u = _text_update("Rahmat, ko'rib chiqamiz", user_id=ADMIN)
+        with patch.object(bot, "track_user"):
+            run(bot.on_text(u, MagicMock(bot=tg)))
+        sent = tg.send_message.call_args.kwargs
+        self.assertEqual(sent["chat_id"], USER)
+        self.assertIn("Rahmat, ko'rib chiqamiz", sent["text"])
+        self.assertIsNone(bot.get_pending_admin_action(ADMIN))
+        self.assertIn("yuborildi", u.message.reply_text.call_args.args[0])
+
+    def test_undeliverable_reply_reports_failure(self):
+        from telegram.error import Forbidden
+        bot.set_pending_admin_action(ADMIN, f"feedback_reply:{USER}")
+        tg = MagicMock()
+        tg.send_message = AsyncMock(side_effect=Forbidden("x"))
+        u = _text_update("salom", user_id=ADMIN)
+        with patch.object(bot, "track_user"):
+            run(bot.on_text(u, MagicMock(bot=tg)))
+        self.assertIn("bo'lmadi", u.message.reply_text.call_args.args[0])
+
+    def test_non_admin_cannot_trigger_reply_path(self):
+        bot.set_pending_admin_action(ADMIN, f"feedback_reply:{USER}")
+        tg = MagicMock()
+        tg.send_message = AsyncMock()
+        u = _text_update("salom", user_id=USER)
+        with patch.object(bot, "track_user"):
+            run(bot.on_text(u, MagicMock(bot=tg)))
+        tg.send_message.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
