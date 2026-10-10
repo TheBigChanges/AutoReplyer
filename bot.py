@@ -388,13 +388,32 @@ def build_support_view():
     return SUPPORT_TEXT, markup
 
 
+async def send_feedback_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, target_id: int):
+    """Admin yozgan javobni fikr yuborgan foydalanuvchiga yetkazadi."""
+    text = update.message.text.strip()
+    if len(text) > FEEDBACK_MAX_LENGTH:
+        await update.message.reply_text(
+            f"Javob juda uzun ({len(text)} belgi). {FEEDBACK_MAX_LENGTH} belgidan qisqaroq yozing."
+        )
+        return  # amal saqlanadi
+    clear_pending_admin_action(ADMIN_ID)
+    delivered = await _try_send(context.bot, target_id, f"\U0001F4AC Admin javobi:\n\n{text}")
+    await update.message.reply_text(
+        "\u2705 Javob yuborildi." if delivered
+        else "\u274C Yuborib bo'lmadi \u2014 foydalanuvchi botni bloklagan bo'lishi mumkin."
+    )
+
+
 async def submit_feedback(bot, user, text: str) -> str:
     """Foydalanuvchi fikrini adminga yuboradi. Foydalanuvchiga ko'rsatiladigan javob matnini qaytaradi."""
     if db.count_recent_feedback(user.id, time.time() - 3600) >= FEEDBACK_MAX_PER_HOUR:
         return "⏳ Juda ko'p xabar yubordingiz. Iltimos, birozdan keyin qayta urinib ko'ring."
     label = format_user_label(user.id, user.username, user.full_name)
     admin_text = f"\U0001F4AC Yangi fikr/taklif\n\nKimdan: {label}\n\n{text}"
-    if not (ADMIN_ID and await _try_send(bot, ADMIN_ID, admin_text)):
+    reply_markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("\u21A9\uFE0F Javob berish", callback_data=f"fbreply:{user.id}")]]
+    )
+    if not (ADMIN_ID and await _try_send(bot, ADMIN_ID, admin_text, reply_markup)):
         return "Hozir xabaringizni yetkazib bo'lmadi. Keyinroq qayta urinib ko'ring."
     db.add_feedback(user.id, text)
     return "✅ Rahmat! Fikringiz adminga yuborildi."
@@ -632,6 +651,23 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    if data.startswith("fbreply:"):
+        if owner_id != ADMIN_ID:
+            await query.answer("Ruxsat yo'q.", show_alert=True)
+            return
+        try:
+            target_id = int(data.split(":", 1)[1])
+        except ValueError:
+            await query.answer("Noto'g'ri tugma.", show_alert=True)
+            return
+        await query.answer()
+        set_pending_admin_action(owner_id, f"feedback_reply:{target_id}")
+        await query.message.reply_text(
+            f"\u21A9\uFE0F {_label_for(target_id)} ga javobingizni bitta xabar qilib yozing.\n"
+            "Bekor qilish: /cancel"
+        )
+        return
+
     if data.startswith("rmbots:"):
         await handle_rmbots(query, context, data)
         return
@@ -813,6 +849,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     track_user(update.effective_user)
+
+    if owner_id == ADMIN_ID:
+        admin_action = get_pending_admin_action(owner_id) or ""
+        if admin_action.startswith("feedback_reply:"):
+            await send_feedback_reply(update, context, int(admin_action.split(":", 1)[1]))
+            return
+
     action = get_pending_action(owner_id)
     if action is None:
         return  # panelga aloqasi yo'q oddiy xabar
