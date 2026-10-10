@@ -197,6 +197,10 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users (lower(username))")
+        # Telegramdan ism/username olishga oxirgi urinish vaqti (eski foydalanuvchilarni
+        # to'ldirish uchun; muvaffaqiyatsiz bo'lsa har restartda qayta-qayta urinmaslik uchun)
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS info_checked_at DOUBLE PRECISION")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_users_first_seen ON users (first_seen DESC)")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS blocked_users (
@@ -555,6 +559,64 @@ def get_user_id_by_username(username: str):
         cur.execute("SELECT user_id FROM users WHERE lower(username) = lower(%s)", (username,))
         row = cur.fetchone()
         return row[0] if row else None
+
+
+def get_users_page(offset: int, limit: int):
+    """/users uchun: eng yangi qo'shilganlar oldinda. Har bir qator:
+    user_id, username, full_name, first_seen, is_blocked, block_reason, info_checked_at.
+    (user_id bo'yicha ikkilamchi saralash — sahifalar orasida tartib barqaror bo'lishi uchun.)"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT u.user_id, u.username, u.full_name, u.first_seen, u.info_checked_at,
+                   (b.user_id IS NOT NULL) AS is_blocked, b.reason AS block_reason
+            FROM users u
+            LEFT JOIN blocked_users b ON b.user_id = u.user_id
+            ORDER BY COALESCE(u.first_seen, 0) DESC, u.user_id DESC
+            OFFSET %s LIMIT %s
+            """,
+            (offset, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_users_needing_info(limit: int, retry_before_ts: float):
+    """Ismi hali noma'lum (eski, hali qayta yozmagan) foydalanuvchilar. Telegramdan
+    ma'lumot olishga urinib ko'rilgan bo'lsa (info_checked_at), `retry_before_ts`dan
+    keyin qayta uriniladi — shunda ulanib bo'lmaydigan odamlar har restartda
+    takror-takror so'ralmaydi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_id FROM users
+            WHERE full_name IS NULL
+              AND (info_checked_at IS NULL OR info_checked_at < %s)
+            ORDER BY user_id
+            LIMIT %s
+            """,
+            (retry_before_ts, limit),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
+def set_user_info(user_id: int, username, full_name):
+    """Telegramdan olingan ism/username'ni saqlaydi va tekshirilgan deb belgilaydi.
+    Faqat BERILGAN (None bo'lmagan) maydonlar yangilanadi: Telegram bo'sh qiymat
+    qaytarsa, foydalanuvchi shu orada o'zi yozib saqlatgan ma'lumot o'chib ketmaydi."""
+    fields = {}
+    if username:
+        fields["username"] = username
+    if full_name:
+        fields["full_name"] = full_name
+    if fields:
+        record_user(user_id, **fields)
+    mark_user_info_checked(user_id)
+
+
+def mark_user_info_checked(user_id: int):
+    """Ma'lumot olishga urinildi (muvaffaqiyatli yoki yo'q) — keyingi urinish bir muddatdan keyin."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE users SET info_checked_at = %s WHERE user_id = %s", (time.time(), user_id))
 
 
 def get_user_count(exclude_blocked: bool = False) -> int:
