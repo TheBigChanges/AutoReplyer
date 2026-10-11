@@ -46,14 +46,22 @@ import ai
 import db
 from logic import (
     BIO_EVENT_LABELS,
+    DEFAULT_NAME_CLOCK_ZONE,
     DEFAULT_SLEEP_MESSAGE,
+    NAME_CLOCK_ZONES,
+    NAME_MAX_LENGTH,
+    build_clock_name,
     compute_bio_text,
     format_cooldown,
     format_time_range,
+    is_known_zone,
     is_within_sleep_window,
     parse_birthday_input,
     parse_cooldown_input,
     parse_time_range_input,
+    split_full_name,
+    strip_clock_suffix,
+    zone_label,
 )
 
 load_dotenv()
@@ -501,6 +509,296 @@ def _chat_lock(owner_id: int, chat_id: int) -> asyncio.Lock:
     return lock
 
 
+# --------------------------------------------------------------------------
+# Ism soati: "Ism | 12:30" — har daqiqada akkaunt ismiga joriy vaqt yoziladi
+# --------------------------------------------------------------------------
+# Hozircha faqat admin uchun (NAME_CLOCK_PUBLIC=1 qilinsa hamma ulangan foydalanuvchiga ochiladi).
+NAME_CLOCK_PUBLIC = os.environ.get("NAME_CLOCK_PUBLIC", "").strip() == "1"
+# Telegram so'rovi borib-kelishi ~0.3-1 s: yangilashni daqiqa chegarasidan shuncha oldin boshlaymiz,
+# shunda yangi vaqt aynan daqiqa almashganda ko'rinadi (ism keyingi daqiqa vaqti bilan yoziladi).
+NAME_CLOCK_LEAD_SECONDS = 0.8
+NAME_CLOCK_CONCURRENCY = 25
+NAME_CLOCK_MAX_FAILURES = 3  # ketma-ket shuncha xatodan keyin funksiya o'zi o'chadi
+FLOOD_NOTICE_COOLDOWN_SECONDS = 600
+
+_name_clock_backoff_until = 0.0
+_name_clock_failures: dict[int, int] = {}
+_name_clock_inflight: set[int] = set()
+_last_flood_notice = 0.0
+
+
+def name_clock_allowed(user_id: int) -> bool:
+    return NAME_CLOCK_PUBLIC or (bool(ADMIN_ID) and user_id == ADMIN_ID)
+
+
+def clock_names_for(base_first: str, base_last: str | None, tz_name: str | None, at_ts: float):
+    """(first, last, key): `at_ts` payti shu zonadagi soat bilan ism va "shu daqiqa" kaliti."""
+    tz = ZoneInfo(tz_name if is_known_zone(tz_name) else DEFAULT_NAME_CLOCK_ZONE)
+    dt = datetime.fromtimestamp(at_ts, tz)
+    first, last = build_clock_name(base_first, base_last, dt.hour, dt.minute)
+    return first, last, dt.strftime("%Y-%m-%d %H:%M")
+
+
+async def _set_account_name(bot, connection_id: str, first: str, last: str | None):
+    await bot.set_business_account_name(
+        business_connection_id=connection_id, first_name=first, last_name=last
+    )
+
+
+async def _notify_owner(bot, owner_id: int, text: str):
+    await _try_send(bot, owner_id, text)
+
+
+async def _disable_name_clock(bot, owner_id: int, reason: str):
+    db.update_settings(owner_id, name_clock_enabled=False)
+    _name_clock_failures.pop(owner_id, None)
+    await _notify_owner(bot, owner_id, f"⚠️ Ism soati o'chirildi: {reason}")
+
+
+async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
+    owner_id = target["owner_user_id"]
+    first, last, key = clock_names_for(
+        target["name_clock_first"], target.get("name_clock_last"), target.get("name_clock_tz"), at_ts
+    )
+    if target.get("name_clock_applied") == key or owner_id in _name_clock_inflight:
+        return
+    _name_clock_inflight.add(owner_id)
+    try:
+        async with sem:
+            try:
+                await _set_account_name(bot, target["business_connection_id"], first, last)
+            except RetryAfter as e:
+                global _name_clock_backoff_until, _last_flood_notice
+                _name_clock_backoff_until = max(_name_clock_backoff_until, time.time() + float(e.retry_after) + 1)
+                logger.warning("Ism soati: Telegram flood, %s s kutiladi", e.retry_after)
+                now = time.time()
+                if ADMIN_ID and now - _last_flood_notice > FLOOD_NOTICE_COOLDOWN_SECONDS:
+                    _last_flood_notice = now
+                    await _try_send(
+                        bot, ADMIN_ID,
+                        f"⚠️ Ism soati: Telegram {int(e.retry_after)} soniya kutishni so'radi (flood). "
+                        "Shu vaqt davomida soat yangilanmaydi.",
+                    )
+                return
+            except (BadRequest, Forbidden) as e:
+                if "not modified" in str(e).lower():
+                    db.mark_name_clock_applied(owner_id, key)  # ism allaqachon shunday — muammo yo'q
+                    return
+                _name_clock_failures[owner_id] = _name_clock_failures.get(owner_id, 0) + 1
+                logger.warning("Ism soati yangilanmadi (owner=%s): %s", owner_id, e)
+                if _name_clock_failures[owner_id] >= NAME_CLOCK_MAX_FAILURES:
+                    await _disable_name_clock(
+                        bot, owner_id,
+                        "Telegram ismni o'zgartirishga ruxsat bermadi. Telegram → Sozlamalar → "
+                        "Chat Automation → bot sozlamalarida \"Ismni o'zgartirish\" ruxsatini tekshiring.",
+                    )
+                return
+            except TelegramError as e:
+                logger.info("Ism soati: vaqtinchalik xato (owner=%s): %s", owner_id, e)
+                return
+            _name_clock_failures.pop(owner_id, None)
+            db.mark_name_clock_applied(owner_id, key)
+    finally:
+        _name_clock_inflight.discard(owner_id)
+
+
+async def name_clock_tick(bot, at_ts: float):
+    """Barcha yoqilgan akkauntlarning ismini `at_ts` (daqiqa chegarasi) vaqti bilan yangilaydi."""
+    if time.time() < _name_clock_backoff_until:
+        return
+    try:
+        targets = db.get_name_clock_targets()
+    except Exception:
+        logger.exception("Ism soati: ro'yxatni o'qib bo'lmadi")
+        return
+    if not targets:
+        return
+    sem = asyncio.Semaphore(NAME_CLOCK_CONCURRENCY)
+    results = await asyncio.gather(*(_apply_clock(bot, t, at_ts, sem) for t in targets), return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception):
+            logger.error("Ism soati: kutilmagan xato", exc_info=r)
+
+
+def next_clock_boundary(now: float) -> tuple[float, float]:
+    """(uyg'onish vaqti, yangi daqiqa chegarasi): chegaradan LEAD soniya oldin uyg'onadi."""
+    boundary = (now // 60 + 1) * 60
+    fire_at = boundary - NAME_CLOCK_LEAD_SECONDS
+    if fire_at <= now:  # LEAD oynasiga kech tushdik — keyingi daqiqaga
+        boundary += 60
+        fire_at += 60
+    return fire_at, boundary
+
+
+async def name_clock_loop(bot):
+    """Doimiy sikl: har safar devor soatiga qarab keyingi daqiqa chegarasini hisoblaydi
+    (interval qo'shib bormaydi), shuning uchun vaqt siljimaydi. Sekin tick keyingisini kechiktirmaydi."""
+    while True:
+        try:
+            fire_at, boundary = next_clock_boundary(time.time())
+            await asyncio.sleep(max(0.0, fire_at - time.time()))
+            spawn_background(name_clock_tick(bot, boundary))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Ism soati sikli xatosi")
+            await asyncio.sleep(1)
+
+
+async def _post_init(app: Application):
+    spawn_background(name_clock_loop(app.bot))
+
+
+async def capture_base_name(bot, owner_id: int) -> tuple[str, str] | None:
+    """Hozirgi (soatsiz) ismni Telegramdan oladi."""
+    try:
+        chat = await bot.get_chat(owner_id)
+    except TelegramError as e:
+        logger.info("Asl ism olinmadi (owner=%s): %s", owner_id, e)
+        return None
+    first = strip_clock_suffix(getattr(chat, "first_name", None))
+    last = strip_clock_suffix(getattr(chat, "last_name", None))
+    if not first:
+        return None
+    return first[:NAME_MAX_LENGTH], last[:NAME_MAX_LENGTH]
+
+
+async def restore_base_name(bot, owner_id: int) -> bool:
+    s = db.get_settings(owner_id)
+    conn = db.get_connection(owner_id)
+    if not conn or not conn.get("is_enabled") or not s.get("name_clock_first"):
+        return False
+    try:
+        await _set_account_name(bot, conn["business_connection_id"], s["name_clock_first"], s.get("name_clock_last") or None)
+    except TelegramError as e:
+        logger.warning("Asl ism qaytarilmadi (owner=%s): %s", owner_id, e)
+        return False
+    db.update_settings(owner_id, name_clock_applied=None)
+    return True
+
+
+def build_name_clock_menu(owner_id: int, notice: str | None = None):
+    s = db.get_settings(owner_id)
+    enabled = bool(s.get("name_clock_enabled"))
+    first, last = s.get("name_clock_first"), s.get("name_clock_last")
+    tz = s.get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE
+    if first:
+        preview_first, preview_last, _ = clock_names_for(first, last, tz, time.time())
+        preview = f"{preview_first} {preview_last or ''}".strip()
+        base = f"{first} {last or ''}".strip()
+    else:
+        preview, base = "—", "yoqilganda Telegramdan olinadi"
+    status_label = "\U0001F7E2 Yoqilgan" if enabled else "O'chirilgan"
+    text = (
+        "\U0001F552 Ism soati\n\n"
+        f"Holat: {status_label}\n"
+        f"Vaqt zonasi: {zone_label(tz)}\n"
+        f"Asl ism: {base}\n"
+        f"Ko'rinishi: {preview}\n\n"
+        "Ismingizga har daqiqada joriy vaqt qo'shiladi. O'chirsangiz, asl ismingiz qaytadi.\n"
+        "Telegram → Sozlamalar → Chat Automation → bot sozlamalarida \"Ismni o'zgartirish\" "
+        "ruxsati yoqilgan bo'lishi shart."
+    )
+    if notice:
+        text += f"\n\n{notice}"
+    keyboard = [
+        [InlineKeyboardButton("❌ O'chirish" if enabled else "✅ Yoqish", callback_data="nc_toggle")],
+        [InlineKeyboardButton("\U0001F30D Vaqt zonasi", callback_data="nc_tz_menu")],
+        [InlineKeyboardButton("✏️ Asl ismni o'zgartirish", callback_data="nc_edit_name")],
+        [InlineKeyboardButton("⬅️ Orqaga", callback_data="open_panel")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_name_clock_zones_menu(owner_id: int):
+    current = db.get_settings(owner_id).get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE
+    rows = [
+        [InlineKeyboardButton(("✅ " if tz == current else "") + label, callback_data=f"nc_tz:{key}")]
+        for key, label, tz in NAME_CLOCK_ZONES
+    ]
+    rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="nc_menu")])
+    return "\U0001F30D Vaqt zonasini tanlang:", InlineKeyboardMarkup(rows)
+
+
+async def handle_name_clock_button(query, context, data: str, owner_id: int):
+    """nc_* tugmalari. True qaytarsa, tugma shu yerda qayta ishlangan."""
+    bot = context.bot
+    if data == "nc_menu":
+        text, markup = build_name_clock_menu(owner_id)
+    elif data == "nc_tz_menu":
+        text, markup = build_name_clock_zones_menu(owner_id)
+    elif data.startswith("nc_tz:"):
+        key = data.split(":", 1)[1]
+        zone = next((tz for k, _, tz in NAME_CLOCK_ZONES if k == key), None)
+        if zone:
+            db.update_settings(owner_id, name_clock_tz=zone, name_clock_applied=None)
+        text, markup = build_name_clock_menu(owner_id)
+    elif data == "nc_toggle":
+        s = db.get_settings(owner_id)
+        notice = None
+        if s.get("name_clock_enabled"):
+            db.update_settings(owner_id, name_clock_enabled=False)
+            restored = await restore_base_name(bot, owner_id)
+            notice = "✅ O'chirildi, asl ism qaytarildi." if restored else (
+                "O'chirildi. Asl ismni qaytarib bo'lmadi — uni Telegramda o'zingiz tuzating."
+            )
+        else:
+            notice = await _enable_name_clock(bot, owner_id)
+        text, markup = build_name_clock_menu(owner_id, notice)
+    elif data == "nc_edit_name":
+        set_pending_action(owner_id, "nc_name")
+        await query.message.reply_text(
+            "Asl ismingizni yuboring (soatsiz). Masalan: Dilshodbek yoki Dilshodbek Abdu.\nBekor qilish: /cancel"
+        )
+        return
+    else:
+        return
+    await query.edit_message_text(text, reply_markup=markup)
+
+
+async def _enable_name_clock(bot, owner_id: int) -> str | None:
+    """Yoqishdan oldin tekshiradi. Muammo bo'lsa, foydalanuvchiga ko'rsatiladigan izohni qaytaradi."""
+    conn = db.get_connection(owner_id)
+    if not conn or not conn.get("is_enabled"):
+        return "⚠️ Avval akkauntingizni ulang (Telegram → Sozlamalar → Chat Automation)."
+    # Ruxsat o'zgargan bo'lishi mumkin — Telegramdan joriy holatni so'raymiz
+    try:
+        live = await bot.get_business_connection(conn["business_connection_id"])
+        rights = getattr(live, "rights", None)
+        can_edit_name = bool(getattr(rights, "can_edit_name", False)) if rights is not None else False
+        db.upsert_connection(
+            owner_user_id=owner_id,
+            business_connection_id=conn["business_connection_id"],
+            can_reply=conn["can_reply"],
+            is_enabled=live.is_enabled,
+            can_edit_bio=conn["can_edit_bio"],
+            can_edit_name=can_edit_name,
+        )
+    except TelegramError as e:
+        logger.info("Ulanish huquqlarini o'qib bo'lmadi (owner=%s): %s", owner_id, e)
+        can_edit_name = bool(conn.get("can_edit_name"))
+    if not can_edit_name:
+        return (
+            "⚠️ Botda ismni o'zgartirish ruxsati yo'q. Telegram → Sozlamalar → Chat Automation → "
+            "bot → \"Ismni o'zgartirish\" (Edit name) ni yoqing va qayta urinib ko'ring."
+        )
+    names = await capture_base_name(bot, owner_id)
+    if names is None:
+        return "⚠️ Ismingizni aniqlab bo'lmadi. Keyinroq urinib ko'ring yoki \"Asl ismni o'zgartirish\" orqali yozing."
+    db.update_settings(
+        owner_id,
+        name_clock_enabled=True,
+        name_clock_first=names[0],
+        name_clock_last=names[1],
+        name_clock_applied=None,
+        name_clock_tz=db.get_settings(owner_id).get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE,
+    )
+    _name_clock_failures.pop(owner_id, None)
+    # Keyingi daqiqani kutmasdan, hoziroq birinchi marta qo'yamiz
+    spawn_background(name_clock_tick(bot, time.time()))
+    return "✅ Yoqildi."
+
+
 def build_ai_menu(owner_id: int, notice: str | None = None):
     s = db.get_settings(owner_id)
     enabled = bool(s.get("ai_enabled"))
@@ -648,8 +946,10 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton("\U0001F382 BIO hisoblagich", callback_data="bio_menu")],
         [InlineKeyboardButton("\U0001F634 Uxlayapman rejimi", callback_data="sleep_menu")],
         [InlineKeyboardButton("\U0001F916 AI-Yordamchi", callback_data="ai_menu")],
-        [InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")],
     ]
+    if name_clock_allowed(owner_id):
+        keyboard.append([InlineKeyboardButton("\U0001F552 Ism soati", callback_data="nc_menu")])
+    keyboard.append([InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")])
     return text, InlineKeyboardMarkup(keyboard)
 
 
@@ -979,6 +1279,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
+    if data.startswith("nc_"):
+        if not name_clock_allowed(owner_id):
+            return  # ruxsatsiz; umumiy answer() yuqorida allaqachon chaqirilgan
+        await handle_name_clock_button(query, context, data, owner_id)
+        return
+
     if data == "ai_menu":
         text, markup = build_ai_menu(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
@@ -1072,6 +1378,20 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_pending_action(owner_id)
         reply = await submit_feedback(context.bot, update.effective_user, value)
         await update.message.reply_text(reply)
+        return
+
+    if action == "nc_name":
+        if not name_clock_allowed(owner_id):
+            clear_pending_action(owner_id)
+            return
+        first, last = split_full_name(value)
+        if not first:
+            await update.message.reply_text("Ism bo'sh bo'lishi mumkin emas. Qayta yuboring.")
+            return
+        db.update_settings(owner_id, name_clock_first=first, name_clock_last=last, name_clock_applied=None)
+        clear_pending_action(owner_id)
+        text, markup = build_name_clock_menu(owner_id, "\u2705 Saqlandi.")
+        await update.message.reply_text(text, reply_markup=markup)
         return
 
     if action == "ai_info":
@@ -2099,6 +2419,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_reply = False
 
         can_edit_bio = bool(getattr(rights, "can_edit_bio", False)) if rights is not None else False
+        can_edit_name = bool(getattr(rights, "can_edit_name", False)) if rights is not None else False
 
         db.upsert_connection(
             owner_user_id=conn.user.id,
@@ -2106,7 +2427,20 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_reply=can_reply,
             is_enabled=conn.is_enabled,
             can_edit_bio=can_edit_bio,
+            can_edit_name=can_edit_name,
         )
+        if not conn.is_enabled or not can_edit_name:
+            # Akkaunt uzildi yoki ism ruxsati olindi — soat endi ishlay olmaydi
+            try:
+                if db.get_settings(conn.user.id).get("name_clock_enabled"):
+                    db.update_settings(conn.user.id, name_clock_enabled=False)
+                    await _try_send(
+                        context.bot, conn.user_chat_id,
+                        "\u26A0\uFE0F Ism soati o'chirildi: ismni o'zgartirish ruxsati yo'q. "
+                        "Ismingizdagi vaqtni Telegramda o'zingiz olib tashlang.",
+                    )
+            except Exception:
+                logger.exception("Ism soatini o'chirishda xato (owner=%s)", conn.user.id)
         logger.info(
             "business account %s (owner=%s, can_reply=%s, can_edit_bio=%s)",
             "connected" if conn.is_enabled else "disconnected",
@@ -2196,7 +2530,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def build_app() -> Application:
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
 
     # Faqat oddiy `message` yangilanishlari (bot bilan shaxsiy chat): business_message
     # (mijozlarning xabarlari), tahrirlangan xabarlar va kanal postlari handlerlarga
