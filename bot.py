@@ -62,6 +62,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# httpx har bir so'rovni INFO'da URL bilan yozadi — Telegram URL'ida bot TOKENI bor,
+# shuning uchun loglarda token chiqib ketmasligi uchun ogohlantirish darajasiga tushiramiz.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("autoreplyer")
 
 TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
@@ -1748,7 +1752,13 @@ async def backfill_profiles(bot, max_users: int | None = None) -> tuple[int, int
                 break
             for uid in ids:
                 tried += 1
-                if await _refresh_profile(bot, uid):
+                try:
+                    refreshed = await _refresh_profile(bot, uid)
+                except Exception:
+                    # Bitta foydalanuvchidagi kutilmagan xato butun to'ldirishni to'xtatmasin
+                    logger.exception("Profilni yangilashda xato (user=%s)", uid)
+                    refreshed = False
+                if refreshed:
                     ok += 1
                 else:
                     # Vaqtinchalik xato bo'lsa ham shu ishga tushirishda qayta aylanib
