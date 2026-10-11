@@ -227,9 +227,13 @@ NAME_CLOCK_ZONES = [
 ]
 DEFAULT_NAME_CLOCK_ZONE = "Asia/Tashkent"
 
-# Raqamlar ko'rinishi (Telegram ismidagi soat uchun). Kalit -> (nom, 0-9 raqamlar, ikki nuqta belgisi, har belgi orqasiga qo'shiladigan belgi)
+# Raqamlar ko'rinishi (Telegram ismidagi soat uchun).
+# Kalit -> (nom, 0-9 raqamlar, ikki nuqta belgisi, har RAQAM orqasiga qo'shiladigan belgi, ikki nuqta orqasiga qo'shiladigan belgi)
 _ASCII_DIGITS = "0123456789"
-_STROKE = "̶"  # birlashtiruvchi uzun chiziq (Strike)
+_STROKE = "\u0336"  # birlashtiruvchi uzun chiziq (Strike)
+_UNDERLINE = "\u0332"  # birlashtiruvchi past chiziq (Underline)
+_RING = "\u20dd"  # birlashtiruvchi aylana (Ring)
+_KEYCAP = "\ufe0f\u20e3"  # emoji "keycap" (2\ufe0f\u20e3)
 
 
 def _seq(first_cp: int) -> str:
@@ -237,16 +241,21 @@ def _seq(first_cp: int) -> str:
 
 
 NAME_CLOCK_STYLES = {
-    "default": ("Default", _ASCII_DIGITS, ":", ""),
-    "mono": ("Monospace", _seq(0x1D7F6), ":", ""),
-    "strike": ("Strike", _ASCII_DIGITS, ":", _STROKE),
-    "super": ("SuperScript", "⁰¹²³⁴⁵⁶⁷⁸⁹", "˸", ""),
-    "sub": ("SubScript", _seq(0x2080), ":", ""),
-    "bold": ("Bold", _seq(0x1D7EC), ":", ""),
-    "boldserif": ("Bold Serif", _seq(0x1D7CE), ":", ""),
-    "double": ("Double Struck", _seq(0x1D7D8), ":", ""),
-    "circle": ("Circle", "⓪" + "".join(chr(0x2460 + i) for i in range(9)), ":", ""),
-    "darkcircle": ("Dark Circle", "⓿" + "".join(chr(0x2776 + i) for i in range(9)), ":", ""),
+    "default": ("Default", _ASCII_DIGITS, ":", "", ""),
+    "mono": ("Monospace", _seq(0x1D7F6), ":", "", ""),
+    "strike": ("Strike", _ASCII_DIGITS, ":", _STROKE, _STROKE),
+    "super": ("SuperScript", "\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079", "\u02f8", "", ""),
+    "sub": ("SubScript", _seq(0x2080), ":", "", ""),
+    "bold": ("Bold", _seq(0x1D7EC), ":", "", ""),
+    "boldserif": ("Bold Serif", _seq(0x1D7CE), ":", "", ""),
+    "double": ("Double Struck", _seq(0x1D7D8), ":", "", ""),
+    "circle": ("Circle", "\u24ea" + "".join(chr(0x2460 + i) for i in range(9)), ":", "", ""),
+    "darkcircle": ("Dark Circle", "\u24ff" + "".join(chr(0x2776 + i) for i in range(9)), ":", "", ""),
+    "wide": ("Wide", _seq(0xFF10), "\uff1a", "", ""),
+    "sans": ("Sans", _seq(0x1D7E2), ":", "", ""),
+    "underline": ("Underline", _ASCII_DIGITS, ":", _UNDERLINE, _UNDERLINE),
+    "keycap": ("Keycap", _ASCII_DIGITS, ":", _KEYCAP, ""),
+    "ring": ("Ring", _ASCII_DIGITS, ":", _RING, ""),
 }
 DEFAULT_NAME_CLOCK_STYLE = "default"
 
@@ -257,13 +266,15 @@ def is_known_style(key: str | None) -> bool:
 
 def style_time(text: str, style: str | None) -> str:
     """'20:45' ni tanlangan ko'rinishga o'tkazadi."""
-    _, digits, colon, extra = NAME_CLOCK_STYLES[style if is_known_style(style) else DEFAULT_NAME_CLOCK_STYLE]
+    _, digits, colon, digit_extra, colon_extra = NAME_CLOCK_STYLES[
+        style if is_known_style(style) else DEFAULT_NAME_CLOCK_STYLE
+    ]
     out = []
     for ch in text:
         if ch.isascii() and ch.isdigit():
-            out.append(digits[int(ch)] + extra)
+            out.append(digits[int(ch)] + digit_extra)
         elif ch == ":":
-            out.append(colon + extra)
+            out.append(colon + colon_extra)
         else:
             out.append(ch)
     return "".join(out)
@@ -272,12 +283,16 @@ def style_time(text: str, style: str | None) -> str:
 def _build_suffix_re():
     digit_chars = set(_ASCII_DIGITS)
     colon_chars = {":"}
-    for _, digits, colon, _extra in NAME_CLOCK_STYLES.values():
+    extras = set()
+    for _, digits, colon, digit_extra, colon_extra in NAME_CLOCK_STYLES.values():
         digit_chars.update(digits)
         colon_chars.add(colon)
-    d = "(?:[" + re.escape("".join(sorted(digit_chars))) + "]" + _STROKE + "?)"
-    c = "(?:[" + re.escape("".join(sorted(colon_chars))) + "]" + _STROKE + "?)"
-    return re.compile(r"\s*\|\s*" + d + "{1,2}" + c + d + "{2}\\s*$")
+        extras.update(e for e in (digit_extra, colon_extra) if e)
+    # Ixtiyoriy qo'shimcha belgilar (chiziq, aylana, keycap...) — uzunroqlari avval
+    extra_re = "(?:" + "|".join(re.escape(e) for e in sorted(extras, key=len, reverse=True)) + ")?"
+    d = "(?:[" + re.escape("".join(sorted(digit_chars))) + "]" + extra_re + ")"
+    c = "(?:[" + re.escape("".join(sorted(colon_chars))) + "]" + extra_re + ")"
+    return re.compile(r"\s*\|\s*" + d + "{1,2}" + c + d + "{2}" + r"\s*$")
 
 
 _CLOCK_SUFFIX_RE = _build_suffix_re()
