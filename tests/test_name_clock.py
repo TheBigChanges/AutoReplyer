@@ -387,5 +387,95 @@ class WiringTests(Base):
         self.assertIsNotNone(app.post_init)
 
 
+class ExternalRenameTests(Base):
+    """Regressiya: egasi ismni Telegramda o'zi o'zgartirsa, bot eski ismni qaytarib qo'yardi."""
+
+    def test_logic_detects_real_rename_only(self):
+        f = logic.is_external_rename
+        self.assertFalse(f("Ali", "", "Ali", None))
+        self.assertFalse(f("Ali", "", "Ali | 12:30", ""))          # bot qo'ygan soat — o'zgarish emas
+        self.assertFalse(f("Ali", "Vali", "Ali", "Vali | 12:30"))
+        self.assertTrue(f("Ali", "", "Dilshodbek", ""))
+        self.assertTrue(f("Ali", "", "Dilshodbek | 12:30", ""))   # yangi ism + o'zi yozgan soat
+        self.assertTrue(f("Ali", "Vali", "Ali", ""))              # familiyani olib tashladi
+        self.assertFalse(f("Ali", "", "", None))                  # Telegram ism bermadi
+
+    def test_truncated_long_name_is_not_a_rename(self):
+        long_name = "A" * 64
+        self.assertFalse(logic.is_external_rename(long_name, "", "A" * 56, ""))
+        self.assertTrue(logic.is_external_rename("Ali", "", "A", ""))  # qisqa ismda prefiks o'zgarish hisoblanadi
+
+    def _adopt(self, settings, cur_first, cur_last=None):
+        with patch.object(db, "get_settings", return_value=settings), \
+             patch.object(db, "update_settings") as upd:
+            result = bot.adopt_new_base_name(OWNER, cur_first, cur_last)
+        return result, upd
+
+    def test_new_name_becomes_base(self):
+        s = _settings(name_clock_enabled=True, name_clock_first="Eski", name_clock_last="")
+        result, upd = self._adopt(s, "Dilshodbek | 13:00")
+        self.assertTrue(result)
+        upd.assert_called_once_with(OWNER, name_clock_first="Dilshodbek", name_clock_last="", name_clock_applied=None)
+
+    def test_own_clock_name_is_not_adopted(self):
+        s = _settings(name_clock_enabled=True, name_clock_first="Ali", name_clock_last="")
+        result, upd = self._adopt(s, "Ali | 12:30")
+        self.assertFalse(result)
+        upd.assert_not_called()
+
+    def test_ignored_when_clock_disabled(self):
+        result, upd = self._adopt(_settings(name_clock_enabled=False, name_clock_first="Eski"), "Yangi")
+        self.assertFalse(result)
+        upd.assert_not_called()
+
+    def test_track_user_adopts_for_allowed_user(self):
+        user = MagicMock(id=OWNER, username="u", full_name="x", first_name="Yangi", last_name=None, is_bot=False)
+        with patch.object(db, "record_user"), patch.object(bot, "adopt_new_base_name") as adopt:
+            bot.track_user(user)
+        adopt.assert_called_once_with(OWNER, "Yangi", None)
+
+    def test_track_user_skips_unallowed_user(self):
+        user = MagicMock(id=5, username="u", full_name="x", first_name="Yangi", last_name=None, is_bot=False)
+        with patch.object(db, "record_user"), patch.object(bot, "adopt_new_base_name") as adopt:
+            bot.track_user(user)
+        adopt.assert_not_called()
+
+    def test_sync_reads_real_name_and_adopts(self):
+        tg = MagicMock()
+        tg.get_chat = AsyncMock(return_value=MagicMock(first_name="Yangi ism", last_name=None))
+        with patch.object(db, "get_name_clock_targets", return_value=[_target()]), \
+             patch.object(bot, "adopt_new_base_name") as adopt:
+            run(bot.name_clock_sync(tg))
+        adopt.assert_called_once_with(1, "Yangi ism", None)
+
+    def test_sync_survives_telegram_errors(self):
+        tg = MagicMock()
+        tg.get_chat = AsyncMock(side_effect=NetworkError("x"))
+        with patch.object(db, "get_name_clock_targets", return_value=[_target()]), \
+             patch.object(bot, "adopt_new_base_name") as adopt:
+            run(bot.name_clock_sync(tg))
+        adopt.assert_not_called()
+
+    def test_owner_business_message_adopts_new_name(self):
+        u = MagicMock()
+        u.channel_post = None
+        u.business_connection = None
+        bm = u.business_message
+        bm.business_connection_id = "bc"
+        bm.from_user = MagicMock(id=OWNER, first_name="Yangi", last_name="Familiya")
+        bm.chat.id = 9
+        bm.message_id = 1
+        conn = {"owner_user_id": OWNER, "is_enabled": True, "can_reply": True, "is_blocked": False}
+        with patch.object(db, "get_connection_by_business_id", return_value=conn), \
+             patch.object(db, "get_settings", return_value=_settings()), \
+             patch.object(bot, "adopt_new_base_name") as adopt, patch.object(db, "pause_ai_chat"):
+            run(bot.on_raw_update(u, MagicMock()))
+        adopt.assert_called_once_with(OWNER, "Yangi", "Familiya")
+
+    def test_sync_loop_registered(self):
+        import inspect
+        self.assertIn("name_clock_sync_loop", inspect.getsource(bot._post_init))
+
+
 if __name__ == "__main__":
     unittest.main()
