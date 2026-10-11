@@ -112,5 +112,21 @@ class TestUsersOnRealPostgres(unittest.TestCase):
         self.assertEqual((info["username"], info["full_name"]), (self.tag, "Bor"))
 
 
+    def test_name_only_update_does_not_crash_and_keeps_username(self):
+        """Regressiya: username berilmasa (faqat ism) `_UNSET` sentineli SQL'ga ketib,
+        'can't adapt type object' xatosi chiqardi — username'siz userlarda backfill qulardi."""
+        db.record_user(self.a, username=self.tag, full_name="Eski")
+        db.record_user(self.a, full_name="Yangi ism")
+        info = db.get_user(self.a)
+        self.assertEqual((info["username"], info["full_name"]), (self.tag, "Yangi ism"))
+
+    def test_backfill_of_user_without_username(self):
+        self._legacy(self.a, time.time())
+        db.set_user_info(self.a, None, "Username'siz odam")  # Telegram username qaytarmadi
+        info = db.get_user(self.a)
+        self.assertEqual((info["username"], info["full_name"]), (None, "Username'siz odam"))
+        self.assertNotIn(self.a, db.get_users_needing_info(10**6, time.time() - 100))
+
+
 if __name__ == "__main__":
     unittest.main()
