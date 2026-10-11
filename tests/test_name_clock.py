@@ -566,7 +566,8 @@ class StyleTests(Base):
         with patch.object(db, "get_settings", return_value=_settings(name_clock_style="circle", name_clock_first="Ali")):
             text, markup = bot.build_name_clock_menu(OWNER)
         self.assertIn("Circle", text)
-        self.assertIn("nc_style_menu", [b.callback_data for row in markup.inline_keyboard for b in row])
+        buttons = {b.callback_data: b.text for row in markup.inline_keyboard for b in row}
+        self.assertEqual(buttons["nc_style_menu"], "\U0001F3A8 Shriftni tanlash")
 
 
 class PublicByDefaultTests(unittest.TestCase):
