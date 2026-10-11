@@ -553,8 +553,10 @@ def clock_names_for(base_first: str, base_last: str | None, tz_name: str | None,
 
 
 async def _set_account_name(bot, connection_id: str, first: str, last: str | None):
+    # last_name HAR DOIM yuboriladi ("" — familiya yo'q): aks holda oldingi familiya (masalan
+    # "Abdu | 12:30") akkauntda qolib, ism "Ali | 12:31 Abdu | 12:30" bo'lib ketardi.
     await bot.set_business_account_name(
-        business_connection_id=connection_id, first_name=first, last_name=last
+        business_connection_id=connection_id, first_name=first, last_name=last or ""
     )
 
 
@@ -575,7 +577,7 @@ async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
         target.get("name_clock_style"),
     )
     if target.get("name_clock_applied") == key or owner_id in _name_clock_inflight:
-        return
+        return None
     _name_clock_inflight.add(owner_id)
     try:
         async with sem:
@@ -593,11 +595,10 @@ async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
                         f"⚠️ Ism soati: Telegram {int(e.retry_after)} soniya kutishni so'radi (flood). "
                         "Shu vaqt davomida soat yangilanmaydi.",
                     )
-                return
+                return None
             except (BadRequest, Forbidden) as e:
                 if "not modified" in str(e).lower():
-                    db.mark_name_clock_applied(owner_id, key)  # ism allaqachon shunday — muammo yo'q
-                    return
+                    return owner_id, key  # ism allaqachon shunday — muammo yo'q
                 _name_clock_failures[owner_id] = _name_clock_failures.get(owner_id, 0) + 1
                 logger.warning("Ism soati yangilanmadi (owner=%s): %s", owner_id, e)
                 if _name_clock_failures[owner_id] >= NAME_CLOCK_MAX_FAILURES:
@@ -606,12 +607,12 @@ async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
                         "Telegram ismni o'zgartirishga ruxsat bermadi. Telegram → Sozlamalar → "
                         "Chat Automation → bot sozlamalarida \"Ismni o'zgartirish\" ruxsatini tekshiring.",
                     )
-                return
+                return None
             except TelegramError as e:
                 logger.info("Ism soati: vaqtinchalik xato (owner=%s): %s", owner_id, e)
-                return
+                return None
             _name_clock_failures.pop(owner_id, None)
-            db.mark_name_clock_applied(owner_id, key)
+            return owner_id, key
     finally:
         _name_clock_inflight.discard(owner_id)
 
@@ -629,9 +630,17 @@ async def name_clock_tick(bot, at_ts: float):
         return
     sem = asyncio.Semaphore(NAME_CLOCK_CONCURRENCY)
     results = await asyncio.gather(*(_apply_clock(bot, t, at_ts, sem) for t in targets), return_exceptions=True)
+    applied = []
     for r in results:
         if isinstance(r, Exception):
             logger.error("Ism soati: kutilmagan xato", exc_info=r)
+        elif r is not None:
+            applied.append(r)
+    try:
+        if applied:
+            db.mark_name_clock_applied_bulk(applied)  # bitta so'rov, Telegram chaqiruvlaridan KEYIN
+    except Exception:
+        logger.exception("Ism soati: belgilashda xato")
 
 
 def next_clock_boundary(now: float) -> tuple[float, float]:
@@ -664,13 +673,15 @@ async def _post_init(app: Application):
     spawn_background(name_clock_sync_loop(app.bot))
 
 
-def adopt_new_base_name(owner_id: int, cur_first, cur_last) -> bool:
+def adopt_new_base_name(owner_id: int, cur_first, cur_last, state: dict | None = None) -> bool:
     """Egasi ismni Telegramda o'zi o'zgartirgan bo'lsa, yangi ismni asl ism qilib oladi
-    (aks holda bot keyingi daqiqada eski ismni qaytarib qo'yardi). True — yangilandi."""
-    s = db.get_settings(owner_id)
-    if not s.get("name_clock_enabled") or not s.get("name_clock_first"):
+    (aks holda bot keyingi daqiqada eski ismni qaytarib qo'yardi). True — yangilandi.
+    `state` berilmasa, bazadan yengil so'rov bilan olinadi (yoqilmagan bo'lsa — hech narsa qilinmaydi)."""
+    if state is None:
+        state = db.get_name_clock_base(owner_id)
+    if not state or not state.get("name_clock_first"):
         return False
-    if not is_external_rename(s["name_clock_first"], s.get("name_clock_last"), cur_first, cur_last):
+    if not is_external_rename(state["name_clock_first"], state.get("name_clock_last"), cur_first, cur_last):
         return False
     db.update_settings(
         owner_id,
@@ -698,7 +709,9 @@ async def name_clock_sync(bot):
                 chat = await bot.get_chat(target["owner_user_id"])
             except TelegramError:
                 return
-            adopt_new_base_name(target["owner_user_id"], getattr(chat, "first_name", None), getattr(chat, "last_name", None))
+            adopt_new_base_name(
+                target["owner_user_id"], getattr(chat, "first_name", None), getattr(chat, "last_name", None), state=target
+            )
 
     await asyncio.gather(*(one(t) for t in targets), return_exceptions=True)
 
