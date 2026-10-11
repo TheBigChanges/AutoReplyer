@@ -124,9 +124,10 @@ class AiDbTests(unittest.TestCase):
     def test_settings_columns(self):
         s = db.get_settings(self.owner)
         self.assertFalse(s["ai_enabled"])
-        db.update_settings(self.owner, ai_enabled=True, ai_info="info")
+        self.assertIsNone(s["ai_role"])
+        db.update_settings(self.owner, ai_enabled=True, ai_info="info", ai_role="seller")
         s = db.get_settings(self.owner)
-        self.assertEqual((s["ai_enabled"], s["ai_info"]), (True, "info"))
+        self.assertEqual((s["ai_enabled"], s["ai_info"], s["ai_role"]), (True, "info", "seller"))
 
 
 if __name__ == "__main__":
