@@ -23,7 +23,7 @@ CHAT = 99
 def _settings(**kw):
     base = {"offline": True, "auto_reply_text": "Oflaynman", "cooldown_hours": 3.0, "sleep_mode_enabled": False,
             "sleep_start_minutes": 1380, "sleep_end_minutes": 420, "sleep_reply_text": "",
-            "ai_enabled": True, "ai_info": "Men dizaynerman"}
+            "ai_enabled": True, "ai_info": "Men dizaynerman", "ai_role": "seller"}
     base.update(kw)
     return base
 
@@ -103,9 +103,9 @@ class AiReplyTests(Base):
 
     def test_generate_gets_history_plus_new_message_and_owner_info(self):
         _, m = self.flow(history=[{"role": "user", "text": "eski"}, {"role": "model", "text": "javob"}])
-        hist, name, info = m["gen"].call_args.args
+        hist, name, info, role = m["gen"].call_args.args
         self.assertEqual([h["text"] for h in hist], ["eski", "javob", "Salom, narx qancha?"])
-        self.assertEqual((name, info), ("Dilshod", "Men dizaynerman"))
+        self.assertEqual((name, info, role), ("Dilshod", "Men dizaynerman", "seller"))
 
     def test_admin_has_no_limit(self):
         send, m = self.flow(owner=ADMIN)
@@ -263,6 +263,40 @@ class PanelTests(Base):
              patch.object(db, "get_settings", return_value=_settings()), patch.object(db, "get_ai_usage", return_value=0):
             asyncio.run(bot.on_text(clear, MagicMock()))
         upd.assert_called_once_with(OWNER, ai_info=None)
+
+    def test_roles_menu_marks_current_and_lists_all(self):
+        with patch.object(db, "get_settings", return_value=_settings(ai_role="support")):
+            text, markup = bot.build_ai_roles_menu(OWNER)
+        labels = {b.callback_data: b.text for row in markup.inline_keyboard for b in row}
+        for key in ai.ROLES:
+            self.assertIn(f"ai_role:{key}", labels)
+        self.assertTrue(labels["ai_role:support"].startswith("\u2705"))
+        self.assertFalse(labels["ai_role:seller"].startswith("\u2705"))
+
+    def test_main_ai_menu_shows_role_and_button(self):
+        with patch.object(db, "get_settings", return_value=_settings(ai_role=None)), \
+             patch.object(db, "get_ai_usage", return_value=0):
+            text, markup = bot.build_ai_menu(OWNER)
+        self.assertIn(ai.role_label(None), text)
+        self.assertIn("ai_roles", [b.callback_data for row in markup.inline_keyboard for b in row])
+
+    def test_choosing_role_saves_it(self):
+        u, q = self._query("ai_role:support")
+        with patch.object(bot, "track_user"), patch.object(db, "get_settings", return_value=_settings()), \
+             patch.object(db, "update_settings") as upd:
+            asyncio.run(bot.on_button(u, MagicMock()))
+        upd.assert_called_once_with(OWNER, ai_role="support")
+        q.answer.assert_awaited_once()
+
+    def test_unknown_role_is_ignored(self):
+        u, q = self._query("ai_role:hacker")
+        with patch.object(bot, "track_user"), patch.object(db, "get_settings", return_value=_settings()), \
+             patch.object(db, "update_settings") as upd:
+            asyncio.run(bot.on_button(u, MagicMock()))
+        upd.assert_not_called()
+
+    def test_role_whitelisted_in_db(self):
+        self.assertIn("ai_role", db.ALLOWED_SETTINGS_FIELDS)
 
     def test_settings_whitelist_accepts_ai_fields(self):
         self.assertTrue({"ai_enabled", "ai_info"} <= db.ALLOWED_SETTINGS_FIELDS)
