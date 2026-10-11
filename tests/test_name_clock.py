@@ -477,5 +477,110 @@ class ExternalRenameTests(Base):
         self.assertIn("name_clock_sync_loop", inspect.getsource(bot._post_init))
 
 
+class StyleTests(Base):
+    EXPECTED = {
+        "default": "20:45",
+        "mono": "\U0001D7F8\U0001D7F6:\U0001D7FA\U0001D7FB",
+        "strike": "2\u03360\u0336:\u03364\u03365\u0336",
+        "super": "\u00b2\u2070\u02f8\u2074\u2075",
+        "sub": "\u2082\u2080:\u2084\u2085",
+        "bold": "\U0001D7EE\U0001D7EC:\U0001D7F0\U0001D7F1",
+        "boldserif": "\U0001D7D0\U0001D7CE:\U0001D7D2\U0001D7D3",
+        "double": "\U0001D7DA\U0001D7D8:\U0001D7DC\U0001D7DD",
+        "circle": "\u2461\u24ea:\u2463\u2464",
+        "darkcircle": "\u2777\u24ff:\u2779\u277a",
+    }
+
+    def test_ten_styles_match_expected_output(self):
+        self.assertEqual(set(logic.NAME_CLOCK_STYLES), set(self.EXPECTED))
+        for key, expected in self.EXPECTED.items():
+            self.assertEqual(logic.style_time("20:45", key), expected, key)
+
+    def test_unknown_style_falls_back_to_default(self):
+        self.assertEqual(logic.style_time("20:45", "nonsense"), "20:45")
+        self.assertEqual(logic.style_time("20:45", None), "20:45")
+
+    def test_every_style_clock_is_stripped_back_to_plain_name(self):
+        for key in logic.NAME_CLOCK_STYLES:
+            for hh, mm in ((0, 0), (9, 5), (12, 30), (23, 59)):
+                first, last = logic.build_clock_name("Dilshodbek", "", hh, mm, key)
+                self.assertEqual(logic.strip_clock_suffix(first), "Dilshodbek", (key, hh, mm))
+                self.assertIsNone(last)
+                first, last = logic.build_clock_name("Dilshodbek", "Abdu", hh, mm, key)
+                self.assertEqual((first, logic.strip_clock_suffix(last)), ("Dilshodbek", "Abdu"), (key, hh, mm))
+
+    def test_style_names_never_stack(self):
+        first, _ = logic.build_clock_name("Ali", "", 12, 30, "bold")
+        again, _ = logic.build_clock_name(logic.strip_clock_suffix(first), "", 12, 31, "mono")
+        self.assertEqual(again.count("|"), 1)
+
+    def test_length_limit_holds_for_every_style_even_with_wide_chars(self):
+        for key in logic.NAME_CLOCK_STYLES:
+            first, last = logic.build_clock_name("\u0416" * 100, "", 23, 59, key)
+            self.assertLessEqual(logic.u16len(first), logic.NAME_MAX_LENGTH, key)
+            self.assertTrue(first.endswith(logic.style_time("23:59", key)), key)
+            first, last = logic.build_clock_name("A" * 100, "B" * 100, 23, 59, key)
+            self.assertLessEqual(logic.u16len(first), 64)
+            self.assertLessEqual(logic.u16len(last), 64)
+            self.assertTrue(last.endswith(logic.style_time("23:59", key)), key)
+
+    def test_external_rename_recognises_styled_own_clock(self):
+        first, _ = logic.build_clock_name("Ali", "", 12, 30, "circle")
+        self.assertFalse(logic.is_external_rename("Ali", "", first, None))
+
+    def test_tick_uses_style_from_target(self):
+        tg, _, _ = self.tick([_target(name_clock_style="bold")])
+        self.assertEqual(tg.set_business_account_name.call_args.kwargs["first_name"],
+                         "Dilshodbek | " + logic.style_time("12:30", "bold"))
+
+    def test_styles_menu_lists_ten_with_sample_and_mark(self):
+        with patch.object(db, "get_settings", return_value=_settings(name_clock_style="strike")):
+            text, markup = bot.build_name_clock_styles_menu(OWNER)
+        buttons = [b for row in markup.inline_keyboard for b in row if b.callback_data.startswith("nc_style:")]
+        self.assertEqual(len(buttons), 10)
+        self.assertIn("Profilga o'rnatiladigan raqamlar", text)
+        strike = [b for b in buttons if b.callback_data == "nc_style:strike"][0]
+        self.assertIn("2\u03360\u0336", strike.text)
+        self.assertIn("\u2705", strike.text)
+        self.assertNotIn("\u2705", [b for b in buttons if b.callback_data == "nc_style:bold"][0].text)
+
+    def test_choose_style_saves_and_applies_when_enabled(self):
+        u, q = _query("nc_style:bold")
+        with patch.object(bot, "track_user"), patch.object(db, "get_settings", return_value=_settings(name_clock_enabled=True)), \
+             patch.object(db, "update_settings") as upd, patch.object(bot, "name_clock_tick", new=AsyncMock()) as tick:
+            async def go():
+                await bot.on_button(u, MagicMock())
+                await asyncio.gather(*list(bot._background_tasks))
+            run(go())
+        upd.assert_called_once_with(OWNER, name_clock_style="bold", name_clock_applied=None)
+        tick.assert_awaited_once()
+
+    def test_unknown_style_ignored(self):
+        u, q = _query("nc_style:hack")
+        with patch.object(bot, "track_user"), patch.object(db, "get_settings", return_value=_settings()), \
+             patch.object(db, "update_settings") as upd:
+            run(bot.on_button(u, MagicMock()))
+        upd.assert_not_called()
+
+    def test_menu_shows_current_style_and_main_menu_has_button(self):
+        with patch.object(db, "get_settings", return_value=_settings(name_clock_style="circle", name_clock_first="Ali")):
+            text, markup = bot.build_name_clock_menu(OWNER)
+        self.assertIn("Circle", text)
+        self.assertIn("nc_style_menu", [b.callback_data for row in markup.inline_keyboard for b in row])
+
+
+class PublicByDefaultTests(unittest.TestCase):
+    @unittest.skipIf(os.environ.get("NAME_CLOCK_PUBLIC") is not None, "env o'rnatilgan")
+    def test_open_to_everyone_by_default(self):
+        self.assertTrue(bot.NAME_CLOCK_PUBLIC)
+        with patch.object(bot, "ADMIN_ID", ADMIN):
+            self.assertTrue(bot.name_clock_allowed(5))
+
+    def test_zero_restricts_to_admin(self):
+        with patch.object(bot, "NAME_CLOCK_PUBLIC", False), patch.object(bot, "ADMIN_ID", ADMIN):
+            self.assertFalse(bot.name_clock_allowed(5))
+            self.assertTrue(bot.name_clock_allowed(ADMIN))
+
+
 if __name__ == "__main__":
     unittest.main()
