@@ -108,6 +108,10 @@ class RoleTests(unittest.TestCase):
         for key, (_, instruction) in ai.ROLES.items():
             self.assertIn(instruction, ai.build_system_prompt("A", None, key))
 
+    def test_developer_role_exists(self):
+        self.assertIn("developer", ai.ROLES)
+        self.assertIn("software developer", ai.build_system_prompt("A", None, "developer"))
+
     def test_unknown_or_missing_role_uses_default(self):
         default = ai.build_system_prompt("A", None, ai.DEFAULT_ROLE)
         self.assertEqual(ai.build_system_prompt("A", None, None), default)
