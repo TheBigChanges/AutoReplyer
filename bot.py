@@ -800,7 +800,7 @@ def build_name_clock_styles_menu(owner_id: int):
     current = db.get_settings(owner_id).get("name_clock_style")
     current = current if is_known_style(current) else DEFAULT_NAME_CLOCK_STYLE
     rows, pair = [], []
-    for key, (label, _d, _c, _e) in NAME_CLOCK_STYLES.items():
+    for key, (label, *_rest) in NAME_CLOCK_STYLES.items():
         mark = " \u2705" if key == current else ""
         pair.append(InlineKeyboardButton(f"{label} {style_time('20:45', key)}{mark}", callback_data=f"nc_style:{key}"))
         if len(pair) == 2:
