@@ -1118,3 +1118,33 @@ def get_name_clock_targets():
 def mark_name_clock_applied(owner_user_id: int, key: str):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("UPDATE settings SET name_clock_applied = %s WHERE owner_user_id = %s", (key, owner_user_id))
+
+
+def mark_name_clock_applied_bulk(pairs):
+    """[(owner_user_id, key), ...] — bir so'rovda (tick ichida har foydalanuvchi uchun alohida
+    so'rov yuborib, hodisa siklini sekinlashtirmaslik uchun)."""
+    pairs = list(pairs)
+    if not pairs:
+        return
+    with get_conn() as conn, conn.cursor() as cur:
+        psycopg2.extras.execute_values(
+            cur,
+            """
+            UPDATE settings AS s SET name_clock_applied = v.key
+            FROM (VALUES %s) AS v(owner_user_id, key)
+            WHERE s.owner_user_id = v.owner_user_id::bigint
+            """,
+            pairs,
+        )
+
+
+def get_name_clock_base(owner_user_id: int):
+    """Yengil o'qish (settings qatorini yaratmaydi): yoqilgan bo'lsa, asl ism; aks holda None."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT name_clock_first, name_clock_last FROM settings "
+            "WHERE owner_user_id = %s AND name_clock_enabled = TRUE AND name_clock_first IS NOT NULL",
+            (owner_user_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
