@@ -50,6 +50,7 @@ ALLOWED_SETTINGS_FIELDS = {
     "bio_updated_on",
     "ai_enabled",
     "ai_info",
+    "ai_role",
 }
 
 _pool: "psycopg2.pool.SimpleConnectionPool | None" = None
@@ -144,6 +145,7 @@ def init_db():
         # AI-Yordamchi
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_enabled BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_info TEXT")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_role TEXT")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS ai_usage (
