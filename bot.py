@@ -779,7 +779,7 @@ def build_name_clock_menu(owner_id: int, notice: str | None = None):
     keyboard = [
         [InlineKeyboardButton("❌ O'chirish" if enabled else "✅ Yoqish", callback_data="nc_toggle")],
         [InlineKeyboardButton("\U0001F30D Vaqt zonasi", callback_data="nc_tz_menu")],
-        [InlineKeyboardButton("\U0001F522 Raqamlar ko'rinishi", callback_data="nc_style_menu")],
+        [InlineKeyboardButton("\U0001F3A8 Shriftni tanlash", callback_data="nc_style_menu")],
         [InlineKeyboardButton("✏️ Asl ismni o'zgartirish", callback_data="nc_edit_name")],
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="open_panel")],
     ]
