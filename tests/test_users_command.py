@@ -136,6 +136,17 @@ class BackfillTests(Base):
         self.assertEqual({c.args[0] for c in m.call_args_list}, {2, 3})
         self.assertFalse(bot._profile_backfill_running)
 
+    def test_unexpected_error_for_one_user_does_not_stop_backfill(self):
+        tg = MagicMock()
+        tg.get_chat = AsyncMock(side_effect=[RuntimeError("boom"), MagicMock(username=None, full_name="B")])
+        with patch.object(db, "get_users_needing_info", side_effect=[[1, 2], []]), \
+             patch.object(db, "set_user_info"), \
+             patch.object(db, "mark_user_info_checked") as m, \
+             patch.object(bot.asyncio, "sleep", new=AsyncMock()):
+            tried, ok = run(bot.backfill_profiles(tg))
+        self.assertEqual((tried, ok), (2, 1))
+        m.assert_called_once_with(1)
+
     def test_backfill_respects_max_users(self):
         tg = MagicMock()
         tg.get_chat = AsyncMock(return_value=MagicMock(username=None, full_name="A"))
