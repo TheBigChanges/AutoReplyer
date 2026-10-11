@@ -51,6 +51,11 @@ ALLOWED_SETTINGS_FIELDS = {
     "ai_enabled",
     "ai_info",
     "ai_role",
+    "name_clock_enabled",
+    "name_clock_tz",
+    "name_clock_first",
+    "name_clock_last",
+    "name_clock_applied",
 }
 
 _pool: "psycopg2.pool.SimpleConnectionPool | None" = None
@@ -127,6 +132,9 @@ def init_db():
             "ALTER TABLE connections ADD COLUMN IF NOT EXISTS can_edit_bio BOOLEAN NOT NULL DEFAULT FALSE"
         )
         cur.execute(
+            "ALTER TABLE connections ADD COLUMN IF NOT EXISTS can_edit_name BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_connections_bcid ON connections (business_connection_id)"
         )
         cur.execute(
@@ -181,6 +189,12 @@ def init_db():
             )
             """
         )
+        # Ism soati ("Ism | 12:30")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_enabled BOOLEAN NOT NULL DEFAULT FALSE")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_tz TEXT")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_first TEXT")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_last TEXT")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_applied TEXT")
         cur.execute(
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_month INTEGER"
         )
@@ -363,20 +377,23 @@ def upsert_connection(
     can_reply: bool,
     is_enabled: bool,
     can_edit_bio: bool = False,
+    can_edit_name: bool = False,
 ):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO connections (owner_user_id, business_connection_id, can_reply, is_enabled, can_edit_bio, connected_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO connections
+                (owner_user_id, business_connection_id, can_reply, is_enabled, can_edit_bio, can_edit_name, connected_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (owner_user_id) DO UPDATE SET
                 business_connection_id = EXCLUDED.business_connection_id,
                 can_reply = EXCLUDED.can_reply,
                 is_enabled = EXCLUDED.is_enabled,
                 can_edit_bio = EXCLUDED.can_edit_bio,
+                can_edit_name = EXCLUDED.can_edit_name,
                 connected_at = EXCLUDED.connected_at
             """,
-            (owner_user_id, business_connection_id, can_reply, is_enabled, can_edit_bio, time.time()),
+            (owner_user_id, business_connection_id, can_reply, is_enabled, can_edit_bio, can_edit_name, time.time()),
         )
 
 
@@ -1073,3 +1090,29 @@ def purge_old_ai_data(max_age_seconds: float = 7 * 86400):
         cur.execute("DELETE FROM ai_chat_history WHERE created_at < %s", (cutoff,))
         cur.execute("DELETE FROM ai_chat_pause WHERE paused_until < %s", (time.time(),))
         cur.execute("DELETE FROM ai_usage WHERE day < %s", (time.strftime("%Y-%m-%d", time.gmtime(cutoff)),))
+
+
+# --------------------------------------------------------------------------
+# Ism soati
+# --------------------------------------------------------------------------
+def get_name_clock_targets():
+    """Soati yoqilgan, ulanishi faol, ismni o'zgartirish ruxsati bor va bloklanmagan egalar."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT s.owner_user_id, c.business_connection_id,
+                   s.name_clock_tz, s.name_clock_first, s.name_clock_last, s.name_clock_applied
+            FROM settings s
+            JOIN connections c ON c.owner_user_id = s.owner_user_id
+            WHERE s.name_clock_enabled = TRUE
+              AND c.is_enabled = TRUE AND c.can_edit_name = TRUE
+              AND s.name_clock_first IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM blocked_users b WHERE b.user_id = s.owner_user_id)
+            """
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def mark_name_clock_applied(owner_user_id: int, key: str):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE settings SET name_clock_applied = %s WHERE owner_user_id = %s", (key, owner_user_id))
