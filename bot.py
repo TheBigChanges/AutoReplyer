@@ -54,6 +54,7 @@ from logic import (
     compute_bio_text,
     format_cooldown,
     format_time_range,
+    is_external_rename,
     is_known_zone,
     is_within_sleep_window,
     parse_birthday_input,
@@ -185,6 +186,13 @@ def track_user(user):
     if user is None or getattr(user, "is_bot", False):
         return  # botlar "foydalanuvchi" emas: ro'yxat, /stats va reklamaga kirmasin
     db.record_user(user.id, username=user.username, full_name=user.full_name)
+    # Ism soati yoqilgan egasi botga biror narsa yozsa/bossa, uning joriy ismi shu yerda keladi —
+    # o'zi o'zgartirgan bo'lsa, darhol yangi ismni asl ism qilib olamiz.
+    if name_clock_allowed(user.id):
+        try:
+            adopt_new_base_name(user.id, getattr(user, "first_name", None), getattr(user, "last_name", None))
+        except Exception:
+            logger.exception("Ism soati: yangi ismni olishda xato (owner=%s)", user.id)
 
 HOW_CONNECT_TEXT = (
     "\U0001F517 Akkountni ulash — qadamma-qadam:\n\n"
@@ -518,6 +526,7 @@ NAME_CLOCK_PUBLIC = os.environ.get("NAME_CLOCK_PUBLIC", "").strip() == "1"
 # shunda yangi vaqt aynan daqiqa almashganda ko'rinadi (ism keyingi daqiqa vaqti bilan yoziladi).
 NAME_CLOCK_LEAD_SECONDS = 0.8
 NAME_CLOCK_CONCURRENCY = 25
+NAME_CLOCK_SYNC_LEAD_SECONDS = 4.0  # ism o'zgarganini tekshirish: yangilashdan shuncha oldin
 NAME_CLOCK_MAX_FAILURES = 3  # ketma-ket shuncha xatodan keyin funksiya o'zi o'chadi
 FLOOD_NOTICE_COOLDOWN_SECONDS = 600
 
@@ -647,6 +656,65 @@ async def name_clock_loop(bot):
 
 async def _post_init(app: Application):
     spawn_background(name_clock_loop(app.bot))
+    spawn_background(name_clock_sync_loop(app.bot))
+
+
+def adopt_new_base_name(owner_id: int, cur_first, cur_last) -> bool:
+    """Egasi ismni Telegramda o'zi o'zgartirgan bo'lsa, yangi ismni asl ism qilib oladi
+    (aks holda bot keyingi daqiqada eski ismni qaytarib qo'yardi). True — yangilandi."""
+    s = db.get_settings(owner_id)
+    if not s.get("name_clock_enabled") or not s.get("name_clock_first"):
+        return False
+    if not is_external_rename(s["name_clock_first"], s.get("name_clock_last"), cur_first, cur_last):
+        return False
+    db.update_settings(
+        owner_id,
+        name_clock_first=strip_clock_suffix(cur_first)[:NAME_MAX_LENGTH],
+        name_clock_last=strip_clock_suffix(cur_last)[:NAME_MAX_LENGTH],
+        name_clock_applied=None,
+    )
+    logger.info("Ism soati: egasi ismni o'zgartirgan, yangi asl ism olindi (owner=%s)", owner_id)
+    return True
+
+
+async def name_clock_sync(bot):
+    """Daqiqa chegarasidan biroz oldin: yoqilgan akkauntlarning haqiqiy ismini Telegramdan o'qib,
+    egasi o'zi o'zgartirgan bo'lsa yangi asl ismni qabul qiladi."""
+    try:
+        targets = db.get_name_clock_targets()
+    except Exception:
+        logger.exception("Ism soati: sinxronlash ro'yxati o'qilmadi")
+        return
+    sem = asyncio.Semaphore(NAME_CLOCK_CONCURRENCY)
+
+    async def one(target):
+        async with sem:
+            try:
+                chat = await bot.get_chat(target["owner_user_id"])
+            except TelegramError:
+                return
+            adopt_new_base_name(target["owner_user_id"], getattr(chat, "first_name", None), getattr(chat, "last_name", None))
+
+    await asyncio.gather(*(one(t) for t in targets), return_exceptions=True)
+
+
+async def name_clock_sync_loop(bot):
+    """Har daqiqada, yangilashdan NAME_CLOCK_SYNC_LEAD_SECONDS oldin ism o'zgarganini tekshiradi."""
+    while True:
+        try:
+            _, boundary = next_clock_boundary(time.time())
+            wake = boundary - NAME_CLOCK_SYNC_LEAD_SECONDS
+            if wake <= time.time():
+                boundary += 60
+                wake += 60
+            await asyncio.sleep(max(0.0, wake - time.time()))
+            spawn_background(name_clock_sync(bot))
+            await asyncio.sleep(NAME_CLOCK_SYNC_LEAD_SECONDS)  # keyingi aylanish boshqa daqiqaga tushsin
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Ism soati sinxronlash sikli xatosi")
+            await asyncio.sleep(1)
 
 
 async def capture_base_name(bot, owner_id: int) -> tuple[str, str] | None:
@@ -2486,6 +2554,10 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if bm.from_user and bm.from_user.id == owner_id:
             # Egasi chatga o'zi yozdi — AI shu chatda biroz jim turadi (botning o'z xabari bo'lsa — yo'q).
             if (bm.chat.id, bm.message_id) not in _bot_sent_ids:
+                try:
+                    adopt_new_base_name(owner_id, getattr(bm.from_user, "first_name", None), getattr(bm.from_user, "last_name", None))
+                except Exception:
+                    logger.exception("Ism soati: yangi ismni olishda xato (owner=%s)", owner_id)
                 try:
                     if db.get_settings(owner_id).get("ai_enabled"):
                         db.pause_ai_chat(owner_id, bm.chat.id, AI_TAKEOVER_PAUSE_SECONDS)
