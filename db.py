@@ -585,7 +585,7 @@ def record_user(user_id: int, username=_UNSET, full_name=_UNSET):
         updates.append("full_name = EXCLUDED.full_name")
 
     with get_conn() as conn, conn.cursor() as cur:
-        if username:
+        if username is not _UNSET and username:
             # Username boshqa odamga o'tgan bo'lishi mumkin — eski egasidan olib
             # tashlaymiz, shunda @username bo'yicha qidiruv bir ma'noli bo'ladi.
             cur.execute(
