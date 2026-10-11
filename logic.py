@@ -227,7 +227,77 @@ NAME_CLOCK_ZONES = [
 ]
 DEFAULT_NAME_CLOCK_ZONE = "Asia/Tashkent"
 
-_CLOCK_SUFFIX_RE = re.compile(r"\s*\|\s*\d{1,2}:\d{2}\s*$")
+# Raqamlar ko'rinishi (Telegram ismidagi soat uchun). Kalit -> (nom, 0-9 raqamlar, ikki nuqta belgisi, har belgi orqasiga qo'shiladigan belgi)
+_ASCII_DIGITS = "0123456789"
+_STROKE = "̶"  # birlashtiruvchi uzun chiziq (Strike)
+
+
+def _seq(first_cp: int) -> str:
+    return "".join(chr(first_cp + i) for i in range(10))
+
+
+NAME_CLOCK_STYLES = {
+    "default": ("Default", _ASCII_DIGITS, ":", ""),
+    "mono": ("Monospace", _seq(0x1D7F6), ":", ""),
+    "strike": ("Strike", _ASCII_DIGITS, ":", _STROKE),
+    "super": ("SuperScript", "⁰¹²³⁴⁵⁶⁷⁸⁹", "˸", ""),
+    "sub": ("SubScript", _seq(0x2080), ":", ""),
+    "bold": ("Bold", _seq(0x1D7EC), ":", ""),
+    "boldserif": ("Bold Serif", _seq(0x1D7CE), ":", ""),
+    "double": ("Double Struck", _seq(0x1D7D8), ":", ""),
+    "circle": ("Circle", "⓪" + "".join(chr(0x2460 + i) for i in range(9)), ":", ""),
+    "darkcircle": ("Dark Circle", "⓿" + "".join(chr(0x2776 + i) for i in range(9)), ":", ""),
+}
+DEFAULT_NAME_CLOCK_STYLE = "default"
+
+
+def is_known_style(key: str | None) -> bool:
+    return key in NAME_CLOCK_STYLES
+
+
+def style_time(text: str, style: str | None) -> str:
+    """'20:45' ni tanlangan ko'rinishga o'tkazadi."""
+    _, digits, colon, extra = NAME_CLOCK_STYLES[style if is_known_style(style) else DEFAULT_NAME_CLOCK_STYLE]
+    out = []
+    for ch in text:
+        if ch.isascii() and ch.isdigit():
+            out.append(digits[int(ch)] + extra)
+        elif ch == ":":
+            out.append(colon + extra)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _build_suffix_re():
+    digit_chars = set(_ASCII_DIGITS)
+    colon_chars = {":"}
+    for _, digits, colon, _extra in NAME_CLOCK_STYLES.values():
+        digit_chars.update(digits)
+        colon_chars.add(colon)
+    d = "(?:[" + re.escape("".join(sorted(digit_chars))) + "]" + _STROKE + "?)"
+    c = "(?:[" + re.escape("".join(sorted(colon_chars))) + "]" + _STROKE + "?)"
+    return re.compile(r"\s*\|\s*" + d + "{1,2}" + c + d + "{2}\\s*$")
+
+
+_CLOCK_SUFFIX_RE = _build_suffix_re()
+
+
+def u16len(text: str) -> int:
+    """Telegram uzunlikni UTF-16 birligida sanashi mumkin (astral belgilar = 2)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _cut(text: str, max_units: int) -> str:
+    """Matnni UTF-16 uzunligi `max_units` dan oshmaydigan qilib (belgini bo'lmasdan) qisqartiradi."""
+    out, used = [], 0
+    for ch in text:
+        w = 2 if ord(ch) > 0xFFFF else 1
+        if used + w > max_units:
+            break
+        out.append(ch)
+        used += w
+    return "".join(out)
 
 
 def zone_label(tz_name: str | None) -> str:
@@ -255,17 +325,20 @@ def split_full_name(full_name: str) -> tuple[str, str]:
     return parts[0][:NAME_MAX_LENGTH], (parts[1].strip() if len(parts) > 1 else "")[:NAME_MAX_LENGTH]
 
 
-def build_clock_name(base_first: str, base_last: str | None, hour: int, minute: int) -> tuple[str, str | None]:
+def build_clock_name(
+    base_first: str, base_last: str | None, hour: int, minute: int, style: str | None = None
+) -> tuple[str, str | None]:
     """(first_name, last_name) ni qaytaradi.
     Familiya yo'q:  ('Dilshodbek | 12:30', None)       -> "Dilshodbek | 12:30"
     Familiya bor:   ('Dilshodbek', 'Abdu | 12:30')     -> "Dilshodbek Abdu | 12:30"
-    Har bir qism 64 belgidan oshmaydi: kerak bo'lsa asl ism qisqartiriladi, soat doim to'liq qoladi."""
-    suffix = f" | {hour:02d}:{minute:02d}"
+    Har bir qism 64 birlikdan oshmaydi: kerak bo'lsa asl ism qisqartiriladi, soat doim to'liq qoladi."""
+    suffix = " | " + style_time(f"{hour:02d}:{minute:02d}", style)
     base_first = (base_first or "").strip()
     base_last = (base_last or "").strip()
+    room = NAME_MAX_LENGTH - u16len(suffix)
     if base_last:
-        return base_first[:NAME_MAX_LENGTH], base_last[: NAME_MAX_LENGTH - len(suffix)] + suffix
-    return base_first[: NAME_MAX_LENGTH - len(suffix)] + suffix, None
+        return _cut(base_first, NAME_MAX_LENGTH), _cut(base_last, room) + suffix
+    return _cut(base_first, room) + suffix, None
 
 
 def is_external_rename(base_first: str, base_last: str | None, cur_first: str | None, cur_last: str | None) -> bool:
