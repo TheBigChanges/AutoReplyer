@@ -205,3 +205,64 @@ def is_within_sleep_window(now_minutes: int, start_minutes: int, end_minutes: in
     if start_minutes < end_minutes:
         return start_minutes <= now_minutes < end_minutes
     return now_minutes >= start_minutes or now_minutes < end_minutes
+
+
+# --------------------------------------------------------------------------
+# Ism soati: "Ism | 12:30"
+# --------------------------------------------------------------------------
+NAME_MAX_LENGTH = 64  # Telegram: ism va familiya har biri 1-64 / 0-64 belgi
+
+# (kalit, tugmadagi nom, IANA vaqt zonasi)
+NAME_CLOCK_ZONES = [
+    ("tashkent", "\U0001F1FA\U0001F1FF Toshkent (UTC+5)", "Asia/Tashkent"),
+    ("moscow", "\U0001F1F7\U0001F1FA Moskva (UTC+3)", "Europe/Moscow"),
+    ("istanbul", "\U0001F1F9\U0001F1F7 Istanbul (UTC+3)", "Europe/Istanbul"),
+    ("dubai", "\U0001F1E6\U0001F1EA Dubay (UTC+4)", "Asia/Dubai"),
+    ("bishkek", "\U0001F1F0\U0001F1EC Bishkek (UTC+6)", "Asia/Bishkek"),
+    ("beijing", "\U0001F1E8\U0001F1F3 Pekin (UTC+8)", "Asia/Shanghai"),
+    ("tokyo", "\U0001F1EF\U0001F1F5 Tokio (UTC+9)", "Asia/Tokyo"),
+    ("london", "\U0001F1EC\U0001F1E7 London", "Europe/London"),
+    ("berlin", "\U0001F1E9\U0001F1EA Berlin", "Europe/Berlin"),
+    ("newyork", "\U0001F1FA\U0001F1F8 Nyu-York", "America/New_York"),
+]
+DEFAULT_NAME_CLOCK_ZONE = "Asia/Tashkent"
+
+_CLOCK_SUFFIX_RE = re.compile(r"\s*\|\s*\d{1,2}:\d{2}\s*$")
+
+
+def zone_label(tz_name: str | None) -> str:
+    for _, label, tz in NAME_CLOCK_ZONES:
+        if tz == tz_name:
+            return label
+    return dict((tz, label) for _, label, tz in NAME_CLOCK_ZONES)[DEFAULT_NAME_CLOCK_ZONE]
+
+
+def is_known_zone(tz_name: str | None) -> bool:
+    return any(tz == tz_name for _, _, tz in NAME_CLOCK_ZONES)
+
+
+def strip_clock_suffix(text: str | None) -> str:
+    """Oldingi " | 12:30" qo'shimchasini olib tashlaydi (bot yarim yo'lda to'xtagan bo'lsa,
+    asl ism sifatida soatli ism saqlanib qolmasligi uchun)."""
+    return _CLOCK_SUFFIX_RE.sub("", text or "").strip()
+
+
+def split_full_name(full_name: str) -> tuple[str, str]:
+    """'Dilshodbek Abdu' -> ('Dilshodbek', 'Abdu'). Familiya bo'lmasa ikkinchisi ''."""
+    parts = strip_clock_suffix(full_name).split(None, 1)
+    if not parts:
+        return "", ""
+    return parts[0][:NAME_MAX_LENGTH], (parts[1].strip() if len(parts) > 1 else "")[:NAME_MAX_LENGTH]
+
+
+def build_clock_name(base_first: str, base_last: str | None, hour: int, minute: int) -> tuple[str, str | None]:
+    """(first_name, last_name) ni qaytaradi.
+    Familiya yo'q:  ('Dilshodbek | 12:30', None)       -> "Dilshodbek | 12:30"
+    Familiya bor:   ('Dilshodbek', 'Abdu | 12:30')     -> "Dilshodbek Abdu | 12:30"
+    Har bir qism 64 belgidan oshmaydi: kerak bo'lsa asl ism qisqartiriladi, soat doim to'liq qoladi."""
+    suffix = f" | {hour:02d}:{minute:02d}"
+    base_first = (base_first or "").strip()
+    base_last = (base_last or "").strip()
+    if base_last:
+        return base_first[:NAME_MAX_LENGTH], base_last[: NAME_MAX_LENGTH - len(suffix)] + suffix
+    return base_first[: NAME_MAX_LENGTH - len(suffix)] + suffix, None
