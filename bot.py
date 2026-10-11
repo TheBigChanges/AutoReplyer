@@ -514,6 +514,7 @@ def build_ai_menu(owner_id: int, notice: str | None = None):
         "\U0001F916 AI-Yordamchi\n\n"
         f"Holat: {status_label}\n"
         f"{usage_line}\n"
+        f"Rol: {ai.role_label(s.get('ai_role'))}\n"
         f"Ma'lumot va uslub: {info if info else 'kiritilmagan'}\n\n"
         "Yoqilganda, avtojavob ishlaydigan paytda (Oflayn holat yoki uxlash vaqti) odatiy matn o'rniga "
         "sun'iy intellekt suhbatdoshingizga o'zi javob yozadi. Oddiy avtojavob matnlari o'chmaydi — "
@@ -524,10 +525,26 @@ def build_ai_menu(owner_id: int, notice: str | None = None):
         text += f"\n\n{notice}"
     keyboard = [
         [InlineKeyboardButton("❌ O'chirish" if enabled else "✅ Yoqish", callback_data="ai_toggle")],
+        [InlineKeyboardButton("\U0001F3AD Rolni tanlash", callback_data="ai_roles")],
         [InlineKeyboardButton("\U0001F4DD Ma'lumot va uslub", callback_data="ai_edit_info")],
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="open_panel")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_ai_roles_menu(owner_id: int):
+    current = ai.normalize_role(db.get_settings(owner_id).get("ai_role"))
+    text = (
+        "\U0001F3AD AI uchun rolni tanlang\n\n"
+        "AI suhbatdoshingizga shu rolga mos ohang va uslubda javob beradi. "
+        "Qo'shimcha ma'lumotni \"Ma'lumot va uslub\" bo'limida yozishingiz mumkin."
+    )
+    rows = [
+        [InlineKeyboardButton(("\u2705 " if key == current else "") + label, callback_data=f"ai_role:{key}")]
+        for key, (label, _) in ai.ROLES.items()
+    ]
+    rows.append([InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="ai_menu")])
+    return text, InlineKeyboardMarkup(rows)
 
 
 async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str, cooldown_hours: float, label: str):
@@ -574,7 +591,9 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
             history = db.get_ai_history(owner_id, chat_id, AI_HISTORY_MESSAGES)
             history.append({"role": "user", "text": text})
             info = db.get_user(owner_id) or {}
-            answer = await ai.generate_reply(history, info.get("full_name"), settings.get("ai_info"))
+            answer = await ai.generate_reply(
+                history, info.get("full_name"), settings.get("ai_info"), settings.get("ai_role")
+            )
             if not answer:
                 if consumed:
                     db.refund_ai_quota(owner_id, day)
@@ -975,6 +994,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             db.update_settings(owner_id, ai_enabled=True)
         text, markup = build_ai_menu(owner_id, notice)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "ai_roles":
+        text, markup = build_ai_roles_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith("ai_role:"):
+        role = data.split(":", 1)[1]
+        if role in ai.ROLES:
+            db.update_settings(owner_id, ai_role=role)
+        text, markup = build_ai_roles_menu(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
