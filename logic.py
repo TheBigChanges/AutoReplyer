@@ -266,3 +266,18 @@ def build_clock_name(base_first: str, base_last: str | None, hour: int, minute: 
     if base_last:
         return base_first[:NAME_MAX_LENGTH], base_last[: NAME_MAX_LENGTH - len(suffix)] + suffix
     return base_first[: NAME_MAX_LENGTH - len(suffix)] + suffix, None
+
+
+def is_external_rename(base_first: str, base_last: str | None, cur_first: str | None, cur_last: str | None) -> bool:
+    """Foydalanuvchi ismni Telegramda o'zi o'zgartirdimi? Joriy ism (soatsiz) saqlangan asl ismdan
+    farq qilsa — True. Uzun ism soat uchun qisqartirilgan bo'lsa (asl ismning boshi) — o'zgarish emas."""
+    def same(base: str, cur: str) -> bool:
+        base, cur = strip_clock_suffix(base), strip_clock_suffix(cur)
+        if base == cur:
+            return True
+        return len(base) >= NAME_MAX_LENGTH - 8 and base.startswith(cur)
+
+    cf = strip_clock_suffix(cur_first)
+    if not cf:
+        return False  # Telegram ismni qaytarmadi — o'zgargan deb hisoblamaymiz
+    return not (same(base_first or "", cf) and same(base_last or "", cur_last or ""))
