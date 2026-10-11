@@ -489,12 +489,23 @@ class StyleTests(Base):
         "double": "\U0001D7DA\U0001D7D8:\U0001D7DC\U0001D7DD",
         "circle": "\u2461\u24ea:\u2463\u2464",
         "darkcircle": "\u2777\u24ff:\u2779\u277a",
+        "wide": "\uff12\uff10\uff1a\uff14\uff15",
+        "sans": "\U0001D7E4\U0001D7E2:\U0001D7E6\U0001D7E7",
+        "underline": "2\u03320\u0332:\u03324\u03325\u0332",
+        "keycap": "2\ufe0f\u20e30\ufe0f\u20e3:4\ufe0f\u20e35\ufe0f\u20e3",
+        "ring": "2\u20dd0\u20dd:4\u20dd5\u20dd",
     }
 
-    def test_ten_styles_match_expected_output(self):
+    def test_fifteen_styles_match_expected_output(self):
         self.assertEqual(set(logic.NAME_CLOCK_STYLES), set(self.EXPECTED))
         for key, expected in self.EXPECTED.items():
             self.assertEqual(logic.style_time("20:45", key), expected, key)
+
+    def test_five_new_fonts_present_and_distinct(self):
+        for key in ("wide", "sans", "underline", "keycap", "ring"):
+            self.assertIn(key, logic.NAME_CLOCK_STYLES)
+        samples = {logic.style_time("20:45", k) for k in logic.NAME_CLOCK_STYLES}
+        self.assertEqual(len(samples), 15)  # hech biri boshqasi bilan bir xil emas
 
     def test_unknown_style_falls_back_to_default(self):
         self.assertEqual(logic.style_time("20:45", "nonsense"), "20:45")
@@ -533,11 +544,11 @@ class StyleTests(Base):
         self.assertEqual(tg.set_business_account_name.call_args.kwargs["first_name"],
                          "Dilshodbek | " + logic.style_time("12:30", "bold"))
 
-    def test_styles_menu_lists_ten_with_sample_and_mark(self):
+    def test_styles_menu_lists_fifteen_with_sample_and_mark(self):
         with patch.object(db, "get_settings", return_value=_settings(name_clock_style="strike")):
             text, markup = bot.build_name_clock_styles_menu(OWNER)
         buttons = [b for row in markup.inline_keyboard for b in row if b.callback_data.startswith("nc_style:")]
-        self.assertEqual(len(buttons), 10)
+        self.assertEqual(len(buttons), 15)
         self.assertIn("Profilga o'rnatiladigan raqamlar", text)
         strike = [b for b in buttons if b.callback_data == "nc_style:strike"][0]
         self.assertIn("2\u03360\u0336", strike.text)
