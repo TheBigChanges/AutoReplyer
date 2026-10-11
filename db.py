@@ -56,6 +56,7 @@ ALLOWED_SETTINGS_FIELDS = {
     "name_clock_first",
     "name_clock_last",
     "name_clock_applied",
+    "name_clock_style",
 }
 
 _pool: "psycopg2.pool.SimpleConnectionPool | None" = None
@@ -195,6 +196,7 @@ def init_db():
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_first TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_last TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_applied TEXT")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_style TEXT")
         cur.execute(
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_month INTEGER"
         )
@@ -1101,7 +1103,7 @@ def get_name_clock_targets():
         cur.execute(
             """
             SELECT s.owner_user_id, c.business_connection_id,
-                   s.name_clock_tz, s.name_clock_first, s.name_clock_last, s.name_clock_applied
+                   s.name_clock_tz, s.name_clock_first, s.name_clock_last, s.name_clock_applied, s.name_clock_style
             FROM settings s
             JOIN connections c ON c.owner_user_id = s.owner_user_id
             WHERE s.name_clock_enabled = TRUE
