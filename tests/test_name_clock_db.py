@@ -90,6 +90,12 @@ class NameClockDbTests(unittest.TestCase):
         t = [t for t in db.get_name_clock_targets() if t["owner_user_id"] == self.owner][0]
         self.assertEqual(t["name_clock_applied"], "2026-10-11 12:30")
 
+    def test_style_saved_and_returned_in_targets(self):
+        self._setup()
+        db.update_settings(self.owner, name_clock_style="bold")
+        t = [t for t in db.get_name_clock_targets() if t["owner_user_id"] == self.owner][0]
+        self.assertEqual(t["name_clock_style"], "bold")
+
     def test_can_edit_name_default_false_and_saved(self):
         db.upsert_connection(self.owner, "x", True, True)
         self.assertFalse(db.get_connection(self.owner)["can_edit_name"])
