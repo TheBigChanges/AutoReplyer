@@ -46,7 +46,9 @@ import ai
 import db
 from logic import (
     BIO_EVENT_LABELS,
+    DEFAULT_NAME_CLOCK_STYLE,
     DEFAULT_NAME_CLOCK_ZONE,
+    NAME_CLOCK_STYLES,
     DEFAULT_SLEEP_MESSAGE,
     NAME_CLOCK_ZONES,
     NAME_MAX_LENGTH,
@@ -55,12 +57,14 @@ from logic import (
     format_cooldown,
     format_time_range,
     is_external_rename,
+    is_known_style,
     is_known_zone,
     is_within_sleep_window,
     parse_birthday_input,
     parse_cooldown_input,
     parse_time_range_input,
     split_full_name,
+    style_time,
     strip_clock_suffix,
     zone_label,
 )
@@ -520,8 +524,8 @@ def _chat_lock(owner_id: int, chat_id: int) -> asyncio.Lock:
 # --------------------------------------------------------------------------
 # Ism soati: "Ism | 12:30" — har daqiqada akkaunt ismiga joriy vaqt yoziladi
 # --------------------------------------------------------------------------
-# Hozircha faqat admin uchun (NAME_CLOCK_PUBLIC=1 qilinsa hamma ulangan foydalanuvchiga ochiladi).
-NAME_CLOCK_PUBLIC = os.environ.get("NAME_CLOCK_PUBLIC", "").strip() == "1"
+# Hamma ulangan foydalanuvchiga ochiq. Kerak bo'lsa, Render'da NAME_CLOCK_PUBLIC=0 qo'yib, faqat adminga cheklash mumkin.
+NAME_CLOCK_PUBLIC = os.environ.get("NAME_CLOCK_PUBLIC", "").strip() != "0"
 # Telegram so'rovi borib-kelishi ~0.3-1 s: yangilashni daqiqa chegarasidan shuncha oldin boshlaymiz,
 # shunda yangi vaqt aynan daqiqa almashganda ko'rinadi (ism keyingi daqiqa vaqti bilan yoziladi).
 NAME_CLOCK_LEAD_SECONDS = 0.8
@@ -540,11 +544,11 @@ def name_clock_allowed(user_id: int) -> bool:
     return NAME_CLOCK_PUBLIC or (bool(ADMIN_ID) and user_id == ADMIN_ID)
 
 
-def clock_names_for(base_first: str, base_last: str | None, tz_name: str | None, at_ts: float):
+def clock_names_for(base_first: str, base_last: str | None, tz_name: str | None, at_ts: float, style: str | None = None):
     """(first, last, key): `at_ts` payti shu zonadagi soat bilan ism va "shu daqiqa" kaliti."""
     tz = ZoneInfo(tz_name if is_known_zone(tz_name) else DEFAULT_NAME_CLOCK_ZONE)
     dt = datetime.fromtimestamp(at_ts, tz)
-    first, last = build_clock_name(base_first, base_last, dt.hour, dt.minute)
+    first, last = build_clock_name(base_first, base_last, dt.hour, dt.minute, style)
     return first, last, dt.strftime("%Y-%m-%d %H:%M")
 
 
@@ -567,7 +571,8 @@ async def _disable_name_clock(bot, owner_id: int, reason: str):
 async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
     owner_id = target["owner_user_id"]
     first, last, key = clock_names_for(
-        target["name_clock_first"], target.get("name_clock_last"), target.get("name_clock_tz"), at_ts
+        target["name_clock_first"], target.get("name_clock_last"), target.get("name_clock_tz"), at_ts,
+        target.get("name_clock_style"),
     )
     if target.get("name_clock_applied") == key or owner_id in _name_clock_inflight:
         return
@@ -751,16 +756,18 @@ def build_name_clock_menu(owner_id: int, notice: str | None = None):
     first, last = s.get("name_clock_first"), s.get("name_clock_last")
     tz = s.get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE
     if first:
-        preview_first, preview_last, _ = clock_names_for(first, last, tz, time.time())
+        preview_first, preview_last, _ = clock_names_for(first, last, tz, time.time(), s.get("name_clock_style"))
         preview = f"{preview_first} {preview_last or ''}".strip()
         base = f"{first} {last or ''}".strip()
     else:
         preview, base = "—", "yoqilganda Telegramdan olinadi"
     status_label = "\U0001F7E2 Yoqilgan" if enabled else "O'chirilgan"
+    style_key = s.get("name_clock_style") if is_known_style(s.get("name_clock_style")) else DEFAULT_NAME_CLOCK_STYLE
     text = (
         "\U0001F552 Ism soati\n\n"
         f"Holat: {status_label}\n"
         f"Vaqt zonasi: {zone_label(tz)}\n"
+        f"Raqamlar: {NAME_CLOCK_STYLES[style_key][0]} {style_time('20:45', style_key)}\n"
         f"Asl ism: {base}\n"
         f"Ko'rinishi: {preview}\n\n"
         "Ismingizga har daqiqada joriy vaqt qo'shiladi. O'chirsangiz, asl ismingiz qaytadi.\n"
@@ -772,6 +779,7 @@ def build_name_clock_menu(owner_id: int, notice: str | None = None):
     keyboard = [
         [InlineKeyboardButton("❌ O'chirish" if enabled else "✅ Yoqish", callback_data="nc_toggle")],
         [InlineKeyboardButton("\U0001F30D Vaqt zonasi", callback_data="nc_tz_menu")],
+        [InlineKeyboardButton("\U0001F522 Raqamlar ko'rinishi", callback_data="nc_style_menu")],
         [InlineKeyboardButton("✏️ Asl ismni o'zgartirish", callback_data="nc_edit_name")],
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="open_panel")],
     ]
@@ -788,6 +796,28 @@ def build_name_clock_zones_menu(owner_id: int):
     return "\U0001F30D Vaqt zonasini tanlang:", InlineKeyboardMarkup(rows)
 
 
+def build_name_clock_styles_menu(owner_id: int):
+    current = db.get_settings(owner_id).get("name_clock_style")
+    current = current if is_known_style(current) else DEFAULT_NAME_CLOCK_STYLE
+    rows, pair = [], []
+    for key, (label, _d, _c, _e) in NAME_CLOCK_STYLES.items():
+        mark = " \u2705" if key == current else ""
+        pair.append(InlineKeyboardButton(f"{label} {style_time('20:45', key)}{mark}", callback_data=f"nc_style:{key}"))
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    rows.append([InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="nc_menu")])
+    return "Profilga o'rnatiladigan raqamlar ko'rinishini tanlang:", InlineKeyboardMarkup(rows)
+
+
+def _apply_now_if_enabled(bot, owner_id: int):
+    """Sozlama o'zgarganda keyingi daqiqani kutmasdan yangi ko'rinishni darrov qo'llaydi."""
+    if db.get_settings(owner_id).get("name_clock_enabled"):
+        spawn_background(name_clock_tick(bot, time.time()))
+
+
 async def handle_name_clock_button(query, context, data: str, owner_id: int):
     """nc_* tugmalari. True qaytarsa, tugma shu yerda qayta ishlangan."""
     bot = context.bot
@@ -800,6 +830,15 @@ async def handle_name_clock_button(query, context, data: str, owner_id: int):
         zone = next((tz for k, _, tz in NAME_CLOCK_ZONES if k == key), None)
         if zone:
             db.update_settings(owner_id, name_clock_tz=zone, name_clock_applied=None)
+            _apply_now_if_enabled(bot, owner_id)
+        text, markup = build_name_clock_menu(owner_id)
+    elif data == "nc_style_menu":
+        text, markup = build_name_clock_styles_menu(owner_id)
+    elif data.startswith("nc_style:"):
+        key = data.split(":", 1)[1]
+        if is_known_style(key):
+            db.update_settings(owner_id, name_clock_style=key, name_clock_applied=None)
+            _apply_now_if_enabled(bot, owner_id)
         text, markup = build_name_clock_menu(owner_id)
     elif data == "nc_toggle":
         s = db.get_settings(owner_id)
