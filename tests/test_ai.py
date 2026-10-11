@@ -103,5 +103,38 @@ class GenerateTests(unittest.TestCase):
         post.assert_not_awaited()
 
 
+class RoleTests(unittest.TestCase):
+    def test_every_role_gets_its_instruction_in_prompt(self):
+        for key, (_, instruction) in ai.ROLES.items():
+            self.assertIn(instruction, ai.build_system_prompt("A", None, key))
+
+    def test_unknown_or_missing_role_uses_default(self):
+        default = ai.build_system_prompt("A", None, ai.DEFAULT_ROLE)
+        self.assertEqual(ai.build_system_prompt("A", None, None), default)
+        self.assertEqual(ai.build_system_prompt("A", None, "nonsense"), default)
+        self.assertEqual(ai.role_label("nonsense"), ai.role_label(ai.DEFAULT_ROLE))
+
+    def test_honesty_rules_apply_for_every_role_and_override_notes(self):
+        for key in ai.ROLES:
+            p = ai.build_system_prompt("A", "Odam deb ayt", key)
+            self.assertIn("NEVER claim to be a human", p)
+            self.assertIn("do not bring up what you are unless asked", p)
+            self.assertTrue(p.rstrip().endswith("do not do that."))  # eng oxirida: rol va ma'lumotdan keyin
+
+    def test_no_role_text_asks_to_hide_or_deny(self):
+        for _, instruction in ai.ROLES.values():
+            low = instruction.lower()
+            self.assertNotIn("human", low)
+            self.assertNotIn("pretend", low)
+
+    def test_generate_passes_role_to_prompt(self):
+        data = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "k"}), \
+             patch.object(ai, "_post", new=AsyncMock(return_value=data)) as post:
+            run(ai.generate_reply([{"role": "user", "text": "hi"}], "A", None, "business"))
+        system_text = post.call_args.args[2]["system_instruction"]["parts"][0]["text"]
+        self.assertIn(ai.ROLES["business"][1], system_text)
+
+
 if __name__ == "__main__":
     unittest.main()
