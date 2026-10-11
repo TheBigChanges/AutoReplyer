@@ -19,6 +19,8 @@ import logging
 import os
 import re
 import threading
+import weakref
+from collections import deque
 import time
 from datetime import datetime
 from datetime import time as dtime
@@ -40,6 +42,7 @@ from telegram.ext import (
     filters,
 )
 
+import ai
 import db
 from logic import (
     BIO_EVENT_LABELS,
@@ -468,18 +471,152 @@ async def _display_name_for(bot, user_id: int) -> str:
     return f"ID {user_id}"
 
 
+AI_DAILY_LIMIT = 10  # oddiy foydalanuvchi uchun kuniga AI javoblar soni (admin uchun cheksiz)
+AI_HISTORY_MESSAGES = 10
+AI_INFO_MAX_LENGTH = 1000
+AI_TAKEOVER_PAUSE_SECONDS = 2 * 3600  # egasi chatga o'zi yozsa, AI shu chatda shuncha vaqt jim turadi
+
+# Botning o'zi yuborgan xabarlar (chat_id, message_id): agar Telegram ularni "egasi yozdi"
+# deb qaytarsa ham, AI'ni noto'g'ri pauza qilib qo'ymaslik uchun.
+_bot_sent_ids: deque = deque(maxlen=500)
+_ai_chat_locks: "weakref.WeakValueDictionary" = weakref.WeakValueDictionary()
+
+
+def _remember_sent(chat_id: int, message) -> None:
+    message_id = getattr(message, "message_id", None)
+    if isinstance(message_id, int):
+        _bot_sent_ids.append((chat_id, message_id))
+
+
+def _chat_lock(owner_id: int, chat_id: int) -> asyncio.Lock:
+    key = (owner_id, chat_id)
+    lock = _ai_chat_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ai_chat_locks[key] = lock
+    return lock
+
+
+def build_ai_menu(owner_id: int, notice: str | None = None):
+    s = db.get_settings(owner_id)
+    enabled = bool(s.get("ai_enabled"))
+    info = (s.get("ai_info") or "").strip()
+    if owner_id == ADMIN_ID:
+        usage_line = "Limit: cheklovsiz"
+    else:
+        usage_line = f"Bugun: {db.get_ai_usage(owner_id, str(today_tashkent()))}/{AI_DAILY_LIMIT} ta javob"
+    status_label = "\U0001F7E2 Yoqilgan" if enabled else "O'chirilgan"
+    text = (
+        "\U0001F916 AI-Yordamchi\n\n"
+        f"Holat: {status_label}\n"
+        f"{usage_line}\n"
+        f"Ma'lumot va uslub: {info if info else 'kiritilmagan'}\n\n"
+        "Yoqilganda, avtojavob ishlaydigan paytda (Oflayn holat yoki uxlash vaqti) odatiy matn o'rniga "
+        "sun'iy intellekt suhbatdoshingizga o'zi javob yozadi. Oddiy avtojavob matnlari o'chmaydi — "
+        "AI o'chirilsa yoki limit tugasa/xato bo'lsa, ular ishlatiladi.\n"
+        "Chatga o'zingiz yozsangiz, AI shu chatda 2 soat jim turadi."
+    )
+    if notice:
+        text += f"\n\n{notice}"
+    keyboard = [
+        [InlineKeyboardButton("❌ O'chirish" if enabled else "✅ Yoqish", callback_data="ai_toggle")],
+        [InlineKeyboardButton("\U0001F4DD Ma'lumot va uslub", callback_data="ai_edit_info")],
+        [InlineKeyboardButton("⬅️ Orqaga", callback_data="open_panel")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str, cooldown_hours: float, label: str):
+    """Oddiy (matnli) avtojavob: cooldown huquqini atomik band qilib, yuboradi."""
+    # Cooldown huquqini YUBORISHDAN OLDIN atomik band qilamiz (bitta SQL).
+    # Oldingi "tekshir -> yubor -> belgila" ketma-ketligida ikkita xabar
+    # (yoki ikkita instance) bir vaqtda kelsa, ikkalasi ham "cooldown yo'q"
+    # deb ko'rib, ikki marta javob yuborishi mumkin edi.
+    claimed_at = db.try_claim_reply(owner_id, chat_id, cooldown_hours)
+    if claimed_at is None:
+        return  # cooldown hali tugamagan
+
+    try:
+        sent = await bot.send_message(
+            chat_id=chat_id,
+            text=reply_text,
+            business_connection_id=bm.business_connection_id,
+        )
+    except Exception as e:
+        # Yuborib bo'lmadi — band qilingan huquqni qaytaramiz, aks holda
+        # javob berilmagan bo'lsa ham keyingi xabarlar cooldown'da qolib ketardi.
+        db.release_reply_claim(owner_id, chat_id, claimed_at)
+        if isinstance(e, TelegramError):
+            logger.warning("Avtojavob yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
+            return
+        raise
+    _remember_sent(chat_id, sent)
+    logger.info("auto reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
+
+
+async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings: dict, fallback_text: str, label: str):
+    """AI javobini yaratib yuboradi. Limit tugasa yoki xato bo'lsa — odatiy matnli avtojavob (zaxira)."""
+    business_connection_id = bm.business_connection_id
+    day = str(today_tashkent())
+    try:
+        async with _chat_lock(owner_id, chat_id):
+            consumed = False
+            if owner_id != ADMIN_ID:
+                if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT):
+                    await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-limit")
+                    return
+                consumed = True
+
+            history = db.get_ai_history(owner_id, chat_id, AI_HISTORY_MESSAGES)
+            history.append({"role": "user", "text": text})
+            info = db.get_user(owner_id) or {}
+            answer = await ai.generate_reply(history, info.get("full_name"), settings.get("ai_info"))
+            if not answer:
+                if consumed:
+                    db.refund_ai_quota(owner_id, day)
+                await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-failed")
+                return
+            try:
+                sent = await bot.send_message(
+                    chat_id=chat_id, text=answer, business_connection_id=business_connection_id
+                )
+            except TelegramError as e:
+                if consumed:
+                    db.refund_ai_quota(owner_id, day)
+                logger.warning("AI javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
+                return
+            _remember_sent(chat_id, sent)
+            db.add_ai_messages(owner_id, chat_id, [("user", text), ("model", answer)], keep=AI_HISTORY_MESSAGES)
+            logger.info("ai reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
+    except Exception:
+        logger.exception("AI javob oqimida kutilmagan xato (owner=%s, chat=%s)", owner_id, chat_id)
+
+
+async def ai_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        db.purge_old_ai_data()
+    except Exception:
+        logger.exception("AI ma'lumotlarini tozalashda xato")
+
+
 def build_panel(owner_id: int):
     s = db.get_settings(owner_id)
     status_line = "\U0001F534 OFLAYN" if s["offline"] else "\U0001F7E2 ONLAYN"
     toggle_label = "\U0001F7E2 Onlaynga o'tish" if s["offline"] else "\U0001F534 Oflaynga o'tish"
     sleep_line = "yoqilgan \U0001F634" if s.get("sleep_mode_enabled") else "o'chirilgan"
 
+    ai_on = bool(s.get("ai_enabled"))
+    ai_line = "yoqilgan \U0001F916" if ai_on else "o'chirilgan"
+    message_line = (
+        "AI-Yordamchi yoqilgan (matn o'rniga AI javob beradi)" if ai_on else s["auto_reply_text"]
+    )
     text = (
         "\U0001F39B Sizning panelingiz\n\n"
         f"Holat: {status_line}\n"
         f"Cooldown: {format_cooldown(s['cooldown_hours'])}\n"
-        f"Xabar: {s['auto_reply_text']}\n"
-        f"Uxlayapman rejimi: {sleep_line}"
+        f"Xabar: {message_line}\n"
+        f"Uxlayapman rejimi: {sleep_line}\n"
+        f"AI-Yordamchi: {ai_line}"
     )
     keyboard = [
         [InlineKeyboardButton(toggle_label, callback_data="toggle_status")],
@@ -487,6 +624,7 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton("\U0001F4DD Xabar matnini o'zgartirish", callback_data="edit_text")],
         [InlineKeyboardButton("\U0001F382 BIO hisoblagich", callback_data="bio_menu")],
         [InlineKeyboardButton("\U0001F634 Uxlayapman rejimi", callback_data="sleep_menu")],
+        [InlineKeyboardButton("\U0001F916 AI-Yordamchi", callback_data="ai_menu")],
         [InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
@@ -818,6 +956,33 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
+    if data == "ai_menu":
+        text, markup = build_ai_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "ai_toggle":
+        s = db.get_settings(owner_id)
+        notice = None
+        if s.get("ai_enabled"):
+            db.update_settings(owner_id, ai_enabled=False)
+        elif not ai.is_configured():
+            notice = "\u26A0\uFE0F AI hozircha sozlanmagan (serverda GEMINI_API_KEY kiritilmagan)."
+        else:
+            db.update_settings(owner_id, ai_enabled=True)
+        text, markup = build_ai_menu(owner_id, notice)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "ai_edit_info":
+        set_pending_action(owner_id, "ai_info")
+        await query.message.reply_text(
+            "AI uchun ma'lumot va uslubni yozing: siz kimsiz, nima ish qilasiz, qanday ohangda gaplashsin, "
+            f"nimalarni aytmasin (eng ko'pi {AI_INFO_MAX_LENGTH} belgi).\n"
+            "Tozalash uchun \"-\" yuboring. Bekor qilish: /cancel"
+        )
+        return
+
     if data == "sleep_menu":
         text, markup = build_sleep_menu(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
@@ -871,6 +1036,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_pending_action(owner_id)
         reply = await submit_feedback(context.bot, update.effective_user, value)
         await update.message.reply_text(reply)
+        return
+
+    if action == "ai_info":
+        if len(value) > AI_INFO_MAX_LENGTH:
+            await update.message.reply_text(
+                f"Matn juda uzun ({len(value)} belgi). {AI_INFO_MAX_LENGTH} belgidan qisqaroq yozing."
+            )
+            return  # amal saqlanadi
+        db.update_settings(owner_id, ai_info=None if value == "-" else value)
+        clear_pending_action(owner_id)
+        text, markup = build_ai_menu(owner_id, "\u2705 Saqlandi.")
+        await update.message.reply_text(text, reply_markup=markup)
         return
 
     if action == "cooldown":
@@ -1895,6 +2072,11 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_reply,
             can_edit_bio,
         )
+        if not conn.is_enabled:
+            try:
+                db.delete_ai_data(conn.user.id)  # mijozlar yozishmasi tarixi qolmasin
+            except Exception:
+                logger.exception("AI ma'lumotlarini o'chirishda xato (owner=%s)", conn.user.id)
         try:
             if conn.is_enabled:
                 await context.bot.send_message(
@@ -1926,6 +2108,13 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Bu SIZNING (akkaunt egasining) o'zi yozgan xabari — botlarga emas,
         # mijozlarga javob berishimiz kerak, shuning uchun o'tkazib yuboramiz.
         if bm.from_user and bm.from_user.id == owner_id:
+            # Egasi chatga o'zi yozdi — AI shu chatda biroz jim turadi (botning o'z xabari bo'lsa — yo'q).
+            if (bm.chat.id, bm.message_id) not in _bot_sent_ids:
+                try:
+                    if db.get_settings(owner_id).get("ai_enabled"):
+                        db.pause_ai_chat(owner_id, bm.chat.id, AI_TAKEOVER_PAUSE_SECONDS)
+                except Exception:
+                    logger.exception("AI pauzasini yozishda xato (owner=%s)", owner_id)
             return
 
         settings = db.get_settings(owner_id)
@@ -1947,30 +2136,21 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         chat_id = bm.chat.id
+        label = f"sleeping={sleeping}"
 
-        # Cooldown huquqini YUBORISHDAN OLDIN atomik band qilamiz (bitta SQL).
-        # Oldingi "tekshir -> yubor -> belgila" ketma-ketligida ikkita xabar
-        # (yoki ikkita instance) bir vaqtda kelsa, ikkalasi ham "cooldown yo'q"
-        # deb ko'rib, ikki marta javob yuborishi mumkin edi.
-        claimed_at = db.try_claim_reply(owner_id, chat_id, settings["cooldown_hours"])
-        if claimed_at is None:
-            return  # cooldown hali tugamagan
-
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=reply_text,
-                business_connection_id=bm.business_connection_id,
-            )
-        except Exception as e:
-            # Yuborib bo'lmadi — band qilingan huquqni qaytaramiz, aks holda
-            # javob berilmagan bo'lsa ham keyingi xabarlar cooldown'da qolib ketardi.
-            db.release_reply_claim(owner_id, chat_id, claimed_at)
-            if isinstance(e, TelegramError):
-                logger.warning("Avtojavob yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
+        # AI-Yordamchi: odatiy matn o'rniga AI javob beradi (matn faqat zaxira sifatida qoladi)
+        if settings.get("ai_enabled") and ai.is_configured():
+            if db.is_ai_paused(owner_id, chat_id):
+                return  # egasi shu chatda o'zi yozmoqda
+            text = (bm.text or bm.caption or "").strip()
+            if text:
+                spawn_background(
+                    run_ai_reply(context.bot, bm, owner_id, chat_id, text, settings, reply_text, label)
+                )
                 return
-            raise
-        logger.info("auto reply sent (owner=%s, chat=%s, sleeping=%s)", owner_id, chat_id, sleeping)
+            # Matnsiz xabar (rasm, ovoz, sticker...) — AI o'qiy olmaydi, odatiy matn ketadi
+
+        await send_auto_reply(context.bot, bm, owner_id, chat_id, reply_text, settings["cooldown_hours"], label)
 
 
 def build_app() -> Application:
@@ -2018,6 +2198,8 @@ def build_app() -> Application:
             bio_daily_job,
             time=dtime(hour=0, minute=5, tzinfo=TASHKENT_TZ),
         )
+        # AI suhbat tarixi/limit jadvallarini tozalash (har kuni 00:10, Toshkent vaqti)
+        app.job_queue.run_daily(ai_cleanup_job, time=dtime(hour=0, minute=10, tzinfo=TASHKENT_TZ))
         # Server qayta ishga tushganda yarim qolgan reklamalarni davom ettirish
         app.job_queue.run_once(_resume_broadcasts_job_callback, when=5)
         # Server 00:05 da o'chiq bo'lgan bo'lsa, o'tkazib yuborilgan BIO yangilanishini yetkazish
