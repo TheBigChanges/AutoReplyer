@@ -960,7 +960,8 @@ def get_all_bio_targets():
             """
             SELECT c.owner_user_id, c.business_connection_id,
                    s.bio_countdown_target, s.birthday_month, s.birthday_day, s.bio_updated_on,
-                   u.lang
+                   u.lang,
+                   CASE WHEN u.plan IS NULL OR (u.plan_expires_at IS NOT NULL AND u.plan_expires_at <= EXTRACT(EPOCH FROM now())) THEN 'free' ELSE u.plan END AS plan
             FROM connections c
             JOIN settings s ON s.owner_user_id = c.owner_user_id
             LEFT JOIN users u ON u.user_id = c.owner_user_id
@@ -1182,9 +1183,11 @@ def get_name_clock_targets():
         cur.execute(
             """
             SELECT s.owner_user_id, c.business_connection_id,
-                   s.name_clock_tz, s.name_clock_first, s.name_clock_last, s.name_clock_applied, s.name_clock_style
+                   s.name_clock_tz, s.name_clock_first, s.name_clock_last, s.name_clock_applied, s.name_clock_style,
+                   CASE WHEN u.plan IS NULL OR (u.plan_expires_at IS NOT NULL AND u.plan_expires_at <= EXTRACT(EPOCH FROM now())) THEN 'free' ELSE u.plan END AS plan
             FROM settings s
             JOIN connections c ON c.owner_user_id = s.owner_user_id
+            LEFT JOIN users u ON u.user_id = s.owner_user_id
             WHERE s.name_clock_enabled = TRUE
               AND c.is_enabled = TRUE AND c.can_edit_name = TRUE
               AND s.name_clock_first IS NOT NULL
