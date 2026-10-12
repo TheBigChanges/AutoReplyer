@@ -11,6 +11,8 @@ import math
 import re
 from datetime import date
 
+from i18n import days_unit, t
+
 # ---------------------------------------------------------------------------
 # Cooldown
 # ---------------------------------------------------------------------------
@@ -20,17 +22,18 @@ from datetime import date
 MIN_COOLDOWN_HOURS = 1 / 60
 
 
-def format_cooldown(hours: float) -> str:
-    """0.5 -> '30 daqiqa', 1.0 -> '1 soat', 2.5 -> '2 soat 30 daqiqa', 0 -> 'Har doim javob beradi'."""
+def format_cooldown(hours: float, lang: str = "uz") -> str:
+    """0.5 -> '30 daqiqa', 1.0 -> '1 soat', 2.5 -> '2 soat 30 daqiqa', 0 -> 'Har doim javob beradi'.
+    `lang` bo'yicha: en -> '2 h 30 min', ru -> '2 ч 30 мин'."""
     if hours <= 0:
-        return "Har doim javob beradi (cooldown yo'q)"
+        return t(lang, "cd_always")
     total_minutes = round(hours * 60)
     h, m = divmod(total_minutes, 60)
     parts = []
     if h:
-        parts.append(f"{h} soat")
+        parts.append(t(lang, "unit_hour", n=h))
     if m or not parts:
-        parts.append(f"{m} daqiqa")
+        parts.append(t(lang, "unit_minute", n=m))
     return " ".join(parts)
 
 
@@ -64,8 +67,13 @@ def _parse_cooldown_raw(text: str) -> float | None:
         return None
 
     # "2 soat 30 daqiqa", "1s 30d", "45 daqiqa", "3 soat" kabi formatlar
-    hours_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:soat|s|h|hour)\b", text)
-    minutes_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:daqiqa|minut|min|m|d)\b", text)
+    # Uzbek (soat/daqiqa), English (hour/minute) va Rus (час/минута) birliklari qabul qilinadi.
+    hours_match = re.search(
+        r"(\d+(?:[.,]\d+)?)\s*(?:soat|hours?|hrs?|h|s|часов|часа|час|ч)(?![^\W\d_])", text
+    )
+    minutes_match = re.search(
+        r"(\d+(?:[.,]\d+)?)\s*(?:daqiqa|minutes?|minut|min|mins|m|d|минуты|минуту|минут|мин|м)(?![^\W\d_])", text
+    )
     if hours_match or minutes_match:
         h = float(hours_match.group(1).replace(",", ".")) if hours_match else 0.0
         m = float(minutes_match.group(1).replace(",", ".")) if minutes_match else 0.0
@@ -129,8 +137,13 @@ def days_until_next(month: int, day: int, today: date | None = None) -> int:
     return (target - today).days
 
 
+def bio_event_label(target: str, lang: str = "uz") -> str:
+    key = f"bio_event_{target}"
+    return t(lang, key) if target in BIO_EVENT_LABELS else target
+
+
 def compute_bio_text(
-    target: str, birthday_month, birthday_day, today: date | None = None
+    target: str, birthday_month, birthday_day, today: date | None = None, lang: str = "uz"
 ) -> str | None:
     """`today` berilmasa serverning mahalliy sanasi olinadi (Render'da UTC).
     Foydalanuvchi uchun to'g'ri kun hisobi kerak bo'lsa, chaqiruvchi o'z
@@ -145,11 +158,10 @@ def compute_bio_text(
         return None
 
     days = days_until_next(month, day, today=today)
-    label = BIO_EVENT_LABELS[target]
     emoji = BIO_EVENT_EMOJIS.get(target, "")
     if days == 0:
-        return f"{emoji} Bugun {label.lower()}!".strip()
-    return f"{emoji} {label}ga {days} kun qoldi!".strip()
+        return f"{emoji} {t(lang, 'bio_today_' + target)}".strip()
+    return f"{emoji} {t(lang, 'bio_text_' + target, days=days, unit=days_unit(lang, days))}".strip()
 
 
 def parse_birthday_input(text: str) -> tuple[int, int] | None:
@@ -315,11 +327,17 @@ def _cut(text: str, max_units: int) -> str:
     return "".join(out)
 
 
-def zone_label(tz_name: str | None) -> str:
-    for _, label, tz in NAME_CLOCK_ZONES:
+def zone_button_label(key: str, label: str, lang: str = "uz") -> str:
+    """Zona tugmasi nomi: shahar nomi tilga o'giriladi (bayroq va UTC qismi o'zgarmaydi)."""
+    return label.replace(t("uz", "zone_" + key), t(lang, "zone_" + key), 1)
+
+
+def zone_label(tz_name: str | None, lang: str = "uz") -> str:
+    for key, label, tz in NAME_CLOCK_ZONES:
         if tz == tz_name:
-            return label
-    return dict((tz, label) for _, label, tz in NAME_CLOCK_ZONES)[DEFAULT_NAME_CLOCK_ZONE]
+            return zone_button_label(key, label, lang)
+    key, label, _tz = next(z for z in NAME_CLOCK_ZONES if z[2] == DEFAULT_NAME_CLOCK_ZONE)
+    return zone_button_label(key, label, lang)
 
 
 def is_known_zone(tz_name: str | None) -> bool:
