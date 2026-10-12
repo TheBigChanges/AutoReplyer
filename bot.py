@@ -420,11 +420,83 @@ def main_menu_markup(owner_id: int):
     else:
         rows.append([InlineKeyboardButton(t(lang, "btn_how_connect"), callback_data="how_connect")])
     rows.append([InlineKeyboardButton(t(lang, "btn_referral"), callback_data="referral")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_plans"), callback_data="plans")])
     rows.append([InlineKeyboardButton(t(lang, "btn_support"), callback_data="support")])
     rows.append([InlineKeyboardButton(t(lang, "btn_language"), callback_data="lang_menu")])
     if owner_id == ADMIN_ID:
         rows.append([InlineKeyboardButton("\U0001F4CA Referral statistikasi (admin)", callback_data="admin_referrals")])
     return InlineKeyboardMarkup(rows)
+
+
+# Tariflar: (kalit, emoji, narx so'mda). "free" — hamma shundan boshlaydi.
+PLANS = (
+    ("free", "\U0001F530", 0),
+    ("plus", "\u23F0", 2000),
+    ("pro", "\u2728", 5000),
+    ("ultra", "\u2B50", 10000),
+)
+PLAN_KEYS = tuple(k for k, _, _ in PLANS)
+# To'lov kartasi Render muhit o'zgaruvchilarida saqlanadi (kodga yozilmaydi)
+PAYMENT_CARD_NUMBER = os.environ.get("PAYMENT_CARD_NUMBER", "").strip()
+PAYMENT_CARD_HOLDER = os.environ.get("PAYMENT_CARD_HOLDER", "Malika Abdukarimova").strip()
+
+
+def format_card_number(raw: str) -> str:
+    digits = re.sub(r"\s+", "", raw)
+    return " ".join(digits[i:i + 4] for i in range(0, len(digits), 4)) if digits.isdigit() else raw
+
+
+def plan_price_label(lang: str, price: int) -> str:
+    return t(lang, "plan_price", price=f"{price:,}")
+
+
+def build_plans_menu(owner_id: int):
+    lang = get_lang(owner_id)
+    try:
+        current = db.get_user_plan(owner_id)
+    except Exception:
+        current = "free"
+    rows = []
+    for key, emoji, price in PLANS:
+        name = t(lang, "plan_name_" + key)
+        label = f"{emoji} {name} - " + (plan_price_label(lang, price) if price else "")
+        if key == current:
+            label = f"{emoji} {name} - {t(lang, 'plan_active')} \u2705"
+        elif not price:
+            label = f"{emoji} {name}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"plan:{key}")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="back")])
+    return t(lang, "plans_menu"), InlineKeyboardMarkup(rows)
+
+
+def build_plan_view(owner_id: int, key: str):
+    """Tanlangan tarif ekrani. HTML parse_mode bilan yuboriladi (karta raqami bosib nusxalanadi)."""
+    lang = get_lang(owner_id)
+    emoji, price = next(((e, p) for k, e, p in PLANS if k == key), ("", 0))
+    try:
+        current = db.get_user_plan(owner_id)
+    except Exception:
+        current = "free"
+    back = [InlineKeyboardButton(t(lang, "btn_back"), callback_data="plans")]
+    if key == "free":
+        text = t(lang, "plan_free_info")
+        if current == "free":
+            text += "\n\n" + t(lang, "plan_current")
+        return html.escape(text, quote=False), InlineKeyboardMarkup([back])
+    if key == current:
+        return html.escape(t(lang, "plan_current"), quote=False), InlineKeyboardMarkup([back])
+    if not PAYMENT_CARD_NUMBER:
+        text = html.escape(t(lang, "plan_no_card"), quote=False)
+    else:
+        text = t(
+            lang, "plan_pay",
+            emoji=emoji, name=html.escape(t(lang, "plan_name_" + key), quote=False),
+            price=html.escape(plan_price_label(lang, price), quote=False),
+            card="<code>" + html.escape(format_card_number(PAYMENT_CARD_NUMBER), quote=False) + "</code>",
+            holder=html.escape(PAYMENT_CARD_HOLDER, quote=False),
+        )
+    rows = [[InlineKeyboardButton(t(lang, "support_btn_admin"), url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")], back]
+    return text, InlineKeyboardMarkup(rows)
 
 
 SUPPORT_CHANNEL_LINK = "https://t.me/+P_Uv4zsFGE03NmI6"
@@ -1176,6 +1248,7 @@ ADMIN_HELP_TEXT = (
     "/bots — bazaga tushib qolgan botlarni topish va tozalash\n"
     "/block @username [sabab] — foydalanuvchini bloklash (yoki /block 123456789)\n"
     "/unblock @username — blokdan chiqarish\n"
+    "/setplan @username free|plus|pro|ultra — foydalanuvchi tarifini belgilash (to'lov tasdiqlangach)\n"
     "/blocked — bloklanganlar ro'yxati\n"
     "/reklama — barcha foydalanuvchilarga xabar yuborish (yuborishdan oldin tasdiqlanadi)\n"
     "/reklama_status — oxirgi reklama holati\n"
@@ -1329,6 +1402,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back":
         await query.edit_message_text(t(lang, "main_menu"), reply_markup=main_menu_markup(owner_id))
+        return
+
+    if data == "plans":
+        text, markup = build_plans_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith("plan:"):
+        key = data.split(":", 1)[1]
+        if key not in PLAN_KEYS:
+            return
+        text, markup = build_plan_view(owner_id, key)
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
         return
 
     if data == "support":
@@ -2131,6 +2217,32 @@ async def do_unblock(bot, target_id: int) -> bool:
     return changed
 
 
+async def cmd_setplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: to'lovni tasdiqlagach foydalanuvchining tarifini belgilaydi."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if len(context.args) != 2 or context.args[1].lower() not in PLAN_KEYS:
+        await update.message.reply_text(
+            "Foydalanish:\n/setplan @username plus\n/setplan 123456789 pro\n"
+            "Tariflar: " + ", ".join(PLAN_KEYS)
+        )
+        return
+    target_id, error = await resolve_target_user(context.bot, context.args[0])
+    if target_id is None:
+        await update.message.reply_text(error)
+        return
+    plan = context.args[1].lower()
+    db.set_user_plan(target_id, plan)
+    label = _label_for(target_id)
+    notified = await _try_send(
+        context.bot, target_id, t(get_lang(target_id), "plan_activated", name=t(get_lang(target_id), "plan_name_" + plan))
+    )
+    await update.message.reply_text(
+        f"\u2705 {label} tarifi: {plan}."
+        + ("" if notified else "\nFoydalanuvchiga xabar yuborib bo'lmadi.")
+    )
+
+
 async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -2629,6 +2741,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("stats", cmd_stats, filters=only_messages))
     app.add_handler(CommandHandler("block", cmd_block, filters=only_messages))
     app.add_handler(CommandHandler("unblock", cmd_unblock, filters=only_messages))
+    app.add_handler(CommandHandler("setplan", cmd_setplan, filters=only_messages))
     app.add_handler(CommandHandler("blocked", cmd_blocked, filters=only_messages))
     app.add_handler(CommandHandler("users", cmd_users, filters=only_messages))
     app.add_handler(CommandHandler("bots", cmd_bots, filters=only_messages))
