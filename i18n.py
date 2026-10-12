@@ -738,6 +738,22 @@ T: dict[str, dict] = {
         "⌛ Срок вашего тарифа {name} истёк, вы вернулись на Бесплатный тариф.\nЧтобы продлить, откройте раздел \U0001F3F7\uFE0F Тарифы.",
     ),
 
+    # ---------------- tarif cheklovlari ----------------
+    "feature_bio": _("BIO hisoblagich", "BIO countdown", "Счётчик в BIO"),
+    "feature_text": _("Xabar matnini o'zgartirish", "Changing the message text", "Изменение текста сообщения"),
+    "feature_ai": _("AI-Yordamchi", "AI Assistant", "AI-помощник"),
+    "feature_fonts": _("Soat shriftlari", "Clock fonts", "Шрифты часов"),
+    "locked_feature": _(
+        "\U0001F512 «{feature}» faqat {plans} tariflarida mavjud.\n\nTarifni \U0001F3F7\uFE0F Tariflar bo'limidan o'zgartirishingiz mumkin.",
+        "\U0001F512 “{feature}” is available only on the {plans} plans.\n\nYou can change your plan in the \U0001F3F7\uFE0F Plans section.",
+        "\U0001F512 «{feature}» доступно только на тарифах {plans}.\n\nТариф можно изменить в разделе \U0001F3F7\uFE0F Тарифы.",
+    ),
+    "locked_unavailable": _(
+        "\U0001F512 «{feature}» hozircha mavjud emas. Faqat standart shrift ishlaydi.",
+        "\U0001F512 “{feature}” is not available right now. Only the default font is used.",
+        "\U0001F512 «{feature}» пока недоступно. Используется только стандартный шрифт.",
+    ),
+
     # ---------------- vaqt zonalari (shahar nomlari) ----------------
     "zone_tashkent": _("Toshkent", "Tashkent", "Ташкент"),
     "zone_moscow": _("Moskva", "Moscow", "Москва"),
