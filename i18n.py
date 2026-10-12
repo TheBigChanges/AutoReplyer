@@ -1,0 +1,717 @@
+"""
+Ko'p tillilik (uz / en / ru). Sof modul: muhit o'zgaruvchilari va bazaga bog'liq emas.
+
+Foydalanish: `t(lang, "kalit", nom=qiymat)`. Noma'lum til yoki yo'q kalit bo'lsa o'zbekchaga
+qaytadi (bot hech qachon yiqilmasin). Admin-only matnlar (/users, /stats, reklama...) bu yerda
+emas — ular o'zbekcha qoladi.
+"""
+
+from __future__ import annotations
+
+LANGS = ("uz", "en", "ru")
+DEFAULT_LANG = "uz"
+LANG_NAMES = {"uz": "\U0001F1FA\U0001F1FF O'zbekcha", "en": "\U0001F1EC\U0001F1E7 English", "ru": "\U0001F1F7\U0001F1FA Русский"}
+
+
+def normalize_lang(lang) -> str:
+    return lang if lang in LANGS else DEFAULT_LANG
+
+
+def is_lang(lang) -> bool:
+    return lang in LANGS
+
+
+def _(uz: str, en: str, ru: str) -> dict:
+    return {"uz": uz, "en": en, "ru": ru}
+
+
+# Emoji kodlari matn ichida to'g'ridan-to'g'ri yozilgan (UTF-8).
+T: dict[str, dict] = {
+    # ---------------- umumiy ----------------
+    "lang_pick": _(
+        "\U0001F310 Tilni tanlang / Choose your language / Выберите язык",
+        "\U0001F310 Tilni tanlang / Choose your language / Выберите язык",
+        "\U0001F310 Tilni tanlang / Choose your language / Выберите язык",
+    ),
+    "lang_changed": _("✅ Til o'zgartirildi: O'zbekcha", "✅ Language changed: English", "✅ Язык изменён: Русский"),
+    "btn_language": _("\U0001F310 Til: O'zbekcha", "\U0001F310 Language: English", "\U0001F310 Язык: Русский"),
+    "btn_back": _("⬅️ Orqaga", "⬅️ Back", "⬅️ Назад"),
+    "btn_enable": _("✅ Yoqish", "✅ Enable", "✅ Включить"),
+    "btn_disable": _("❌ O'chirish", "❌ Disable", "❌ Выключить"),
+    "status_on": _("\U0001F7E2 Yoqilgan", "\U0001F7E2 On", "\U0001F7E2 Включено"),
+    "status_off": _("O'chirilgan", "Off", "Выключено"),
+    "saved": _("✅ Saqlandi.", "✅ Saved.", "✅ Сохранено."),
+    "saved_plain": _("Saqlandi.", "Saved.", "Сохранено."),
+    "updated": _("Yangilandi.", "Updated.", "Обновлено."),
+    "cancelled": _("Bekor qilindi.", "Cancelled.", "Отменено."),
+    "no_permission": _("Ruxsat yo'q.", "No permission.", "Нет доступа."),
+    "bad_button": _("Noto'g'ri tugma.", "Invalid button.", "Неверная кнопка."),
+    "main_menu": _("Bosh menyu:", "Main menu:", "Главное меню:"),
+    "cancel_hint": _("Bekor qilish: /cancel", "To cancel: /cancel", "Отмена: /cancel"),
+    # ---------------- ulash / start ----------------
+    "how_connect": _(
+        "\U0001F517 Akkountni ulash — qadamma-qadam:\n\n"
+        "1️⃣ Telegram ilovangizda: Sozlamalar (Settings)\n"
+        "2️⃣ \"Telegram Business\" bo'limini toping va uni oching\n"
+        "3️⃣ \"Chatbots\" (yoki \"Chat Automation\") ni tanlang\n"
+        "4️⃣ Kiritish maydoniga botning username'ini yozing: @{bot}\n"
+        "   Ro'yxatda chiqqach, ustiga bosib tanlang\n"
+        "5️⃣ \"Access to chats\" (qaysi chatlarga ruxsat) so'ralganda:\n"
+        "   • \"All 1-to-1 Chats\" ni tanlang — bu barcha shaxsiy xabarlarga ruxsat beradi\n"
+        "   • (\"Only Selected Chats\"ni tansangiz, faqat o'zingiz qo'shgan odamlarga javob beriladi)\n"
+        "6️⃣ \"Reply to messages\" (xabarlarga javob berish) ruxsatini albatta yoqing —\n"
+        "   shu yoqilmasa, bot xabarlarni ko'radi lekin javob bera olmaydi\n\n"
+        "Ulangach, shu yerga qaytib /start yozing — panel avtomatik ochiladi.",
+        "\U0001F517 Connecting your account — step by step:\n\n"
+        "1️⃣ In Telegram, open Settings\n"
+        "2️⃣ Find and open the \"Telegram Business\" section\n"
+        "3️⃣ Choose \"Chatbots\" (or \"Chat Automation\")\n"
+        "4️⃣ In the input field type the bot's username: @{bot}\n"
+        "   When it appears in the list, tap it to select\n"
+        "5️⃣ When asked for \"Access to chats\":\n"
+        "   • Choose \"All 1-to-1 Chats\" — this allows replies to all private messages\n"
+        "   • (With \"Only Selected Chats\" the bot only replies to the people you add)\n"
+        "6️⃣ Be sure to enable the \"Reply to messages\" permission —\n"
+        "   without it the bot can see messages but cannot reply\n\n"
+        "Once connected, come back here and send /start — the panel will open automatically.",
+        "\U0001F517 Подключение аккаунта — шаг за шагом:\n\n"
+        "1️⃣ В Telegram откройте Настройки (Settings)\n"
+        "2️⃣ Найдите и откройте раздел \"Telegram Business\"\n"
+        "3️⃣ Выберите \"Чат-боты\" (\"Chatbots\" / \"Chat Automation\")\n"
+        "4️⃣ В поле ввода напишите username бота: @{bot}\n"
+        "   Когда он появится в списке, нажмите на него\n"
+        "5️⃣ Когда спросят \"Access to chats\" (доступ к чатам):\n"
+        "   • Выберите \"All 1-to-1 Chats\" — так бот сможет отвечать на все личные сообщения\n"
+        "   • (При \"Only Selected Chats\" бот отвечает только тем, кого вы добавите)\n"
+        "6️⃣ Обязательно включите разрешение \"Reply to messages\" (отвечать на сообщения) —\n"
+        "   без него бот видит сообщения, но не может отвечать\n\n"
+        "После подключения вернитесь сюда и отправьте /start — панель откроется автоматически.",
+    ),
+    "gate_text": _(
+        "\U0001F512 Botdan foydalanish uchun avval kanalimizga obuna bo'ling.\n\n"
+        "Obuna bo'lgach, pastdagi \"✅ Tekshirish\" tugmasini bosing.",
+        "\U0001F512 To use the bot, please subscribe to our channel first.\n\n"
+        "After subscribing, press the \"✅ Check\" button below.",
+        "\U0001F512 Чтобы пользоваться ботом, сначала подпишитесь на наш канал.\n\n"
+        "После подписки нажмите кнопку \"✅ Проверить\" ниже.",
+    ),
+    "gate_btn_channel": _("\U0001F4E2 Kanalga o'tish", "\U0001F4E2 Go to channel", "\U0001F4E2 Перейти в канал"),
+    "gate_btn_check": _("✅ Tekshirish", "✅ Check", "✅ Проверить"),
+    "gate_ok": _("✅ Obuna tasdiqlandi!", "✅ Subscription confirmed!", "✅ Подписка подтверждена!"),
+    "gate_fail": _(
+        "❌ Siz hali kanalga obuna bo'lmagansiz. Avval obuna bo'lib, keyin qayta bosing.",
+        "❌ You haven't subscribed to the channel yet. Subscribe first, then press again.",
+        "❌ Вы ещё не подписались на канал. Сначала подпишитесь, затем нажмите снова.",
+    ),
+    "referral_joined": _(
+        "\U0001F389 Sizning havolangiz orqali yangi odam botga qo'shildi!",
+        "\U0001F389 A new person joined the bot through your link!",
+        "\U0001F389 По вашей ссылке в бота пришёл новый человек!",
+    ),
+    "greeting_connected": _(
+        "Assalomu alaykum! Kerakli bo'limni tanlang:",
+        "Hello! Choose a section:",
+        "Здравствуйте! Выберите нужный раздел:",
+    ),
+    "greeting_new": _(
+        "Assalomu alaykum!\n\n"
+        "Bu bot orqali o'z Telegram akkountingizni ulab, siz oflayn bo'lganingizda "
+        "kiruvchi shaxsiy xabarlarga avtomatik javob berishni sozlashingiz mumkin.",
+        "Hello!\n\n"
+        "With this bot you can connect your own Telegram account and set up automatic replies "
+        "to incoming private messages while you are offline.",
+        "Здравствуйте!\n\n"
+        "С помощью этого бота вы можете подключить свой аккаунт Telegram и настроить автоответ "
+        "на входящие личные сообщения, пока вы офлайн.",
+    ),
+    "btn_open_panel": _("\U0001F39B Panelni ochish", "\U0001F39B Open panel", "\U0001F39B Открыть панель"),
+    "btn_how_connect": _("ℹ️ Qanday ulash mumkin?", "ℹ️ How to connect?", "ℹ️ Как подключить?"),
+    "btn_referral": _("\U0001F381 Referal bonus", "\U0001F381 Referral bonus", "\U0001F381 Реферальный бонус"),
+    "btn_support": _("\U0001F6DF Qo'llab-quvvatlash xizmati", "\U0001F6DF Support", "\U0001F6DF Служба поддержки"),
+    # ---------------- yordam ----------------
+    "help": _(
+        "\U0001F916 AutoReplyer — siz oflayn bo'lganingizda Telegram akkountingizdagi "
+        "shaxsiy xabarlarga avtomatik javob beradi.\n\n"
+        "Imkoniyatlar:\n"
+        "• Oflayn avtojavob (cooldown bilan — bir chatga qayta-qayta yozmaydi)\n"
+        "• Uxlayapman rejimi — tungi vaqt oralig'ida alohida javob\n"
+        "• BIO hisoblagich — Yangi yil, Navro'z yoki tug'ilgan kuningizgacha qolgan kunlar\n"
+        "• Referal bonus\n\n"
+        "Buyruqlar:\n"
+        "/start — bosh menyu va panel\n"
+        "/help — shu yo'riqnoma\n\n"
+        "Akkountni ulash: /start yozing va \"Qanday ulash mumkin?\" tugmasini bosing.",
+        "\U0001F916 AutoReplyer — automatically replies to private messages in your Telegram account "
+        "while you are offline.\n\n"
+        "Features:\n"
+        "• Offline auto-reply (with a cooldown — it won't write to one chat again and again)\n"
+        "• Sleep mode — a separate reply during your night hours\n"
+        "• BIO countdown — days left until New Year, Navruz or your birthday\n"
+        "• Referral bonus\n\n"
+        "Commands:\n"
+        "/start — main menu and panel\n"
+        "/help — this guide\n\n"
+        "To connect your account: send /start and press \"How to connect?\".",
+        "\U0001F916 AutoReplyer — автоматически отвечает на личные сообщения в вашем аккаунте Telegram, "
+        "пока вы офлайн.\n\n"
+        "Возможности:\n"
+        "• Офлайн-автоответ (с кулдауном — не пишет в один чат снова и снова)\n"
+        "• Режим сна — отдельный ответ в ночное время\n"
+        "• BIO-счётчик — сколько дней осталось до Нового года, Навруза или вашего дня рождения\n"
+        "• Реферальный бонус\n\n"
+        "Команды:\n"
+        "/start — главное меню и панель\n"
+        "/help — эта справка\n\n"
+        "Чтобы подключить аккаунт: отправьте /start и нажмите \"Как подключить?\".",
+    ),
+    # ---------------- qo'llab-quvvatlash ----------------
+    "support_text": _(
+        "\U0001F6DF Qo'llab-quvvatlash xizmati\n\n"
+        "Savolingiz yoki taklifingiz bo'lsa, bemalol yozing — biz sizni eshitamiz.\n\n"
+        "• Kanal — yangiliklar va e'lonlar\n"
+        "• Admin bilan bog'lanish — shaxsiy yozishish\n"
+        "• Fikr/taklif yozish — shu bot orqali to'g'ridan-to'g'ri adminga yuboriladi",
+        "\U0001F6DF Support\n\n"
+        "If you have a question or suggestion, feel free to write — we are listening.\n\n"
+        "• Channel — news and announcements\n"
+        "• Contact the admin — a private chat\n"
+        "• Write feedback — sent directly to the admin through this bot",
+        "\U0001F6DF Служба поддержки\n\n"
+        "Если у вас есть вопрос или предложение, смело пишите — мы вас слушаем.\n\n"
+        "• Канал — новости и объявления\n"
+        "• Связаться с админом — личная переписка\n"
+        "• Написать отзыв — отправляется админу напрямую через этого бота",
+    ),
+    "support_btn_channel": _("\U0001F4E2 Kanalimiz", "\U0001F4E2 Our channel", "\U0001F4E2 Наш канал"),
+    "support_btn_admin": _("\U0001F464 Admin bilan bog'lanish", "\U0001F464 Contact the admin", "\U0001F464 Связаться с админом"),
+    "support_btn_feedback": _("✍️ Fikr / taklif yozish", "✍️ Write feedback", "✍️ Написать отзыв"),
+    "feedback_prompt": _(
+        "✍️ Fikr yoki taklifingizni bitta xabar qilib yozing — u adminga yetkaziladi.\n"
+        "Bekor qilish: /cancel",
+        "✍️ Write your feedback or suggestion as a single message — it will be delivered to the admin.\n"
+        "To cancel: /cancel",
+        "✍️ Напишите свой отзыв или предложение одним сообщением — оно будет передано админу.\n"
+        "Отмена: /cancel",
+    ),
+    "feedback_too_long": _(
+        "Xabar juda uzun ({n} belgi). Iltimos, {max} belgidan qisqaroq yozing.",
+        "The message is too long ({n} characters). Please keep it under {max} characters.",
+        "Сообщение слишком длинное ({n} симв.). Пожалуйста, напишите короче {max} символов.",
+    ),
+    "feedback_rate": _(
+        "⏳ Juda ko'p xabar yubordingiz. Iltimos, birozdan keyin qayta urinib ko'ring.",
+        "⏳ You have sent too many messages. Please try again a bit later.",
+        "⏳ Вы отправили слишком много сообщений. Пожалуйста, повторите попытку чуть позже.",
+    ),
+    "feedback_fail": _(
+        "Hozir xabaringizni yetkazib bo'lmadi. Keyinroq qayta urinib ko'ring.",
+        "Your message could not be delivered right now. Please try again later.",
+        "Сейчас не удалось доставить ваше сообщение. Попробуйте позже.",
+    ),
+    "feedback_thanks": _(
+        "✅ Rahmat! Fikringiz adminga yuborildi.",
+        "✅ Thank you! Your feedback was sent to the admin.",
+        "✅ Спасибо! Ваш отзыв отправлен админу.",
+    ),
+    "admin_reply_to_user": _(
+        "\U0001F4AC Admin javobi:\n\n{text}",
+        "\U0001F4AC Reply from the admin:\n\n{text}",
+        "\U0001F4AC Ответ админа:\n\n{text}",
+    ),
+    # ---------------- referal ----------------
+    "ref_view": _(
+        "\U0001F381 Referal bonus\n\n"
+        "Siz orqali botga ulangan do'stlar soni: {count}\n\n"
+        "Shaxsiy havolangiz:\n{link}\n\n"
+        "Do'stlaringiz shu havola orqali botga kirsa, ular siz taklif qilgan hisoblanadi.",
+        "\U0001F381 Referral bonus\n\n"
+        "Friends who joined through you: {count}\n\n"
+        "Your personal link:\n{link}\n\n"
+        "If your friends enter the bot through this link, they count as invited by you.",
+        "\U0001F381 Реферальный бонус\n\n"
+        "Друзей, пришедших через вас: {count}\n\n"
+        "Ваша личная ссылка:\n{link}\n\n"
+        "Если друзья зайдут в бота по этой ссылке, они будут считаться приглашёнными вами.",
+    ),
+    "ref_share_text": _(
+        "Oflaynda ham javob beradigan Telegram botdan foydalaning:",
+        "Try this Telegram bot that replies for you even when you're offline:",
+        "Попробуйте Telegram-бота, который отвечает за вас, даже когда вы офлайн:",
+    ),
+    "ref_btn_share": _("\U0001F4E4 Havolani ulashish", "\U0001F4E4 Share the link", "\U0001F4E4 Поделиться ссылкой"),
+    # ---------------- panel ----------------
+    "panel": _(
+        "\U0001F39B Sizning panelingiz\n\n"
+        "Holat: {status}\n"
+        "Cooldown: {cooldown}\n"
+        "Xabar: {message}\n"
+        "Uxlayapman rejimi: {sleep}\n"
+        "AI-Yordamchi: {ai}",
+        "\U0001F39B Your panel\n\n"
+        "Status: {status}\n"
+        "Cooldown: {cooldown}\n"
+        "Message: {message}\n"
+        "Sleep mode: {sleep}\n"
+        "AI Assistant: {ai}",
+        "\U0001F39B Ваша панель\n\n"
+        "Статус: {status}\n"
+        "Кулдаун: {cooldown}\n"
+        "Сообщение: {message}\n"
+        "Режим сна: {sleep}\n"
+        "AI-помощник: {ai}",
+    ),
+    "panel_offline": _("\U0001F534 OFLAYN", "\U0001F534 OFFLINE", "\U0001F534 ОФЛАЙН"),
+    "panel_online": _("\U0001F7E2 ONLAYN", "\U0001F7E2 ONLINE", "\U0001F7E2 ОНЛАЙН"),
+    "panel_go_online": _("\U0001F7E2 Onlaynga o'tish", "\U0001F7E2 Go online", "\U0001F7E2 Перейти в онлайн"),
+    "panel_go_offline": _("\U0001F534 Oflaynga o'tish", "\U0001F534 Go offline", "\U0001F534 Перейти в офлайн"),
+    "panel_sleep_on": _("yoqilgan \U0001F634", "on \U0001F634", "включён \U0001F634"),
+    "panel_sleep_off": _("o'chirilgan", "off", "выключен"),
+    "panel_ai_on": _("yoqilgan \U0001F916", "on \U0001F916", "включён \U0001F916"),
+    "panel_ai_off": _("o'chirilgan", "off", "выключен"),
+    "panel_ai_message": _(
+        "AI-Yordamchi yoqilgan (matn o'rniga AI javob beradi)",
+        "AI Assistant is on (AI replies instead of the text)",
+        "AI-помощник включён (вместо текста отвечает AI)",
+    ),
+    "btn_edit_cooldown": _("⏱ Cooldownni o'zgartirish", "⏱ Change cooldown", "⏱ Изменить кулдаун"),
+    "btn_edit_text": _("\U0001F4DD Xabar matnini o'zgartirish", "\U0001F4DD Change message text", "\U0001F4DD Изменить текст сообщения"),
+    "btn_bio": _("\U0001F382 BIO hisoblagich", "\U0001F382 BIO countdown", "\U0001F382 BIO-счётчик"),
+    "btn_sleep": _("\U0001F634 Uxlayapman rejimi", "\U0001F634 Sleep mode", "\U0001F634 Режим сна"),
+    "btn_ai": _("\U0001F916 AI-Yordamchi", "\U0001F916 AI Assistant", "\U0001F916 AI-помощник"),
+    "btn_name_clock": _("\U0001F552 Ism soati", "\U0001F552 Name clock", "\U0001F552 Часы в имени"),
+    "cooldown_prompt": _(
+        "Yangi cooldown qiymatini yuboring. Masalan:\n"
+        "• 2 soat 30 daqiqa\n"
+        "• 45 daqiqa\n"
+        "• 1:30 (1 soat 30 daqiqa)\n"
+        "• 3 (shunchaki 3 soat)\n\n"
+        "⚠️ 0 qabul qilinmaydi — spamning oldini olish uchun eng kami 1 daqiqa bo'lishi kerak.",
+        "Send the new cooldown value. For example:\n"
+        "• 2 hours 30 minutes\n"
+        "• 45 minutes\n"
+        "• 1:30 (1 hour 30 minutes)\n"
+        "• 3 (just 3 hours)\n\n"
+        "⚠️ 0 is not accepted — to prevent spam it must be at least 1 minute.",
+        "Отправьте новое значение кулдауна. Например:\n"
+        "• 2 часа 30 минут\n"
+        "• 45 минут\n"
+        "• 1:30 (1 час 30 минут)\n"
+        "• 3 (просто 3 часа)\n\n"
+        "⚠️ 0 не принимается — для защиты от спама минимум 1 минута.",
+    ),
+    "cooldown_bad": _(
+        "Noto'g'ri format yoki 0. Spamning oldini olish uchun cooldown 0 bo'lishi mumkin emas "
+        "— eng kami 1 daqiqa kiriting. Masalan: '2 soat 30 daqiqa', '45 daqiqa', '1 daqiqa', '1:30' yoki '3'",
+        "Invalid format or 0. To prevent spam the cooldown cannot be 0 "
+        "— enter at least 1 minute. For example: '2 hours 30 minutes', '45 minutes', '1 minute', '1:30' or '3'",
+        "Неверный формат или 0. Для защиты от спама кулдаун не может быть 0 "
+        "— введите минимум 1 минуту. Например: '2 часа 30 минут', '45 минут', '1 минута', '1:30' или '3'",
+    ),
+    "text_prompt": _(
+        "Yangi avtojavob matnini yuboring:",
+        "Send the new auto-reply text:",
+        "Отправьте новый текст автоответа:",
+    ),
+    "cd_always": _(
+        "Har doim javob beradi (cooldown yo'q)",
+        "Always replies (no cooldown)",
+        "Отвечает всегда (без кулдауна)",
+    ),
+    "unit_hour": _("{n} soat", "{n} h", "{n} ч"),
+    "unit_minute": _("{n} daqiqa", "{n} min", "{n} мин"),
+    # ---------------- uxlash rejimi ----------------
+    "sleep_menu": _(
+        "\U0001F634 Uxlayapman rejimi\n\n"
+        "Holat: {status}\n"
+        "Vaqt oralig'i: {range}\n"
+        "Xabar: {text}\n\n"
+        "Bu rejim yoqilgan bo'lsa, belgilangan vaqt oralig'ida (hatto \"Onlayn\" "
+        "holatida ham) kiruvchi xabarlarga shu maxsus matn bilan avtomatik javob beriladi.",
+        "\U0001F634 Sleep mode\n\n"
+        "Status: {status}\n"
+        "Time range: {range}\n"
+        "Message: {text}\n\n"
+        "When this mode is on, incoming messages during the set time range (even while "
+        "you are \"Online\") get this special text as an automatic reply.",
+        "\U0001F634 Режим сна\n\n"
+        "Статус: {status}\n"
+        "Интервал: {range}\n"
+        "Сообщение: {text}\n\n"
+        "Когда режим включён, на входящие сообщения в заданный интервал (даже в статусе "
+        "\"Онлайн\") автоматически отвечает этот особый текст.",
+    ),
+    "sleep_status_on": _("\U0001F634 Yoqilgan", "\U0001F634 On", "\U0001F634 Включён"),
+    "btn_sleep_time": _("⏰ Vaqtni o'zgartirish", "⏰ Change time", "⏰ Изменить время"),
+    "sleep_time_prompt": _(
+        "Uxlash vaqt oralig'ini yuboring (masalan: 23:00-07:00):",
+        "Send the sleep time range (for example: 23:00-07:00):",
+        "Отправьте интервал времени сна (например: 23:00-07:00):",
+    ),
+    "sleep_time_bad": _(
+        "Noto'g'ri format. Masalan: 23:00-07:00",
+        "Invalid format. For example: 23:00-07:00",
+        "Неверный формат. Например: 23:00-07:00",
+    ),
+    "sleep_text_prompt": _(
+        "Uxlash vaqtida yuboriladigan xabarni kiriting:",
+        "Enter the message to send during sleep time:",
+        "Введите сообщение, которое будет отправляться во время сна:",
+    ),
+    # ---------------- BIO hisoblagich ----------------
+    "bio_no_perm": _(
+        "\U0001F382 BIO hisoblagich\n\n"
+        "Bu funksiya uchun \"Edit bio\" (BIO'ni tahrirlash) ruxsati kerak.\n\n"
+        "Telegram: Sozlamalar → Telegram Business → Chatbots → botni bosing → "
+        "\"Edit bio\" ruxsatini yoqing. Keyin shu tugmani qayta bosing.",
+        "\U0001F382 BIO countdown\n\n"
+        "This feature needs the \"Edit bio\" permission.\n\n"
+        "Telegram: Settings → Telegram Business → Chatbots → tap the bot → "
+        "enable the \"Edit bio\" permission. Then press this button again.",
+        "\U0001F382 BIO-счётчик\n\n"
+        "Для этой функции нужно разрешение \"Edit bio\" (изменение BIO).\n\n"
+        "Telegram: Настройки → Telegram Business → Чат-боты → нажмите на бота → "
+        "включите разрешение \"Edit bio\". Затем снова нажмите эту кнопку.",
+    ),
+    "bio_menu": _(
+        "\U0001F382 BIO hisoblagich\n\n{status}\n\nBIO'ingizda avtomatik shu turdagi hisoblagich ko'rsatilsin:",
+        "\U0001F382 BIO countdown\n\n{status}\n\nChoose which countdown to show automatically in your BIO:",
+        "\U0001F382 BIO-счётчик\n\n{status}\n\nВыберите, какой счётчик автоматически показывать в вашем BIO:",
+    ),
+    "bio_status_on": _(
+        "Yoqilgan: {label}\nHozirgi matn: {preview}",
+        "On: {label}\nCurrent text: {preview}",
+        "Включено: {label}\nТекущий текст: {preview}",
+    ),
+    "bio_no_date": _("(sana kiritilmagan)", "(no date entered)", "(дата не указана)"),
+    "bio_status_off": _("Hozircha o'chirilgan.", "Currently off.", "Сейчас выключено."),
+    "bio_event_new_year": _("Yangi yil", "New Year", "Новый год"),
+    "bio_event_navroz": _("Navro'z", "Navruz", "Навруз"),
+    "bio_event_birthday": _("Tug'ilgan kunim", "My birthday", "Мой день рождения"),
+    "btn_bio_new_year": _("\U0001F386 Yangi yilgacha", "\U0001F386 Until New Year", "\U0001F386 До Нового года"),
+    "btn_bio_navroz": _("\U0001F33F Navro'zgacha", "\U0001F33F Until Navruz", "\U0001F33F До Навруза"),
+    "btn_bio_birthday": _("\U0001F382 Tug'ilgan kunimgacha", "\U0001F382 Until my birthday", "\U0001F382 До моего дня рождения"),
+    "bio_birthday_prompt": _(
+        "Tug'ilgan kuningizni kun.oy formatida yuboring (masalan: 15.03 — 15-mart):",
+        "Send your birthday in day.month format (for example: 15.03 — March 15):",
+        "Отправьте дату рождения в формате день.месяц (например: 15.03 — 15 марта):",
+    ),
+    "bio_birthday_bad": _(
+        "Noto'g'ri format. Kun.oy ko'rinishida yuboring, masalan: 15.03",
+        "Invalid format. Send it as day.month, for example: 15.03",
+        "Неверный формат. Отправьте в виде день.месяц, например: 15.03",
+    ),
+    "bio_failed": _(
+        "⚠️ BIO yangilanmadi: {info}",
+        "⚠️ BIO was not updated: {info}",
+        "⚠️ BIO не обновлено: {info}",
+    ),
+    "bio_err_not_connected": _("Akkount ulanmagan.", "Account is not connected.", "Аккаунт не подключён."),
+    "bio_err_no_perm": _(
+        "\"Edit bio\" ruxsati yoqilmagan.",
+        "The \"Edit bio\" permission is not enabled.",
+        "Разрешение \"Edit bio\" не включено.",
+    ),
+    "bio_err_off": _("BIO hisoblagich o'chirilgan.", "BIO countdown is off.", "BIO-счётчик выключен."),
+    "bio_err_no_birthday": _(
+        "Tug'ilgan kun sanasi kiritilmagan.",
+        "Birthday date is not entered.",
+        "Дата рождения не указана.",
+    ),
+    # BIO matni (akkaunt BIO'siga yoziladi). {days} — son, {unit} — "kun"/"day(s)"/"дн."
+    "bio_text_new_year": _("Yangi yilga {days} kun qoldi!", "{days} {unit} until New Year!", "До Нового года {days} {unit}!"),
+    "bio_text_navroz": _("Navro'zga {days} kun qoldi!", "{days} {unit} until Navruz!", "До Навруза {days} {unit}!"),
+    "bio_text_birthday": _("Tug'ilgan kunimga {days} kun qoldi!", "{days} {unit} until my birthday!", "До моего дня рождения {days} {unit}!"),
+    "bio_today_new_year": _("Bugun yangi yil!", "Today is New Year!", "Сегодня Новый год!"),
+    "bio_today_navroz": _("Bugun navro'z!", "Today is Navruz!", "Сегодня Навруз!"),
+    "bio_today_birthday": _("Bugun tug'ilgan kunim!", "Today is my birthday!", "Сегодня мой день рождения!"),
+    # ---------------- AI-Yordamchi ----------------
+    "ai_menu": _(
+        "\U0001F916 AI-Yordamchi\n\n"
+        "Holat: {status}\n"
+        "{usage}\n"
+        "Rol: {role}\n"
+        "Ma'lumot va uslub: {info}\n\n"
+        "Yoqilganda, avtojavob ishlaydigan paytda (Oflayn holat yoki uxlash vaqti) odatiy matn o'rniga "
+        "sun'iy intellekt suhbatdoshingizga o'zi javob yozadi. Oddiy avtojavob matnlari o'chmaydi — "
+        "AI o'chirilsa yoki limit tugasa/xato bo'lsa, ular ishlatiladi.\n"
+        "Chatga o'zingiz yozsangiz, AI shu chatda 2 soat jim turadi.",
+        "\U0001F916 AI Assistant\n\n"
+        "Status: {status}\n"
+        "{usage}\n"
+        "Role: {role}\n"
+        "Info and style: {info}\n\n"
+        "When on, while auto-reply is active (Offline status or sleep time), artificial intelligence "
+        "writes the reply to your contact instead of the usual text. The regular auto-reply texts are kept — "
+        "they are used if AI is turned off, the limit runs out or an error occurs.\n"
+        "If you write in a chat yourself, the AI stays silent in that chat for 2 hours.",
+        "\U0001F916 AI-помощник\n\n"
+        "Статус: {status}\n"
+        "{usage}\n"
+        "Роль: {role}\n"
+        "Информация и стиль: {info}\n\n"
+        "Когда включён, в моменты работы автоответа (статус Офлайн или время сна) вместо обычного текста "
+        "собеседнику отвечает искусственный интеллект. Обычные тексты автоответа не удаляются — "
+        "они используются, если AI выключен, закончился лимит или произошла ошибка.\n"
+        "Если вы сами напишете в чат, AI будет молчать в этом чате 2 часа.",
+    ),
+    "ai_usage_unlimited": _("Limit: cheklovsiz", "Limit: unlimited", "Лимит: без ограничений"),
+    "ai_usage": _("Bugun: {used}/{limit} ta javob", "Today: {used}/{limit} replies", "Сегодня: {used}/{limit} ответов"),
+    "ai_info_empty": _("kiritilmagan", "not set", "не указано"),
+    "btn_ai_roles": _("\U0001F3AD Rolni tanlash", "\U0001F3AD Choose role", "\U0001F3AD Выбрать роль"),
+    "btn_ai_info": _("\U0001F4DD Ma'lumot va uslub", "\U0001F4DD Info and style", "\U0001F4DD Информация и стиль"),
+    "ai_roles_menu": _(
+        "\U0001F3AD AI uchun rolni tanlang\n\n"
+        "AI suhbatdoshingizga shu rolga mos ohang va uslubda javob beradi. "
+        "Qo'shimcha ma'lumotni \"Ma'lumot va uslub\" bo'limida yozishingiz mumkin.",
+        "\U0001F3AD Choose a role for the AI\n\n"
+        "The AI will reply to your contact in a tone and style that fits this role. "
+        "You can add more details in the \"Info and style\" section.",
+        "\U0001F3AD Выберите роль для AI\n\n"
+        "AI будет отвечать собеседнику в тоне и стиле, подходящих этой роли. "
+        "Дополнительные сведения можно указать в разделе \"Информация и стиль\".",
+    ),
+    "role_assistant": _("\U0001F9D1‍\U0001F4BC Shaxsiy yordamchi", "\U0001F9D1‍\U0001F4BC Personal assistant", "\U0001F9D1‍\U0001F4BC Личный помощник"),
+    "role_seller": _("\U0001F6D2 Sotuv menejeri", "\U0001F6D2 Sales manager", "\U0001F6D2 Менеджер по продажам"),
+    "role_support": _("\U0001F6DF Mijozlarga yordam", "\U0001F6DF Customer support", "\U0001F6DF Помощь клиентам"),
+    "role_friend": _("\U0001F44B Do'stona suhbatdosh", "\U0001F44B Friendly companion", "\U0001F44B Дружеский собеседник"),
+    "role_developer": _("\U0001F468‍\U0001F4BB Dasturchi", "\U0001F468‍\U0001F4BB Developer", "\U0001F468‍\U0001F4BB Разработчик"),
+    "role_business": _("\U0001F4BC Rasmiy / biznes", "\U0001F4BC Formal / business", "\U0001F4BC Официальный / бизнес"),
+    "ai_not_configured": _(
+        "⚠️ AI hozircha sozlanmagan (serverda GEMINI_API_KEY kiritilmagan).",
+        "⚠️ AI is not configured yet (GEMINI_API_KEY is not set on the server).",
+        "⚠️ AI пока не настроен (на сервере не задан GEMINI_API_KEY).",
+    ),
+    "ai_info_prompt": _(
+        "AI uchun ma'lumot va uslubni yozing: siz kimsiz, nima ish qilasiz, qanday ohangda gaplashsin, "
+        "nimalarni aytmasin (eng ko'pi {max} belgi).\n"
+        "Tozalash uchun \"-\" yuboring. Bekor qilish: /cancel",
+        "Write the info and style for the AI: who you are, what you do, what tone it should use, "
+        "what it must not say (at most {max} characters).\n"
+        "Send \"-\" to clear. To cancel: /cancel",
+        "Напишите информацию и стиль для AI: кто вы, чем занимаетесь, каким тоном говорить, "
+        "о чём не говорить (не более {max} символов).\n"
+        "Отправьте \"-\", чтобы очистить. Отмена: /cancel",
+    ),
+    "ai_info_too_long": _(
+        "Matn juda uzun ({n} belgi). {max} belgidan qisqaroq yozing.",
+        "The text is too long ({n} characters). Keep it under {max} characters.",
+        "Текст слишком длинный ({n} симв.). Напишите короче {max} символов.",
+    ),
+    # ---------------- ism soati ----------------
+    "nc_menu": _(
+        "\U0001F552 Ism soati\n\n"
+        "Holat: {status}\n"
+        "Vaqt zonasi: {zone}\n"
+        "Raqamlar: {digits}\n"
+        "Asl ism: {base}\n"
+        "Ko'rinishi: {preview}\n\n"
+        "Ismingizga har daqiqada joriy vaqt qo'shiladi. O'chirsangiz, asl ismingiz qaytadi.\n"
+        "Telegram → Sozlamalar → Chat Automation → bot sozlamalarida \"Ismni o'zgartirish\" "
+        "ruxsati yoqilgan bo'lishi shart.",
+        "\U0001F552 Name clock\n\n"
+        "Status: {status}\n"
+        "Time zone: {zone}\n"
+        "Digits: {digits}\n"
+        "Base name: {base}\n"
+        "Preview: {preview}\n\n"
+        "The current time is added to your name every minute. If you turn it off, your original name comes back.\n"
+        "In Telegram → Settings → Chat Automation → the bot's settings, the \"Edit name\" "
+        "permission must be enabled.",
+        "\U0001F552 Часы в имени\n\n"
+        "Статус: {status}\n"
+        "Часовой пояс: {zone}\n"
+        "Цифры: {digits}\n"
+        "Исходное имя: {base}\n"
+        "Как выглядит: {preview}\n\n"
+        "К вашему имени каждую минуту добавляется текущее время. Если выключить, вернётся исходное имя.\n"
+        "В Telegram → Настройки → Chat Automation → в настройках бота должно быть включено "
+        "разрешение \"Изменение имени\".",
+    ),
+    "nc_base_pending": _("yoqilganda Telegramdan olinadi", "taken from Telegram when enabled", "берётся из Telegram при включении"),
+    "btn_nc_tz": _("\U0001F30D Vaqt zonasi", "\U0001F30D Time zone", "\U0001F30D Часовой пояс"),
+    "btn_nc_style": _("\U0001F3A8 Shriftni tanlash", "\U0001F3A8 Choose font", "\U0001F3A8 Выбрать шрифт"),
+    "btn_nc_edit": _("✏️ Asl ismni o'zgartirish", "✏️ Change base name", "✏️ Изменить исходное имя"),
+    "nc_tz_title": _("\U0001F30D Vaqt zonasini tanlang:", "\U0001F30D Choose a time zone:", "\U0001F30D Выберите часовой пояс:"),
+    "nc_style_title": _(
+        "Profilga o'rnatiladigan raqamlar ko'rinishini tanlang:",
+        "Choose how the digits will look in your profile:",
+        "Выберите вид цифр, которые будут в вашем профиле:",
+    ),
+    "nc_off_restored": _(
+        "✅ O'chirildi, asl ism qaytarildi.",
+        "✅ Turned off, the original name was restored.",
+        "✅ Выключено, исходное имя возвращено.",
+    ),
+    "nc_off_not_restored": _(
+        "O'chirildi. Asl ismni qaytarib bo'lmadi — uni Telegramda o'zingiz tuzating.",
+        "Turned off. The original name could not be restored — please fix it in Telegram yourself.",
+        "Выключено. Не удалось вернуть исходное имя — исправьте его в Telegram самостоятельно.",
+    ),
+    "nc_name_prompt": _(
+        "Asl ismingizni yuboring (soatsiz). Masalan: Dilshodbek yoki Dilshodbek Abdu.\nBekor qilish: /cancel",
+        "Send your base name (without the clock). For example: John or John Smith.\nTo cancel: /cancel",
+        "Отправьте исходное имя (без часов). Например: Иван или Иван Петров.\nОтмена: /cancel",
+    ),
+    "nc_name_empty": _(
+        "Ism bo'sh bo'lishi mumkin emas. Qayta yuboring.",
+        "The name cannot be empty. Please send it again.",
+        "Имя не может быть пустым. Отправьте ещё раз.",
+    ),
+    "nc_need_connect": _(
+        "⚠️ Avval akkauntingizni ulang (Telegram → Sozlamalar → Chat Automation).",
+        "⚠️ Connect your account first (Telegram → Settings → Chat Automation).",
+        "⚠️ Сначала подключите аккаунт (Telegram → Настройки → Chat Automation).",
+    ),
+    "nc_need_right": _(
+        "⚠️ Botda ismni o'zgartirish ruxsati yo'q. Telegram → Sozlamalar → Chat Automation → "
+        "bot → \"Ismni o'zgartirish\" (Edit name) ni yoqing va qayta urinib ko'ring.",
+        "⚠️ The bot has no permission to change the name. Telegram → Settings → Chat Automation → "
+        "the bot → enable \"Edit name\" and try again.",
+        "⚠️ У бота нет разрешения менять имя. Telegram → Настройки → Chat Automation → "
+        "бот → включите \"Изменение имени\" (Edit name) и повторите попытку.",
+    ),
+    "nc_name_unknown": _(
+        "⚠️ Ismingizni aniqlab bo'lmadi. Keyinroq urinib ko'ring yoki \"Asl ismni o'zgartirish\" orqali yozing.",
+        "⚠️ Could not determine your name. Try later or enter it via \"Change base name\".",
+        "⚠️ Не удалось определить ваше имя. Повторите позже или введите его через \"Изменить исходное имя\".",
+    ),
+    "nc_enabled": _("✅ Yoqildi.", "✅ Turned on.", "✅ Включено."),
+    "nc_auto_disabled": _(
+        "⚠️ Ism soati o'chirildi: {reason}",
+        "⚠️ Name clock turned off: {reason}",
+        "⚠️ Часы в имени выключены: {reason}",
+    ),
+    "nc_denied_reason": _(
+        "Telegram ismni o'zgartirishga ruxsat bermadi. Telegram → Sozlamalar → "
+        "Chat Automation → bot sozlamalarida \"Ismni o'zgartirish\" ruxsatini tekshiring.",
+        "Telegram did not allow changing the name. Check the \"Edit name\" permission in "
+        "Telegram → Settings → Chat Automation → the bot's settings.",
+        "Telegram не разрешил менять имя. Проверьте разрешение \"Изменение имени\" в "
+        "Telegram → Настройки → Chat Automation → настройки бота.",
+    ),
+    "nc_rights_lost": _(
+        "⚠️ Ism soati o'chirildi: ismni o'zgartirish ruxsati yo'q. "
+        "Ismingizdagi vaqtni Telegramda o'zingiz olib tashlang.",
+        "⚠️ Name clock turned off: no permission to change the name. "
+        "Please remove the time from your name in Telegram yourself.",
+        "⚠️ Часы в имени выключены: нет разрешения менять имя. "
+        "Уберите время из имени в Telegram самостоятельно.",
+    ),
+    # ---------------- ulanish xabarlari ----------------
+    "connected": _(
+        "✅ Akkountingiz ulandi! Panelni ochish uchun /start yozing.",
+        "✅ Your account is connected! Send /start to open the panel.",
+        "✅ Ваш аккаунт подключён! Отправьте /start, чтобы открыть панель.",
+    ),
+    "disconnected": _(
+        "Akkount uzildi. Avtojavob endi ishlamaydi.",
+        "The account was disconnected. Auto-reply no longer works.",
+        "Аккаунт отключён. Автоответ больше не работает.",
+    ),
+    # ---------------- bloklash ----------------
+    "block_notice": _(
+        "\U0001F6AB Siz admin tomonidan bloklandingiz.\n{reason_line}"
+        "\nBloklash davomida bot sizga xizmat ko'rsatmaydi: panel ishlamaydi, "
+        "avtojavob va BIO yangilash to'xtatiladi.\n\n"
+        "Agar bu xato deb o'ylasangiz, pastdagi tugma orqali izoh qoldiring — admin ko'rib chiqadi.",
+        "\U0001F6AB You were blocked by the admin.\n{reason_line}"
+        "\nWhile blocked, the bot will not serve you: the panel does not work, "
+        "auto-reply and BIO updates are stopped.\n\n"
+        "If you think this is a mistake, leave a comment with the button below — the admin will review it.",
+        "\U0001F6AB Вы заблокированы админом.\n{reason_line}"
+        "\nПока вы заблокированы, бот вас не обслуживает: панель не работает, "
+        "автоответ и обновление BIO остановлены.\n\n"
+        "Если вы считаете это ошибкой, оставьте комментарий кнопкой ниже — админ его рассмотрит.",
+    ),
+    "block_reason_line": _("Sabab: {reason}\n", "Reason: {reason}\n", "Причина: {reason}\n"),
+    "btn_appeal": _("✍️ Izoh qoldirish", "✍️ Leave a comment", "✍️ Оставить комментарий"),
+    "not_blocked": _("Siz bloklanmagansiz.", "You are not blocked.", "Вы не заблокированы."),
+    "blocked_alert": _("\U0001F6AB Siz bloklangansiz.", "\U0001F6AB You are blocked.", "\U0001F6AB Вы заблокированы."),
+    "unblocked_user": _(
+        "✅ Siz blokdan chiqarildingiz. Davom etish uchun /start yozing.",
+        "✅ You were unblocked. Send /start to continue.",
+        "✅ Вы разблокированы. Отправьте /start, чтобы продолжить.",
+    ),
+    "appeal_limit": _(
+        "Siz oxirgi 24 soat ichida {used} marta izoh qoldirgansiz. Keyinroq qayta urinib ko'ring.",
+        "You have left {used} comments in the last 24 hours. Please try again later.",
+        "За последние 24 часа вы оставили комментарий {used} раз. Повторите попытку позже.",
+    ),
+    "appeal_prompt": _(
+        "✍️ Izohingizni bitta xabar qilib yuboring (ko'pi bilan {max} belgi). "
+        "Nima uchun bu xato deb o'ylayotganingizni yozing.\nBekor qilish: /cancel",
+        "✍️ Send your comment as a single message (at most {max} characters). "
+        "Explain why you think this is a mistake.\nTo cancel: /cancel",
+        "✍️ Отправьте комментарий одним сообщением (не более {max} символов). "
+        "Объясните, почему вы считаете это ошибкой.\nОтмена: /cancel",
+    ),
+    "appeal_fail": _(
+        "Hozir izohingizni adminga yetkazib bo'lmadi. Keyinroq qayta urinib ko'ring.",
+        "Your comment could not be delivered to the admin right now. Please try again later.",
+        "Сейчас не удалось доставить ваш комментарий админу. Повторите попытку позже.",
+    ),
+    "appeal_sent": _(
+        "✅ Izohingiz adminga yuborildi. Qaror qabul qilinsa, sizga xabar beriladi.",
+        "✅ Your comment was sent to the admin. You will be notified when a decision is made.",
+        "✅ Ваш комментарий отправлен админу. Вы получите уведомление, когда будет принято решение.",
+    ),
+    "appeal_too_long": _(
+        "Izoh juda uzun ({n} belgi). Ko'pi bilan {max} belgi — qisqaroq yozing.",
+        "The comment is too long ({n} characters). At most {max} characters — please shorten it.",
+        "Комментарий слишком длинный ({n} симв.). Не более {max} символов — сократите.",
+    ),
+    # ---------------- standart matnlar (egasining mijozlariga) ----------------
+    "default_auto_reply": _(
+        "Salom! Hozirda oflaynman, imkon qadar tezroq javob beraman \U0001F64F",
+        "Hi! I'm offline at the moment, I'll reply as soon as I can \U0001F64F",
+        "Здравствуйте! Сейчас я офлайн, отвечу как только смогу \U0001F64F",
+    ),
+    "default_sleep": _(
+        "\U0001F634 Men hozir uxlayapman, ertalab uyg'onishim bilan albatta javob beraman!",
+        "\U0001F634 I'm asleep right now, I'll definitely reply as soon as I wake up in the morning!",
+        "\U0001F634 Сейчас я сплю, обязательно отвечу, как только проснусь утром!",
+    ),
+    # ---------------- vaqt zonalari (shahar nomlari) ----------------
+    "zone_tashkent": _("Toshkent", "Tashkent", "Ташкент"),
+    "zone_moscow": _("Moskva", "Moscow", "Москва"),
+    "zone_istanbul": _("Istanbul", "Istanbul", "Стамбул"),
+    "zone_dubai": _("Dubay", "Dubai", "Дубай"),
+    "zone_bishkek": _("Bishkek", "Bishkek", "Бишкек"),
+    "zone_beijing": _("Pekin", "Beijing", "Пекин"),
+    "zone_tokyo": _("Tokio", "Tokyo", "Токио"),
+    "zone_london": _("London", "London", "Лондон"),
+    "zone_berlin": _("Berlin", "Berlin", "Берлин"),
+    "zone_newyork": _("Nyu-York", "New York", "Нью-Йорк"),
+}
+
+
+def t(lang, key: str, **kw) -> str:
+    entry = T.get(key)
+    if entry is None:
+        return key
+    text = entry.get(lang) or entry[DEFAULT_LANG]
+    if kw:
+        try:
+            return text.format(**kw)
+        except (KeyError, IndexError):
+            return entry[DEFAULT_LANG].format(**kw)
+    return text
+
+
+def days_unit(lang, n: int) -> str:
+    """BIO matnidagi "kun" so'zi (songa mos)."""
+    if lang == "en":
+        return "day" if n == 1 else "days"
+    if lang == "ru":
+        n10, n100 = n % 10, n % 100
+        if n10 == 1 and n100 != 11:
+            return "день"
+        if 2 <= n10 <= 4 and not 12 <= n100 <= 14:
+            return "дня"
+        return "дней"
+    return "kun"
+
+
+def all_defaults(key: str) -> set[str]:
+    """Standart matnning barcha tillardagi variantlari (bazada saqlangan matn standartmi, yo'qmi — aniqlash uchun)."""
+    return set(T[key].values())
