@@ -258,6 +258,8 @@ def init_db():
         # Telegramdan ism/username olishga oxirgi urinish vaqti (eski foydalanuvchilarni
         # to'ldirish uchun; muvaffaqiyatsiz bo'lsa har restartda qayta-qayta urinmaslik uchun)
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS info_checked_at DOUBLE PRECISION")
+        # Foydalanuvchi tanlagan til ('uz' | 'en' | 'ru'); NULL — hali tanlamagan (eski foydalanuvchilar)
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_users_first_seen ON users (first_seen DESC)")
         cur.execute(
             """
@@ -627,6 +629,26 @@ def get_user(user_id: int):
         return dict(row) if row else None
 
 
+def get_user_lang(user_id: int):
+    """Tanlangan til kodi yoki None (tanlamagan / bazada yo'q)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT lang FROM users WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def set_user_lang(user_id: int, lang: str) -> None:
+    """Tilni saqlaydi (foydalanuvchi qatori bo'lmasa yaratadi)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO users (user_id, first_seen, lang) VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET lang = EXCLUDED.lang
+            """,
+            (user_id, time.time(), lang),
+        )
+
+
 def get_user_id_by_username(username: str):
     """@username -> user_id (bazada saqlangan bo'lsa), aks holda None."""
     username = username.lstrip("@")
@@ -882,9 +904,11 @@ def get_all_bio_targets():
         cur.execute(
             """
             SELECT c.owner_user_id, c.business_connection_id,
-                   s.bio_countdown_target, s.birthday_month, s.birthday_day, s.bio_updated_on
+                   s.bio_countdown_target, s.birthday_month, s.birthday_day, s.bio_updated_on,
+                   u.lang
             FROM connections c
             JOIN settings s ON s.owner_user_id = c.owner_user_id
+            LEFT JOIN users u ON u.user_id = c.owner_user_id
             WHERE c.is_enabled = TRUE AND c.can_edit_bio = TRUE
               AND s.bio_countdown_target IS NOT NULL
               AND NOT EXISTS (SELECT 1 FROM blocked_users b WHERE b.user_id = c.owner_user_id)
