@@ -456,7 +456,7 @@ DEFAULT_FEATURE_PLANS = {
     "bio": ("pro", "ultra"),            # BIO hisoblagich
     "custom_text": ("pro", "ultra"),    # avtojavob / uxlash matnini o'zgartirish
     "ai": ("ultra",),                   # AI-Yordamchi
-    "name_clock_fonts": (),             # ism soatining standart bo'lmagan shriftlari
+    "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
 }
 FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
 FEATURE_NAME_KEYS = {
