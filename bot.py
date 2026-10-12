@@ -305,6 +305,8 @@ async def refresh_bios(bot, only_stale: bool) -> tuple[int, int]:
         rows = [r for r in rows if r.get("bio_updated_on") != today_iso]
     updated, failed = 0, 0
     for row in rows:
+        if not plan_allows(row["owner_user_id"], row.get("plan"), "bio"):
+            continue  # tarif pasaygan: BIO hisoblagich yangilanmaydi
         text = compute_bio_text(
             row["bio_countdown_target"], row["birthday_month"], row["birthday_day"], today=today,
             lang=row.get("lang") if is_lang(row.get("lang")) else DEFAULT_LANG,
@@ -446,6 +448,69 @@ PAYMENT_CARD_HOLDER = os.environ.get("PAYMENT_CARD_HOLDER", "Malika Abdukarimova
 def format_card_number(raw: str) -> str:
     digits = re.sub(r"\s+", "", raw)
     return " ".join(digits[i:i + 4] for i in range(0, len(digits), 4)) if digits.isdigit() else raw
+
+
+# Qaysi funksiya qaysi tariflarda ochiq. Admin (ADMIN_ID) hamma narsadan cheklovsiz foydalanadi.
+# Bo'sh ro'yxat — hech bir tarifda ochiq emas (faqat admin).
+DEFAULT_FEATURE_PLANS = {
+    "bio": ("pro", "ultra"),            # BIO hisoblagich
+    "custom_text": ("pro", "ultra"),    # avtojavob / uxlash matnini o'zgartirish
+    "ai": ("ultra",),                   # AI-Yordamchi
+    "name_clock_fonts": (),             # ism soatining standart bo'lmagan shriftlari
+}
+FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
+FEATURE_NAME_KEYS = {
+    "bio": "feature_bio", "custom_text": "feature_text", "ai": "feature_ai", "name_clock_fonts": "feature_fonts",
+}
+
+
+def plan_allows(user_id: int, plan: str | None, feature: str) -> bool:
+    if ADMIN_ID and user_id == ADMIN_ID:
+        return True
+    return (plan or "free") in FEATURE_PLANS.get(feature, ())
+
+
+def plan_of(user_id: int) -> str:
+    try:
+        return db.get_user_plan(user_id)
+    except Exception:
+        return "free"
+
+
+def has_feature(user_id: int, feature: str) -> bool:
+    return plan_allows(user_id, plan_of(user_id), feature)
+
+
+def locked_text(lang: str, feature: str) -> str:
+    plans = FEATURE_PLANS.get(feature, ())
+    name = t(lang, FEATURE_NAME_KEYS[feature])
+    if not plans:
+        return t(lang, "locked_unavailable", feature=name)
+    return t(lang, "locked_feature", feature=name, plans=" / ".join(t(lang, "plan_name_" + p) for p in plans))
+
+
+def build_locked_view(owner_id: int, feature: str, back_data: str = "open_panel"):
+    lang = get_lang(owner_id)
+    rows = []
+    if FEATURE_PLANS.get(feature):
+        rows.append([InlineKeyboardButton(t(lang, "btn_plans"), callback_data="plans")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data=back_data)])
+    return locked_text(lang, feature), InlineKeyboardMarkup(rows)
+
+
+def locked_feature_for(data: str) -> str | None:
+    """Tugma ma'lumotidan qaysi tarif-cheklangan funksiyaga tegishli ekanini aniqlaydi."""
+    if data in ("bio_menu", "bio_set_new_year", "bio_set_navroz", "bio_set_birthday"):
+        return "bio"
+    if data in ("edit_text", "sleep_edit_text"):
+        return "custom_text"
+    if data == "ai_menu" or data.startswith("ai_"):
+        return "ai"
+    return None
+
+
+def lock_label(label: str, allowed: bool) -> str:
+    return label if allowed else "\U0001F512 " + label
 
 
 def format_plan_date(ts: float) -> str:
@@ -684,9 +749,11 @@ async def _disable_name_clock(bot, owner_id: int, reason: str):
 
 async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
     owner_id = target["owner_user_id"]
+    style = target.get("name_clock_style")
+    if not plan_allows(owner_id, target.get("plan"), "name_clock_fonts"):
+        style = None  # standart bo'lmagan shriftlar tarifda yo'q — standart shriftga qaytadi
     first, last, key = clock_names_for(
-        target["name_clock_first"], target.get("name_clock_last"), target.get("name_clock_tz"), at_ts,
-        target.get("name_clock_style"),
+        target["name_clock_first"], target.get("name_clock_last"), target.get("name_clock_tz"), at_ts, style,
     )
     if target.get("name_clock_applied") == key or owner_id in _name_clock_inflight:
         return None
@@ -877,13 +944,15 @@ def build_name_clock_menu(owner_id: int, notice: str | None = None):
     enabled = bool(s.get("name_clock_enabled"))
     first, last = s.get("name_clock_first"), s.get("name_clock_last")
     tz = s.get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE
+    fonts_ok = has_feature(owner_id, "name_clock_fonts")
+    chosen_style = s.get("name_clock_style") if fonts_ok else None
     if first:
-        preview_first, preview_last, _ = clock_names_for(first, last, tz, time.time(), s.get("name_clock_style"))
+        preview_first, preview_last, _ = clock_names_for(first, last, tz, time.time(), chosen_style)
         preview = f"{preview_first} {preview_last or ''}".strip()
         base = f"{first} {last or ''}".strip()
     else:
         preview, base = "—", t(lang, "nc_base_pending")
-    style_key = s.get("name_clock_style") if is_known_style(s.get("name_clock_style")) else DEFAULT_NAME_CLOCK_STYLE
+    style_key = chosen_style if is_known_style(chosen_style) else DEFAULT_NAME_CLOCK_STYLE
     text = t(
         lang, "nc_menu",
         status=t(lang, "status_on" if enabled else "status_off"),
@@ -917,12 +986,16 @@ def build_name_clock_zones_menu(owner_id: int):
 
 def build_name_clock_styles_menu(owner_id: int):
     lang = get_lang(owner_id)
-    current = db.get_settings(owner_id).get("name_clock_style")
+    fonts_ok = has_feature(owner_id, "name_clock_fonts")
+    current = db.get_settings(owner_id).get("name_clock_style") if fonts_ok else None
     current = current if is_known_style(current) else DEFAULT_NAME_CLOCK_STYLE
     rows, pair = [], []
     for key, (label, *_rest) in NAME_CLOCK_STYLES.items():
         mark = " \u2705" if key == current else ""
-        pair.append(InlineKeyboardButton(f"{label} {style_time('20:45', key)}{mark}", callback_data=f"nc_style:{key}"))
+        locked = not fonts_ok and key != DEFAULT_NAME_CLOCK_STYLE
+        pair.append(InlineKeyboardButton(
+            lock_label(f"{label} {style_time('20:45', key)}{mark}", not locked), callback_data=f"nc_style:{key}"
+        ))
         if len(pair) == 2:
             rows.append(pair)
             pair = []
@@ -956,10 +1029,14 @@ async def handle_name_clock_button(query, context, data: str, owner_id: int):
         text, markup = build_name_clock_styles_menu(owner_id)
     elif data.startswith("nc_style:"):
         key = data.split(":", 1)[1]
+        notice = None
         if is_known_style(key):
-            db.update_settings(owner_id, name_clock_style=key, name_clock_applied=None)
-            _apply_now_if_enabled(bot, owner_id)
-        text, markup = build_name_clock_menu(owner_id)
+            if key != DEFAULT_NAME_CLOCK_STYLE and not has_feature(owner_id, "name_clock_fonts"):
+                notice = locked_text(get_lang(owner_id), "name_clock_fonts")
+            else:
+                db.update_settings(owner_id, name_clock_style=key, name_clock_applied=None)
+                _apply_now_if_enabled(bot, owner_id)
+        text, markup = build_name_clock_menu(owner_id, notice)
     elif data == "nc_toggle":
         s = db.get_settings(owner_id)
         notice = None
@@ -1152,13 +1229,14 @@ def build_panel(owner_id: int):
         sleep=sleep_line,
         ai=ai_line,
     )
+    plan = plan_of(owner_id)
     keyboard = [
         [InlineKeyboardButton(toggle_label, callback_data="toggle_status")],
         [InlineKeyboardButton(t(lang, "btn_edit_cooldown"), callback_data="edit_cooldown")],
-        [InlineKeyboardButton(t(lang, "btn_edit_text"), callback_data="edit_text")],
-        [InlineKeyboardButton(t(lang, "btn_bio"), callback_data="bio_menu")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_edit_text"), plan_allows(owner_id, plan, "custom_text")), callback_data="edit_text")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_bio"), plan_allows(owner_id, plan, "bio")), callback_data="bio_menu")],
         [InlineKeyboardButton(t(lang, "btn_sleep"), callback_data="sleep_menu")],
-        [InlineKeyboardButton(t(lang, "btn_ai"), callback_data="ai_menu")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_ai"), plan_allows(owner_id, plan, "ai")), callback_data="ai_menu")],
     ]
     if name_clock_allowed(owner_id):
         keyboard.append([InlineKeyboardButton(t(lang, "btn_name_clock"), callback_data="nc_menu")])
@@ -1182,7 +1260,7 @@ def build_sleep_menu(owner_id: int):
     keyboard = [
         [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="sleep_toggle")],
         [InlineKeyboardButton(t(lang, "btn_sleep_time"), callback_data="sleep_edit_time")],
-        [InlineKeyboardButton(t(lang, "btn_edit_text"), callback_data="sleep_edit_text")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_edit_text"), has_feature(owner_id, "custom_text")), callback_data="sleep_edit_text")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
@@ -1396,6 +1474,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lang = get_lang(owner_id)
 
+    feature = locked_feature_for(data)
+    if feature and not has_feature(owner_id, feature):
+        text, markup = build_locked_view(owner_id, feature)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
     if data == "lang_menu":
         await query.edit_message_text(t(lang, "lang_pick"), reply_markup=build_lang_markup())
         return
@@ -1583,6 +1667,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     value = update.message.text.strip()
     lang = get_lang(owner_id)
+
+    gated = {"text": "custom_text", "sleep_text": "custom_text", "birthday_date": "bio", "ai_info": "ai"}.get(action)
+    if gated and not has_feature(owner_id, gated):
+        clear_pending_action(owner_id)
+        text, markup = build_locked_view(owner_id, gated)
+        await update.message.reply_text(text, reply_markup=markup)
+        return
 
     if action == "feedback":
         if len(value) > FEEDBACK_MAX_LENGTH:
@@ -2754,7 +2845,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = f"sleeping={sleeping}"
 
         # AI-Yordamchi: odatiy matn o'rniga AI javob beradi (matn faqat zaxira sifatida qoladi)
-        if settings.get("ai_enabled") and ai.is_configured():
+        if settings.get("ai_enabled") and ai.is_configured() and has_feature(owner_id, "ai"):
             if db.is_ai_paused(owner_id, chat_id):
                 return  # egasi shu chatda o'zi yozmoqda
             text = (bm.text or bm.caption or "").strip()
