@@ -387,3 +387,47 @@ def is_external_rename(base_first: str, base_last: str | None, cur_first: str | 
     if not cf:
         return False  # Telegram ismni qaytarmadi — o'zgargan deb hisoblamaymiz
     return not (same(base_first or "", cf) and same(base_last or "", cur_last or ""))
+
+
+# ---------------------------------------------------------------------------
+# Tarif muddati (/setplan @user plus 1oy)
+# ---------------------------------------------------------------------------
+_DURATION_RE = re.compile(
+    r"^(\d{1,4})\s*(oy|oylik|kun|kunlik|hafta|haftalik|yil|yillik|month|months|day|days|week|weeks|year|years)$"
+)
+_DURATION_KIND = {
+    "oy": "month", "oylik": "month", "month": "month", "months": "month",
+    "kun": "day", "kunlik": "day", "day": "day", "days": "day",
+    "hafta": "week", "haftalik": "week", "week": "week", "weeks": "week",
+    "yil": "year", "yillik": "year", "year": "year", "years": "year",
+}
+MAX_PLAN_DAYS = 3650
+
+
+def parse_plan_duration(text: str):
+    """'1oy', '30 kun', '2hafta', '1yil' -> (son, 'month'|'day'|'week'|'year'); noto'g'ri bo'lsa None.
+    0 va 10 yildan uzun muddat rad etiladi."""
+    m = _DURATION_RE.match((text or "").strip().lower())
+    if not m:
+        return None
+    n, kind = int(m.group(1)), _DURATION_KIND[m.group(2)]
+    if n <= 0:
+        return None
+    days = {"day": 1, "week": 7, "month": 31, "year": 366}[kind] * n
+    return (n, kind) if days <= MAX_PLAN_DAYS + 31 else None
+
+
+def add_plan_duration(start_ts: float, n: int, kind: str, tz) -> float:
+    """`start_ts` dan boshlab n oy/kun/hafta/yil keyingi vaqt (taqvim bo'yicha: 31-yanvar + 1 oy = 28/29-fevral)."""
+    import calendar
+    from datetime import datetime, timedelta
+
+    start = datetime.fromtimestamp(start_ts, tz)
+    if kind in ("month", "year"):
+        months = n * (12 if kind == "year" else 1)
+        index = start.year * 12 + (start.month - 1) + months
+        year, month = divmod(index, 12)
+        month += 1
+        day = min(start.day, calendar.monthrange(year, month)[1])
+        return start.replace(year=year, month=month, day=day).timestamp()
+    return (start + timedelta(days=n * (7 if kind == "week" else 1))).timestamp()
