@@ -671,6 +671,57 @@ T: dict[str, dict] = {
         "\U0001F634 I'm asleep right now, I'll definitely reply as soon as I wake up in the morning!",
         "\U0001F634 Сейчас я сплю, обязательно отвечу, как только проснусь утром!",
     ),
+    # ---------------- tariflar ----------------
+    "btn_plans": _("\U0001F3F7\uFE0F Tariflar", "\U0001F3F7\uFE0F Plans", "\U0001F3F7\uFE0F Тарифы"),
+    "plans_menu": _(
+        "\U0001F6D2 Tarif rejalarimiz\n\nMa'lumot olish va xarid qilish uchun tarifni tanlang:",
+        "\U0001F6D2 Our plans\n\nChoose a plan to get details or to purchase:",
+        "\U0001F6D2 Наши тарифы\n\nВыберите тариф, чтобы узнать подробности или оплатить:",
+    ),
+    "plan_name_free": _("Bepul", "Free", "Бесплатный"),
+    "plan_name_plus": _("Plus", "Plus", "Plus"),
+    "plan_name_pro": _("Pro", "Pro", "Pro"),
+    "plan_name_ultra": _("Ultra", "Ultra", "Ultra"),
+    "plan_active": _("FAOL", "ACTIVE", "АКТИВЕН"),
+    "plan_price": _("{price} so'm", "{price} UZS", "{price} сум"),
+    "plan_free_info": _(
+        "\U0001F530 Bepul tarif\n\nBarcha foydalanuvchilar shu tarifdan boshlaydi. To'lov talab qilinmaydi.",
+        "\U0001F530 Free plan\n\nEveryone starts on this plan. No payment is required.",
+        "\U0001F530 Бесплатный тариф\n\nВсе пользователи начинают с этого тарифа. Оплата не требуется.",
+    ),
+    "plan_current": _(
+        "✅ Bu sizning hozirgi tarifingiz.",
+        "✅ This is your current plan.",
+        "✅ Это ваш текущий тариф.",
+    ),
+    "plan_pay": _(
+        "{emoji} {name} tarifi — {price}\n\n"
+        "Sotib olish uchun quyidagi kartaga to'lov qiling:\n\n"
+        "\U0001F4B3 Karta raqami: {card}\n"
+        "\U0001F464 Karta egasi: {holder}\n\n"
+        "To'lovdan so'ng chekni (skrinshot) adminga yuboring — tarifingiz faollashtiriladi.",
+        "{emoji} {name} plan — {price}\n\n"
+        "To pay, transfer the amount to this card:\n\n"
+        "\U0001F4B3 Card number: {card}\n"
+        "\U0001F464 Card holder: {holder}\n\n"
+        "After paying, send the receipt (screenshot) to the admin — your plan will be activated.",
+        "{emoji} Тариф {name} — {price}\n\n"
+        "Для оплаты переведите сумму на эту карту:\n\n"
+        "\U0001F4B3 Номер карты: {card}\n"
+        "\U0001F464 Владелец карты: {holder}\n\n"
+        "После оплаты отправьте чек (скриншот) админу — тариф будет активирован.",
+    ),
+    "plan_no_card": _(
+        "⚠️ To'lov kartasi hozircha sozlanmagan. Iltimos, admin bilan bog'laning.",
+        "⚠️ The payment card is not set up yet. Please contact the admin.",
+        "⚠️ Платёжная карта пока не настроена. Пожалуйста, свяжитесь с админом.",
+    ),
+    "plan_activated": _(
+        "✅ Tarifingiz faollashtirildi: {name}",
+        "✅ Your plan has been activated: {name}",
+        "✅ Ваш тариф активирован: {name}",
+    ),
+
     # ---------------- vaqt zonalari (shahar nomlari) ----------------
     "zone_tashkent": _("Toshkent", "Tashkent", "Ташкент"),
     "zone_moscow": _("Moskva", "Moscow", "Москва"),
