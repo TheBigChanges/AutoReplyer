@@ -44,12 +44,12 @@ from telegram.ext import (
 
 import ai
 import db
+from i18n import DEFAULT_LANG, LANG_NAMES, LANGS, all_defaults, is_lang, t
 from logic import (
-    BIO_EVENT_LABELS,
+    bio_event_label,
     DEFAULT_NAME_CLOCK_STYLE,
     DEFAULT_NAME_CLOCK_ZONE,
     NAME_CLOCK_STYLES,
-    DEFAULT_SLEEP_MESSAGE,
     NAME_CLOCK_ZONES,
     NAME_MAX_LENGTH,
     build_clock_name,
@@ -66,6 +66,7 @@ from logic import (
     split_full_name,
     style_time,
     strip_clock_suffix,
+    zone_button_label,
     zone_label,
 )
 
@@ -184,6 +185,57 @@ def spawn_background(coro):
     return task
 
 
+# user_id -> til kodi (faqat bazadan o'qilgan to'g'ri qiymatlar keshlanadi)
+_lang_cache: dict[int, str] = {}
+
+
+def get_lang(user_id) -> str:
+    """Foydalanuvchining tanlagan tili; tanlamagan yoki baza xato bersa — o'zbekcha."""
+    cached = _lang_cache.get(user_id)
+    if cached:
+        return cached
+    try:
+        lang = db.get_user_lang(user_id)
+    except Exception:
+        return DEFAULT_LANG
+    if is_lang(lang):
+        _lang_cache[user_id] = lang
+        return lang
+    return DEFAULT_LANG
+
+
+def has_chosen_lang(user_id) -> bool:
+    if user_id in _lang_cache:
+        return True
+    try:
+        return is_lang(db.get_user_lang(user_id))
+    except Exception:
+        return True  # baza xatosida til tanlashni qayta-qayta so'ramaymiz
+
+
+def set_lang(user_id: int, lang: str) -> None:
+    db.set_user_lang(user_id, lang)
+    _lang_cache[user_id] = lang
+
+
+def build_lang_markup(inviter_id: int | None = None):
+    """Til tanlash tugmalari. Taklif qilgan odam ID'si tugma ichida olib yuriladi (referal yo'qolmasin)."""
+    suffix = f":{inviter_id}" if inviter_id else ""
+    rows = [[InlineKeyboardButton(LANG_NAMES[code], callback_data=f"lang:{code}{suffix}")] for code in LANGS]
+    return InlineKeyboardMarkup(rows)
+
+
+def auto_reply_text_for(settings: dict, lang: str) -> str:
+    """Egasi o'zi matn yozmagan bo'lsa (standart) — uning tilidagi standart matn."""
+    text = settings.get("auto_reply_text") or ""
+    return t(lang, "default_auto_reply") if (not text or text in all_defaults("default_auto_reply")) else text
+
+
+def sleep_text_for(settings: dict, lang: str) -> str:
+    text = settings.get("sleep_reply_text") or ""
+    return t(lang, "default_sleep") if (not text or text in all_defaults("default_sleep")) else text
+
+
 def track_user(user):
     """Foydalanuvchini (va uning username/ismini) bazaga yozadi. Username
     saqlanishi sababli admin /block @username bilan odamni topa oladi."""
@@ -198,40 +250,32 @@ def track_user(user):
         except Exception:
             logger.exception("Ism soati: yangi ismni olishda xato (owner=%s)", user.id)
 
-HOW_CONNECT_TEXT = (
-    "\U0001F517 Akkountni ulash — qadamma-qadam:\n\n"
-    "1\uFE0F\u20E3 Telegram ilovangizda: Sozlamalar (Settings)\n"
-    "2\uFE0F\u20E3 \"Telegram Business\" bo'limini toping va uni oching\n"
-    "3\uFE0F\u20E3 \"Chatbots\" (yoki \"Chat Automation\") ni tanlang\n"
-    f"4\uFE0F\u20E3 Kiritish maydoniga botning username'ini yozing: @{BOT_USERNAME}\n"
-    "   Ro'yxatda chiqqach, ustiga bosib tanlang\n"
-    "5\uFE0F\u20E3 \"Access to chats\" (qaysi chatlarga ruxsat) so'ralganda:\n"
-    "   \u2022 \"All 1-to-1 Chats\" ni tanlang — bu barcha shaxsiy xabarlarga ruxsat beradi\n"
-    "   \u2022 (\"Only Selected Chats\"ni tansangiz, faqat o'zingiz qo'shgan odamlarga javob beriladi)\n"
-    "6\uFE0F\u20E3 \"Reply to messages\" (xabarlarga javob berish) ruxsatini albatta yoqing —\n"
-    "   shu yoqilmasa, bot xabarlarni ko'radi lekin javob bera olmaydi\n\n"
-    "Ulangach, shu yerga qaytib /start yozing \u2014 panel avtomatik ochiladi."
-)
+def how_connect_text(lang: str = DEFAULT_LANG) -> str:
+    return t(lang, "how_connect", bot=BOT_USERNAME)
+
+
+HOW_CONNECT_TEXT = how_connect_text("uz")  # eski nom (o'zbekcha)
 
 
 async def apply_bio_update(bot, owner_id: int) -> tuple[bool, str]:
     """Bitta foydalanuvchining BIO'sini hozirgi sozlamalariga qarab yangilaydi."""
+    lang = get_lang(owner_id)
     connection = db.get_connection(owner_id)
     settings = db.get_settings(owner_id)
     target = settings.get("bio_countdown_target")
 
     if not connection or not connection["is_enabled"]:
-        return False, "Akkount ulanmagan."
+        return False, t(lang, "bio_err_not_connected")
     if not connection.get("can_edit_bio"):
-        return False, "\"Edit bio\" ruxsati yoqilmagan."
+        return False, t(lang, "bio_err_no_perm")
     if not target:
-        return False, "BIO hisoblagich o'chirilgan."
+        return False, t(lang, "bio_err_off")
 
     text = compute_bio_text(
-        target, settings.get("birthday_month"), settings.get("birthday_day"), today=today_tashkent()
+        target, settings.get("birthday_month"), settings.get("birthday_day"), today=today_tashkent(), lang=lang
     )
     if text is None:
-        return False, "Tug'ilgan kun sanasi kiritilmagan."
+        return False, t(lang, "bio_err_no_birthday")
 
     try:
         await bot.set_business_account_bio(
@@ -260,7 +304,8 @@ async def refresh_bios(bot, only_stale: bool) -> tuple[int, int]:
     updated, failed = 0, 0
     for row in rows:
         text = compute_bio_text(
-            row["bio_countdown_target"], row["birthday_month"], row["birthday_day"], today=today
+            row["bio_countdown_target"], row["birthday_month"], row["birthday_day"], today=today,
+            lang=row.get("lang") if is_lang(row.get("lang")) else DEFAULT_LANG,
         )
         if text is None:
             continue
@@ -314,14 +359,14 @@ async def is_subscribed(bot, user_id: int) -> bool:
         return True
 
 
-def build_subscribe_gate_markup(inviter_id: int | None = None):
+def build_subscribe_gate_markup(inviter_id: int | None = None, lang: str = DEFAULT_LANG):
     # Taklif qilgan odamning ID'si tugma ichida (callback_data) olib yuriladi: shunda
     # foydalanuvchi obuna bo'lib "Tekshirish"ni bosganda referal yo'qolmaydi
     # (holat RAM'da emas — server restart bo'lsa ham saqlanadi). Limit 64 bayt.
     check_data = f"check_subscription:{inviter_id}" if inviter_id else "check_subscription"
     keyboard = [
-        [InlineKeyboardButton("\U0001F4E2 Kanalga o'tish", url=REQUIRED_CHANNEL_LINK)],
-        [InlineKeyboardButton("\u2705 Tekshirish", callback_data=check_data)],
+        [InlineKeyboardButton(t(lang, "gate_btn_channel"), url=REQUIRED_CHANNEL_LINK)],
+        [InlineKeyboardButton(t(lang, "gate_btn_check"), callback_data=check_data)],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -349,41 +394,34 @@ async def process_referral(bot, owner_id: int, inviter_id: int | None):
     try:
         await bot.send_message(
             chat_id=inviter_id,
-            text="\U0001F389 Sizning havolangiz orqali yangi odam botga qo'shildi!",
+            text=t(get_lang(inviter_id), "referral_joined"),
         )
     except TelegramError as e:
         logger.info("Referral bildirishnomasi yuborilmadi (inviter=%s): %s", inviter_id, e)
 
 
-SUBSCRIBE_GATE_TEXT = (
-    "\U0001F512 Botdan foydalanish uchun avval kanalimizga obuna bo'ling.\n\n"
-    "Obuna bo'lgach, pastdagi \"\u2705 Tekshirish\" tugmasini bosing."
-)
+SUBSCRIBE_GATE_TEXT = t("uz", "gate_text")  # eski nom (o'zbekcha)
 
 
 def build_start_view(owner_id: int):
     """Bosh menyu matni va tugmalarini qaytaradi (obunadan o'tgan foydalanuvchi uchun)."""
+    lang = get_lang(owner_id)
     conn = db.get_connection(owner_id)
-    if conn and conn["is_enabled"]:
-        greeting = "Assalomu alaykum! Kerakli bo'limni tanlang:"
-    else:
-        greeting = (
-            "Assalomu alaykum!\n\n"
-            "Bu bot orqali o'z Telegram akkountingizni ulab, siz oflayn bo'lganingizda "
-            "kiruvchi shaxsiy xabarlarga avtomatik javob berishni sozlashingiz mumkin."
-        )
+    greeting = t(lang, "greeting_connected" if (conn and conn["is_enabled"]) else "greeting_new")
     return greeting, main_menu_markup(owner_id)
 
 
 def main_menu_markup(owner_id: int):
+    lang = get_lang(owner_id)
     conn = db.get_connection(owner_id)
     rows = []
     if conn and conn["is_enabled"]:
-        rows.append([InlineKeyboardButton("\U0001F39B Panelni ochish", callback_data="open_panel")])
+        rows.append([InlineKeyboardButton(t(lang, "btn_open_panel"), callback_data="open_panel")])
     else:
-        rows.append([InlineKeyboardButton("\u2139\uFE0F Qanday ulash mumkin?", callback_data="how_connect")])
-    rows.append([InlineKeyboardButton("\U0001F381 Referal bonus", callback_data="referral")])
-    rows.append([InlineKeyboardButton("\U0001F6DF Qo'llab-quvvatlash xizmati", callback_data="support")])
+        rows.append([InlineKeyboardButton(t(lang, "btn_how_connect"), callback_data="how_connect")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_referral"), callback_data="referral")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_support"), callback_data="support")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_language"), callback_data="lang_menu")])
     if owner_id == ADMIN_ID:
         rows.append([InlineKeyboardButton("\U0001F4CA Referral statistikasi (admin)", callback_data="admin_referrals")])
     return InlineKeyboardMarkup(rows)
@@ -394,25 +432,19 @@ SUPPORT_ADMIN_USERNAME = "MyAndro1d"
 FEEDBACK_MAX_LENGTH = 1500
 FEEDBACK_MAX_PER_HOUR = 5
 
-SUPPORT_TEXT = (
-    "\U0001F6DF Qo'llab-quvvatlash xizmati\n\n"
-    "Savolingiz yoki taklifingiz bo'lsa, bemalol yozing — biz sizni eshitamiz.\n\n"
-    "• Kanal — yangiliklar va e'lonlar\n"
-    "• Admin bilan bog'lanish — shaxsiy yozishish\n"
-    "• Fikr/taklif yozish — shu bot orqali to'g'ridan-to'g'ri adminga yuboriladi"
-)
+SUPPORT_TEXT = t("uz", "support_text")  # eski nom (o'zbekcha)
 
 
-def build_support_view():
+def build_support_view(lang: str = DEFAULT_LANG):
     markup = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("\U0001F4E2 Kanalimiz", url=SUPPORT_CHANNEL_LINK)],
-            [InlineKeyboardButton("\U0001F464 Admin bilan bog'lanish", url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")],
-            [InlineKeyboardButton("✍️ Fikr / taklif yozish", callback_data="support_feedback")],
-            [InlineKeyboardButton("⬅️ Orqaga", callback_data="back")],
+            [InlineKeyboardButton(t(lang, "support_btn_channel"), url=SUPPORT_CHANNEL_LINK)],
+            [InlineKeyboardButton(t(lang, "support_btn_admin"), url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")],
+            [InlineKeyboardButton(t(lang, "support_btn_feedback"), callback_data="support_feedback")],
+            [InlineKeyboardButton(t(lang, "btn_back"), callback_data="back")],
         ]
     )
-    return SUPPORT_TEXT, markup
+    return t(lang, "support_text"), markup
 
 
 async def send_feedback_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, target_id: int):
@@ -424,7 +456,7 @@ async def send_feedback_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return  # amal saqlanadi
     clear_pending_admin_action(ADMIN_ID)
-    delivered = await _try_send(context.bot, target_id, f"\U0001F4AC Admin javobi:\n\n{text}")
+    delivered = await _try_send(context.bot, target_id, t(get_lang(target_id), "admin_reply_to_user", text=text))
     await update.message.reply_text(
         "\u2705 Javob yuborildi." if delivered
         else "\u274C Yuborib bo'lmadi \u2014 foydalanuvchi botni bloklagan bo'lishi mumkin."
@@ -433,35 +465,30 @@ async def send_feedback_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def submit_feedback(bot, user, text: str) -> str:
     """Foydalanuvchi fikrini adminga yuboradi. Foydalanuvchiga ko'rsatiladigan javob matnini qaytaradi."""
+    lang = get_lang(user.id)
     if db.count_recent_feedback(user.id, time.time() - 3600) >= FEEDBACK_MAX_PER_HOUR:
-        return "⏳ Juda ko'p xabar yubordingiz. Iltimos, birozdan keyin qayta urinib ko'ring."
+        return t(lang, "feedback_rate")
     label = format_user_label(user.id, user.username, user.full_name)
     admin_text = f"\U0001F4AC Yangi fikr/taklif\n\nKimdan: {label}\n\n{text}"
     reply_markup = InlineKeyboardMarkup(
         [[InlineKeyboardButton("\u21A9\uFE0F Javob berish", callback_data=f"fbreply:{user.id}")]]
     )
     if not (ADMIN_ID and await _try_send(bot, ADMIN_ID, admin_text, reply_markup)):
-        return "Hozir xabaringizni yetkazib bo'lmadi. Keyinroq qayta urinib ko'ring."
+        return t(lang, "feedback_fail")
     db.add_feedback(user.id, text)
-    return "✅ Rahmat! Fikringiz adminga yuborildi."
+    return t(lang, "feedback_thanks")
 
 
 def build_referral_view(owner_id: int):
+    lang = get_lang(owner_id)
     link = f"https://t.me/{BOT_USERNAME}?start=ref_{owner_id}"
     count = db.get_referral_count(owner_id)
-    share_text = "Oflaynda ham javob beradigan Telegram botdan foydalaning:"
-    share_url = f"https://t.me/share/url?url={quote(link)}&text={quote(share_text)}"
+    share_url = f"https://t.me/share/url?url={quote(link)}&text={quote(t(lang, 'ref_share_text'))}"
 
-    text = (
-        "\U0001F381 Referal bonus\n\n"
-        f"Siz orqali botga ulangan do'stlar soni: {count}\n\n"
-        "Shaxsiy havolangiz:\n"
-        f"{link}\n\n"
-        "Do'stlaringiz shu havola orqali botga kirsa, ular siz taklif qilgan hisoblanadi."
-    )
+    text = t(lang, "ref_view", count=count, link=link)
     keyboard = [
-        [InlineKeyboardButton("\U0001F4E4 Havolani ulashish", url=share_url)],
-        [InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")],
+        [InlineKeyboardButton(t(lang, "ref_btn_share"), url=share_url)],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="back")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
@@ -567,7 +594,7 @@ async def _notify_owner(bot, owner_id: int, text: str):
 async def _disable_name_clock(bot, owner_id: int, reason: str):
     db.update_settings(owner_id, name_clock_enabled=False)
     _name_clock_failures.pop(owner_id, None)
-    await _notify_owner(bot, owner_id, f"⚠️ Ism soati o'chirildi: {reason}")
+    await _notify_owner(bot, owner_id, t(get_lang(owner_id), "nc_auto_disabled", reason=reason))
 
 
 async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
@@ -602,11 +629,7 @@ async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
                 _name_clock_failures[owner_id] = _name_clock_failures.get(owner_id, 0) + 1
                 logger.warning("Ism soati yangilanmadi (owner=%s): %s", owner_id, e)
                 if _name_clock_failures[owner_id] >= NAME_CLOCK_MAX_FAILURES:
-                    await _disable_name_clock(
-                        bot, owner_id,
-                        "Telegram ismni o'zgartirishga ruxsat bermadi. Telegram → Sozlamalar → "
-                        "Chat Automation → bot sozlamalarida \"Ismni o'zgartirish\" ruxsatini tekshiring.",
-                    )
+                    await _disable_name_clock(bot, owner_id, t(get_lang(owner_id), "nc_denied_reason"))
                 return None
             except TelegramError as e:
                 logger.info("Ism soati: vaqtinchalik xato (owner=%s): %s", owner_id, e)
@@ -764,6 +787,7 @@ async def restore_base_name(bot, owner_id: int) -> bool:
 
 
 def build_name_clock_menu(owner_id: int, notice: str | None = None):
+    lang = get_lang(owner_id)
     s = db.get_settings(owner_id)
     enabled = bool(s.get("name_clock_enabled"))
     first, last = s.get("name_clock_first"), s.get("name_clock_last")
@@ -773,43 +797,41 @@ def build_name_clock_menu(owner_id: int, notice: str | None = None):
         preview = f"{preview_first} {preview_last or ''}".strip()
         base = f"{first} {last or ''}".strip()
     else:
-        preview, base = "—", "yoqilganda Telegramdan olinadi"
-    status_label = "\U0001F7E2 Yoqilgan" if enabled else "O'chirilgan"
+        preview, base = "—", t(lang, "nc_base_pending")
     style_key = s.get("name_clock_style") if is_known_style(s.get("name_clock_style")) else DEFAULT_NAME_CLOCK_STYLE
-    text = (
-        "\U0001F552 Ism soati\n\n"
-        f"Holat: {status_label}\n"
-        f"Vaqt zonasi: {zone_label(tz)}\n"
-        f"Raqamlar: {NAME_CLOCK_STYLES[style_key][0]} {style_time('20:45', style_key)}\n"
-        f"Asl ism: {base}\n"
-        f"Ko'rinishi: {preview}\n\n"
-        "Ismingizga har daqiqada joriy vaqt qo'shiladi. O'chirsangiz, asl ismingiz qaytadi.\n"
-        "Telegram → Sozlamalar → Chat Automation → bot sozlamalarida \"Ismni o'zgartirish\" "
-        "ruxsati yoqilgan bo'lishi shart."
+    text = t(
+        lang, "nc_menu",
+        status=t(lang, "status_on" if enabled else "status_off"),
+        zone=zone_label(tz, lang),
+        digits=f"{NAME_CLOCK_STYLES[style_key][0]} {style_time('20:45', style_key)}",
+        base=base,
+        preview=preview,
     )
     if notice:
         text += f"\n\n{notice}"
     keyboard = [
-        [InlineKeyboardButton("❌ O'chirish" if enabled else "✅ Yoqish", callback_data="nc_toggle")],
-        [InlineKeyboardButton("\U0001F30D Vaqt zonasi", callback_data="nc_tz_menu")],
-        [InlineKeyboardButton("\U0001F3A8 Shriftni tanlash", callback_data="nc_style_menu")],
-        [InlineKeyboardButton("✏️ Asl ismni o'zgartirish", callback_data="nc_edit_name")],
-        [InlineKeyboardButton("⬅️ Orqaga", callback_data="open_panel")],
+        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="nc_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_nc_tz"), callback_data="nc_tz_menu")],
+        [InlineKeyboardButton(t(lang, "btn_nc_style"), callback_data="nc_style_menu")],
+        [InlineKeyboardButton(t(lang, "btn_nc_edit"), callback_data="nc_edit_name")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
 
 def build_name_clock_zones_menu(owner_id: int):
+    lang = get_lang(owner_id)
     current = db.get_settings(owner_id).get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE
     rows = [
-        [InlineKeyboardButton(("✅ " if tz == current else "") + label, callback_data=f"nc_tz:{key}")]
+        [InlineKeyboardButton(("✅ " if tz == current else "") + zone_button_label(key, label, lang), callback_data=f"nc_tz:{key}")]
         for key, label, tz in NAME_CLOCK_ZONES
     ]
-    rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="nc_menu")])
-    return "\U0001F30D Vaqt zonasini tanlang:", InlineKeyboardMarkup(rows)
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="nc_menu")])
+    return t(lang, "nc_tz_title"), InlineKeyboardMarkup(rows)
 
 
 def build_name_clock_styles_menu(owner_id: int):
+    lang = get_lang(owner_id)
     current = db.get_settings(owner_id).get("name_clock_style")
     current = current if is_known_style(current) else DEFAULT_NAME_CLOCK_STYLE
     rows, pair = [], []
@@ -821,8 +843,8 @@ def build_name_clock_styles_menu(owner_id: int):
             pair = []
     if pair:
         rows.append(pair)
-    rows.append([InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="nc_menu")])
-    return "Profilga o'rnatiladigan raqamlar ko'rinishini tanlang:", InlineKeyboardMarkup(rows)
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="nc_menu")])
+    return t(lang, "nc_style_title"), InlineKeyboardMarkup(rows)
 
 
 def _apply_now_if_enabled(bot, owner_id: int):
@@ -859,17 +881,13 @@ async def handle_name_clock_button(query, context, data: str, owner_id: int):
         if s.get("name_clock_enabled"):
             db.update_settings(owner_id, name_clock_enabled=False)
             restored = await restore_base_name(bot, owner_id)
-            notice = "✅ O'chirildi, asl ism qaytarildi." if restored else (
-                "O'chirildi. Asl ismni qaytarib bo'lmadi — uni Telegramda o'zingiz tuzating."
-            )
+            notice = t(get_lang(owner_id), "nc_off_restored" if restored else "nc_off_not_restored")
         else:
             notice = await _enable_name_clock(bot, owner_id)
         text, markup = build_name_clock_menu(owner_id, notice)
     elif data == "nc_edit_name":
         set_pending_action(owner_id, "nc_name")
-        await query.message.reply_text(
-            "Asl ismingizni yuboring (soatsiz). Masalan: Dilshodbek yoki Dilshodbek Abdu.\nBekor qilish: /cancel"
-        )
+        await query.message.reply_text(t(get_lang(owner_id), "nc_name_prompt"))
         return
     else:
         return
@@ -878,9 +896,10 @@ async def handle_name_clock_button(query, context, data: str, owner_id: int):
 
 async def _enable_name_clock(bot, owner_id: int) -> str | None:
     """Yoqishdan oldin tekshiradi. Muammo bo'lsa, foydalanuvchiga ko'rsatiladigan izohni qaytaradi."""
+    lang = get_lang(owner_id)
     conn = db.get_connection(owner_id)
     if not conn or not conn.get("is_enabled"):
-        return "⚠️ Avval akkauntingizni ulang (Telegram → Sozlamalar → Chat Automation)."
+        return t(lang, "nc_need_connect")
     # Ruxsat o'zgargan bo'lishi mumkin — Telegramdan joriy holatni so'raymiz
     try:
         live = await bot.get_business_connection(conn["business_connection_id"])
@@ -898,13 +917,10 @@ async def _enable_name_clock(bot, owner_id: int) -> str | None:
         logger.info("Ulanish huquqlarini o'qib bo'lmadi (owner=%s): %s", owner_id, e)
         can_edit_name = bool(conn.get("can_edit_name"))
     if not can_edit_name:
-        return (
-            "⚠️ Botda ismni o'zgartirish ruxsati yo'q. Telegram → Sozlamalar → Chat Automation → "
-            "bot → \"Ismni o'zgartirish\" (Edit name) ni yoqing va qayta urinib ko'ring."
-        )
+        return t(lang, "nc_need_right")
     names = await capture_base_name(bot, owner_id)
     if names is None:
-        return "⚠️ Ismingizni aniqlab bo'lmadi. Keyinroq urinib ko'ring yoki \"Asl ismni o'zgartirish\" orqali yozing."
+        return t(lang, "nc_name_unknown")
     db.update_settings(
         owner_id,
         name_clock_enabled=True,
@@ -916,53 +932,45 @@ async def _enable_name_clock(bot, owner_id: int) -> str | None:
     _name_clock_failures.pop(owner_id, None)
     # Keyingi daqiqani kutmasdan, hoziroq birinchi marta qo'yamiz
     spawn_background(name_clock_tick(bot, time.time()))
-    return "✅ Yoqildi."
+    return t(lang, "nc_enabled")
 
 
 def build_ai_menu(owner_id: int, notice: str | None = None):
+    lang = get_lang(owner_id)
     s = db.get_settings(owner_id)
     enabled = bool(s.get("ai_enabled"))
     info = (s.get("ai_info") or "").strip()
     if owner_id == ADMIN_ID:
-        usage_line = "Limit: cheklovsiz"
+        usage_line = t(lang, "ai_usage_unlimited")
     else:
-        usage_line = f"Bugun: {db.get_ai_usage(owner_id, str(today_tashkent()))}/{AI_DAILY_LIMIT} ta javob"
-    status_label = "\U0001F7E2 Yoqilgan" if enabled else "O'chirilgan"
-    text = (
-        "\U0001F916 AI-Yordamchi\n\n"
-        f"Holat: {status_label}\n"
-        f"{usage_line}\n"
-        f"Rol: {ai.role_label(s.get('ai_role'))}\n"
-        f"Ma'lumot va uslub: {info if info else 'kiritilmagan'}\n\n"
-        "Yoqilganda, avtojavob ishlaydigan paytda (Oflayn holat yoki uxlash vaqti) odatiy matn o'rniga "
-        "sun'iy intellekt suhbatdoshingizga o'zi javob yozadi. Oddiy avtojavob matnlari o'chmaydi — "
-        "AI o'chirilsa yoki limit tugasa/xato bo'lsa, ular ishlatiladi.\n"
-        "Chatga o'zingiz yozsangiz, AI shu chatda 2 soat jim turadi."
+        usage_line = t(lang, "ai_usage", used=db.get_ai_usage(owner_id, str(today_tashkent())), limit=AI_DAILY_LIMIT)
+    text = t(
+        lang, "ai_menu",
+        status=t(lang, "status_on" if enabled else "status_off"),
+        usage=usage_line,
+        role=ai.role_label(s.get("ai_role"), lang),
+        info=info if info else t(lang, "ai_info_empty"),
     )
     if notice:
         text += f"\n\n{notice}"
     keyboard = [
-        [InlineKeyboardButton("❌ O'chirish" if enabled else "✅ Yoqish", callback_data="ai_toggle")],
-        [InlineKeyboardButton("\U0001F3AD Rolni tanlash", callback_data="ai_roles")],
-        [InlineKeyboardButton("\U0001F4DD Ma'lumot va uslub", callback_data="ai_edit_info")],
-        [InlineKeyboardButton("⬅️ Orqaga", callback_data="open_panel")],
+        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="ai_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_ai_roles"), callback_data="ai_roles")],
+        [InlineKeyboardButton(t(lang, "btn_ai_info"), callback_data="ai_edit_info")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
 
 def build_ai_roles_menu(owner_id: int):
+    lang = get_lang(owner_id)
     current = ai.normalize_role(db.get_settings(owner_id).get("ai_role"))
-    text = (
-        "\U0001F3AD AI uchun rolni tanlang\n\n"
-        "AI suhbatdoshingizga shu rolga mos ohang va uslubda javob beradi. "
-        "Qo'shimcha ma'lumotni \"Ma'lumot va uslub\" bo'limida yozishingiz mumkin."
-    )
     rows = [
-        [InlineKeyboardButton(("\u2705 " if key == current else "") + label, callback_data=f"ai_role:{key}")]
-        for key, (label, _) in ai.ROLES.items()
+        [InlineKeyboardButton(("\u2705 " if key == current else "") + ai.role_label(key, lang), callback_data=f"ai_role:{key}")]
+        for key in ai.ROLES
     ]
-    rows.append([InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="ai_menu")])
-    return text, InlineKeyboardMarkup(rows)
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="ai_menu")])
+    return t(lang, "ai_roles_menu"), InlineKeyboardMarkup(rows)
 
 
 async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str, cooldown_hours: float, label: str):
@@ -1010,7 +1018,8 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
             history.append({"role": "user", "text": text})
             info = db.get_user(owner_id) or {}
             answer = await ai.generate_reply(
-                history, info.get("full_name"), settings.get("ai_info"), settings.get("ai_role")
+                history, info.get("full_name"), settings.get("ai_info"), settings.get("ai_role"),
+                lang=get_lang(owner_id),
             )
             if not answer:
                 if consumed:
@@ -1041,108 +1050,105 @@ async def ai_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 def build_panel(owner_id: int):
+    lang = get_lang(owner_id)
     s = db.get_settings(owner_id)
-    status_line = "\U0001F534 OFLAYN" if s["offline"] else "\U0001F7E2 ONLAYN"
-    toggle_label = "\U0001F7E2 Onlaynga o'tish" if s["offline"] else "\U0001F534 Oflaynga o'tish"
-    sleep_line = "yoqilgan \U0001F634" if s.get("sleep_mode_enabled") else "o'chirilgan"
+    status_line = t(lang, "panel_offline" if s["offline"] else "panel_online")
+    toggle_label = t(lang, "panel_go_online" if s["offline"] else "panel_go_offline")
+    sleep_line = t(lang, "panel_sleep_on" if s.get("sleep_mode_enabled") else "panel_sleep_off")
 
     ai_on = bool(s.get("ai_enabled"))
-    ai_line = "yoqilgan \U0001F916" if ai_on else "o'chirilgan"
-    message_line = (
-        "AI-Yordamchi yoqilgan (matn o'rniga AI javob beradi)" if ai_on else s["auto_reply_text"]
-    )
-    text = (
-        "\U0001F39B Sizning panelingiz\n\n"
-        f"Holat: {status_line}\n"
-        f"Cooldown: {format_cooldown(s['cooldown_hours'])}\n"
-        f"Xabar: {message_line}\n"
-        f"Uxlayapman rejimi: {sleep_line}\n"
-        f"AI-Yordamchi: {ai_line}"
+    ai_line = t(lang, "panel_ai_on" if ai_on else "panel_ai_off")
+    message_line = t(lang, "panel_ai_message") if ai_on else auto_reply_text_for(s, lang)
+    text = t(
+        lang, "panel",
+        status=status_line,
+        cooldown=format_cooldown(s["cooldown_hours"], lang),
+        message=message_line,
+        sleep=sleep_line,
+        ai=ai_line,
     )
     keyboard = [
         [InlineKeyboardButton(toggle_label, callback_data="toggle_status")],
-        [InlineKeyboardButton("\u23F1 Cooldownni o'zgartirish", callback_data="edit_cooldown")],
-        [InlineKeyboardButton("\U0001F4DD Xabar matnini o'zgartirish", callback_data="edit_text")],
-        [InlineKeyboardButton("\U0001F382 BIO hisoblagich", callback_data="bio_menu")],
-        [InlineKeyboardButton("\U0001F634 Uxlayapman rejimi", callback_data="sleep_menu")],
-        [InlineKeyboardButton("\U0001F916 AI-Yordamchi", callback_data="ai_menu")],
+        [InlineKeyboardButton(t(lang, "btn_edit_cooldown"), callback_data="edit_cooldown")],
+        [InlineKeyboardButton(t(lang, "btn_edit_text"), callback_data="edit_text")],
+        [InlineKeyboardButton(t(lang, "btn_bio"), callback_data="bio_menu")],
+        [InlineKeyboardButton(t(lang, "btn_sleep"), callback_data="sleep_menu")],
+        [InlineKeyboardButton(t(lang, "btn_ai"), callback_data="ai_menu")],
     ]
     if name_clock_allowed(owner_id):
-        keyboard.append([InlineKeyboardButton("\U0001F552 Ism soati", callback_data="nc_menu")])
-    keyboard.append([InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")])
+        keyboard.append([InlineKeyboardButton(t(lang, "btn_name_clock"), callback_data="nc_menu")])
+    keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="back")])
     return text, InlineKeyboardMarkup(keyboard)
 
 
 def build_sleep_menu(owner_id: int):
+    lang = get_lang(owner_id)
     s = db.get_settings(owner_id)
     enabled = s.get("sleep_mode_enabled", False)
     start_minutes = s.get("sleep_start_minutes", 23 * 60)
     end_minutes = s.get("sleep_end_minutes", 7 * 60)
-    sleep_text = s.get("sleep_reply_text") or DEFAULT_SLEEP_MESSAGE
 
-    status_line = "\U0001F634 Yoqilgan" if enabled else "O'chirilgan"
-    toggle_label = "\u274C O'chirish" if enabled else "\u2705 Yoqish"
-
-    text = (
-        "\U0001F634 Uxlayapman rejimi\n\n"
-        f"Holat: {status_line}\n"
-        f"Vaqt oralig'i: {format_time_range(start_minutes, end_minutes)}\n"
-        f"Xabar: {sleep_text}\n\n"
-        "Bu rejim yoqilgan bo'lsa, belgilangan vaqt oralig'ida (hatto \"Onlayn\" "
-        "holatida ham) kiruvchi xabarlarga shu maxsus matn bilan avtomatik javob beriladi."
+    text = t(
+        lang, "sleep_menu",
+        status=t(lang, "sleep_status_on" if enabled else "status_off"),
+        range=format_time_range(start_minutes, end_minutes),
+        text=sleep_text_for(s, lang),
     )
     keyboard = [
-        [InlineKeyboardButton(toggle_label, callback_data="sleep_toggle")],
-        [InlineKeyboardButton("\u23F0 Vaqtni o'zgartirish", callback_data="sleep_edit_time")],
-        [InlineKeyboardButton("\U0001F4DD Xabar matnini o'zgartirish", callback_data="sleep_edit_text")],
-        [InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="open_panel")],
+        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="sleep_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_sleep_time"), callback_data="sleep_edit_time")],
+        [InlineKeyboardButton(t(lang, "btn_edit_text"), callback_data="sleep_edit_text")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
 
 def build_bio_menu(owner_id: int):
+    lang = get_lang(owner_id)
     connection = db.get_connection(owner_id)
     s = db.get_settings(owner_id)
     target = s.get("bio_countdown_target")
 
     if not connection or not connection.get("can_edit_bio"):
-        text = (
-            "\U0001F382 BIO hisoblagich\n\n"
-            "Bu funksiya uchun \"Edit bio\" (BIO'ni tahrirlash) ruxsati kerak.\n\n"
-            "Telegram: Sozlamalar \u2192 Telegram Business \u2192 Chatbots \u2192 botni bosing \u2192 "
-            "\"Edit bio\" ruxsatini yoqing. Keyin shu tugmani qayta bosing."
-        )
-        keyboard = [[InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="open_panel")]]
-        return text, InlineKeyboardMarkup(keyboard)
+        keyboard = [[InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")]]
+        return t(lang, "bio_no_perm"), InlineKeyboardMarkup(keyboard)
 
     if target:
-        label = BIO_EVENT_LABELS.get(target, target)
         preview = compute_bio_text(
-            target, s.get("birthday_month"), s.get("birthday_day"), today=today_tashkent()
+            target, s.get("birthday_month"), s.get("birthday_day"), today=today_tashkent(), lang=lang
         )
-        status = f"Yoqilgan: {label}\nHozirgi matn: {preview or '(sana kiritilmagan)'}"
+        status = t(lang, "bio_status_on", label=bio_event_label(target, lang), preview=preview or t(lang, "bio_no_date"))
     else:
-        status = "Hozircha o'chirilgan."
+        status = t(lang, "bio_status_off")
 
-    text = (
-        "\U0001F382 BIO hisoblagich\n\n"
-        f"{status}\n\n"
-        "BIO'ingizda avtomatik shu turdagi hisoblagich ko'rsatilsin:"
-    )
+    text = t(lang, "bio_menu", status=status)
     keyboard = [
-        [InlineKeyboardButton("\U0001F386 Yangi yilgacha", callback_data="bio_set_new_year")],
-        [InlineKeyboardButton("\U0001F33F Navro'zgacha", callback_data="bio_set_navroz")],
-        [InlineKeyboardButton("\U0001F382 Tug'ilgan kunimgacha", callback_data="bio_set_birthday")],
+        [InlineKeyboardButton(t(lang, "btn_bio_new_year"), callback_data="bio_set_new_year")],
+        [InlineKeyboardButton(t(lang, "btn_bio_navroz"), callback_data="bio_set_navroz")],
+        [InlineKeyboardButton(t(lang, "btn_bio_birthday"), callback_data="bio_set_birthday")],
     ]
     if target:
-        keyboard.append([InlineKeyboardButton("\u274C O'chirish", callback_data="bio_disable")])
-    keyboard.append([InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="open_panel")])
+        keyboard.append([InlineKeyboardButton(t(lang, "btn_disable"), callback_data="bio_disable")])
+    keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")])
     return text, InlineKeyboardMarkup(keyboard)
 
 
 # ---------------------------------------------------------------------------
 # Buyruq va tugmalar
 # ---------------------------------------------------------------------------
+async def run_start_flow(bot, owner_id: int, inviter_id: int | None, send):
+    """Til tanlangandan keyingi umumiy oqim: obuna tekshiruvi -> referal -> bosh menyu.
+    `send(text, markup)` — xabarni yuboruvchi (yangi xabar yoki tugma xabarini tahrirlash)."""
+    lang = get_lang(owner_id)
+    if not await is_subscribed(bot, owner_id):
+        # Referal obuna bo'lgandan KEYIN hisoblanadi (tugma orqali olib o'tiladi)
+        await send(t(lang, "gate_text"), build_subscribe_gate_markup(inviter_id, lang))
+        return
+    await process_referral(bot, owner_id, inviter_id)
+    greeting, markup = build_start_view(owner_id)
+    await send(greeting, markup)
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     track_user(update.effective_user)
@@ -1150,32 +1156,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     inviter_id = parse_referral_arg(context.args)
 
-    if not await is_subscribed(context.bot, owner_id):
-        # Referal obuna bo'lgandan KEYIN hisoblanadi (tugma orqali olib o'tiladi)
-        await update.message.reply_text(
-            SUBSCRIBE_GATE_TEXT, reply_markup=build_subscribe_gate_markup(inviter_id)
-        )
+    if not has_chosen_lang(owner_id):
+        # Birinchi marta: avval til tanlanadi (referal ID tugma ichida saqlanadi)
+        await update.message.reply_text(t(DEFAULT_LANG, "lang_pick"), reply_markup=build_lang_markup(inviter_id))
         return
 
-    await process_referral(context.bot, owner_id, inviter_id)
+    async def send(text, markup):
+        await update.message.reply_text(text, reply_markup=markup)
 
-    greeting, markup = build_start_view(owner_id)
-    await update.message.reply_text(greeting, reply_markup=markup)
+    await run_start_flow(context.bot, owner_id, inviter_id, send)
 
 
-HELP_TEXT = (
-    "\U0001F916 AutoReplyer — siz oflayn bo'lganingizda Telegram akkountingizdagi "
-    "shaxsiy xabarlarga avtomatik javob beradi.\n\n"
-    "Imkoniyatlar:\n"
-    "\u2022 Oflayn avtojavob (cooldown bilan — bir chatga qayta-qayta yozmaydi)\n"
-    "\u2022 Uxlayapman rejimi — tungi vaqt oralig'ida alohida javob\n"
-    "\u2022 BIO hisoblagich — Yangi yil, Navro'z yoki tug'ilgan kuningizgacha qolgan kunlar\n"
-    "\u2022 Referal bonus\n\n"
-    "Buyruqlar:\n"
-    "/start — bosh menyu va panel\n"
-    "/help — shu yo'riqnoma\n\n"
-    "Akkountni ulash: /start yozing va \"Qanday ulash mumkin?\" tugmasini bosing."
-)
+HELP_TEXT = t("uz", "help")  # eski nom (o'zbekcha)
 
 ADMIN_HELP_TEXT = (
     "\n\n\U0001F510 Admin buyruqlari:\n"
@@ -1195,7 +1187,7 @@ ADMIN_HELP_TEXT = (
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     track_user(update.effective_user)
-    text = HELP_TEXT
+    text = t(get_lang(user_id), "help")
     # Admin buyruqlari faqat adminning o'ziga ko'rsatiladi
     if ADMIN_ID and user_id == ADMIN_ID:
         text += ADMIN_HELP_TEXT
@@ -1213,9 +1205,27 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # matnli/alert bilan javob beradigan shoxlar umumiy `query.answer()`
     # dan OLDIN, har biri o'zi bir marta javob berib, tugaydi. Qolgan hamma
     # tugmalar uchun pastdagi umumiy answer() chaqiriladi.
+    if data.startswith("lang:"):
+        parts = data.split(":")
+        code = parts[1] if len(parts) > 1 else ""
+        if not is_lang(code):
+            await query.answer(t(get_lang(owner_id), "bad_button"), show_alert=True)
+            return
+        set_lang(owner_id, code)
+        inviter_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+        await query.answer(t(code, "lang_changed"))
+        clear_pending_action(owner_id)
+
+        async def send(text, markup):
+            await query.edit_message_text(text, reply_markup=markup)
+
+        await run_start_flow(context.bot, owner_id, inviter_id, send)
+        return
+
     if data == "check_subscription" or data.startswith("check_subscription:"):
+        lang = get_lang(owner_id)
         if await is_subscribed(context.bot, owner_id):
-            await query.answer("\u2705 Obuna tasdiqlandi!")
+            await query.answer(t(lang, "gate_ok"))
             inviter_id = None
             if ":" in data:
                 try:
@@ -1226,20 +1236,17 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             greeting, markup = build_start_view(owner_id)
             await query.edit_message_text(greeting, reply_markup=markup)
         else:
-            await query.answer(
-                "\u274C Siz hali kanalga obuna bo'lmagansiz. Avval obuna bo'lib, keyin qayta bosing.",
-                show_alert=True,
-            )
+            await query.answer(t(lang, "gate_fail"), show_alert=True)
         return
 
     if data.startswith("fbreply:"):
         if owner_id != ADMIN_ID:
-            await query.answer("Ruxsat yo'q.", show_alert=True)
+            await query.answer(t(get_lang(owner_id), "no_permission"), show_alert=True)
             return
         try:
             target_id = int(data.split(":", 1)[1])
         except ValueError:
-            await query.answer("Noto'g'ri tugma.", show_alert=True)
+            await query.answer(t(get_lang(owner_id), "bad_button"), show_alert=True)
             return
         await query.answer()
         set_pending_admin_action(owner_id, f"feedback_reply:{target_id}")
@@ -1258,7 +1265,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "admin_referrals" and owner_id != ADMIN_ID:
-        await query.answer("Ruxsat yo'q.", show_alert=True)
+        await query.answer(t(get_lang(owner_id), "no_permission"), show_alert=True)
         return
 
     if data == "bc_cancel" or data.startswith("bc_confirm:"):
@@ -1269,17 +1276,17 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Bloklangan foydalanuvchining bosishi block_gate'da ushlanadi. Bu yerga
         # faqat bloklanmagan (masalan blokdan chiqarilgan) odam eski tugmani
         # bossa keladi.
-        await query.answer("Siz bloklanmagansiz.", show_alert=True)
+        await query.answer(t(get_lang(owner_id), "not_blocked"), show_alert=True)
         return
 
     if data.startswith("unblock:"):
         if owner_id != ADMIN_ID:
-            await query.answer("Ruxsat yo'q.", show_alert=True)
+            await query.answer(t(get_lang(owner_id), "no_permission"), show_alert=True)
             return
         try:
             target_id = int(data.split(":", 1)[1])
         except ValueError:
-            await query.answer("Noto'g'ri tugma.", show_alert=True)
+            await query.answer(t(get_lang(owner_id), "bad_button"), show_alert=True)
             return
         changed = await do_unblock(context.bot, target_id)
         await query.answer(
@@ -1301,34 +1308,37 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # yuboring") bekor bo'ladi; yangi amal boshlaydigan tugmalar pastda uni qayta o'rnatadi.
     clear_pending_action(owner_id)
 
+    lang = get_lang(owner_id)
+
+    if data == "lang_menu":
+        await query.edit_message_text(t(lang, "lang_pick"), reply_markup=build_lang_markup())
+        return
+
     if data == "how_connect":
-        await query.edit_message_text(HOW_CONNECT_TEXT, reply_markup=main_menu_markup(owner_id))
+        await query.edit_message_text(how_connect_text(lang), reply_markup=main_menu_markup(owner_id))
         return
 
     if data == "open_panel":
         conn = db.get_connection(owner_id)
         if not conn or not conn["is_enabled"]:
-            await query.edit_message_text(HOW_CONNECT_TEXT, reply_markup=main_menu_markup(owner_id))
+            await query.edit_message_text(how_connect_text(lang), reply_markup=main_menu_markup(owner_id))
             return
         text, markup = build_panel(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
     if data == "back":
-        await query.edit_message_text("Bosh menyu:", reply_markup=main_menu_markup(owner_id))
+        await query.edit_message_text(t(lang, "main_menu"), reply_markup=main_menu_markup(owner_id))
         return
 
     if data == "support":
-        text, markup = build_support_view()
+        text, markup = build_support_view(lang)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
     if data == "support_feedback":
         set_pending_action(owner_id, "feedback")
-        await query.message.reply_text(
-            "\u270D\uFE0F Fikr yoki taklifingizni bitta xabar qilib yozing \u2014 u adminga yetkaziladi.\n"
-            "Bekor qilish: /cancel"
-        )
+        await query.message.reply_text(t(lang, "feedback_prompt"))
         return
 
     if data == "referral":
@@ -1347,19 +1357,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "edit_cooldown":
         set_pending_action(owner_id, "cooldown")
-        await query.message.reply_text(
-            "Yangi cooldown qiymatini yuboring. Masalan:\n"
-            "\u2022 2 soat 30 daqiqa\n"
-            "\u2022 45 daqiqa\n"
-            "\u2022 1:30 (1 soat 30 daqiqa)\n"
-            "\u2022 3 (shunchaki 3 soat)\n\n"
-            "\u26A0\uFE0F 0 qabul qilinmaydi — spamning oldini olish uchun eng kami 1 daqiqa bo'lishi kerak."
-        )
+        await query.message.reply_text(t(lang, "cooldown_prompt"))
         return
 
     elif data == "edit_text":
         set_pending_action(owner_id, "text")
-        await query.message.reply_text("Yangi avtojavob matnini yuboring:")
+        await query.message.reply_text(t(lang, "text_prompt"))
         return
 
     if data == "bio_menu":
@@ -1373,7 +1376,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok, info = await apply_bio_update(context.bot, owner_id)
         text, markup = build_bio_menu(owner_id)
         if not ok:
-            text += f"\n\n\u26A0\uFE0F BIO yangilanmadi: {info}"
+            text += "\n\n" + t(lang, "bio_failed", info=info)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
@@ -1384,13 +1387,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ok, info = await apply_bio_update(context.bot, owner_id)
             text, markup = build_bio_menu(owner_id)
             if not ok:
-                text += f"\n\n\u26A0\uFE0F BIO yangilanmadi: {info}"
+                text += "\n\n" + t(lang, "bio_failed", info=info)
             await query.edit_message_text(text, reply_markup=markup)
         else:
             set_pending_action(owner_id, "birthday_date")
-            await query.message.reply_text(
-                "Tug'ilgan kuningizni kun.oy formatida yuboring (masalan: 15.03 — 15-mart):"
-            )
+            await query.message.reply_text(t(lang, "bio_birthday_prompt"))
         return
 
     if data == "bio_disable":
@@ -1416,7 +1417,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if s.get("ai_enabled"):
             db.update_settings(owner_id, ai_enabled=False)
         elif not ai.is_configured():
-            notice = "\u26A0\uFE0F AI hozircha sozlanmagan (serverda GEMINI_API_KEY kiritilmagan)."
+            notice = t(lang, "ai_not_configured")
         else:
             db.update_settings(owner_id, ai_enabled=True)
         text, markup = build_ai_menu(owner_id, notice)
@@ -1438,11 +1439,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "ai_edit_info":
         set_pending_action(owner_id, "ai_info")
-        await query.message.reply_text(
-            "AI uchun ma'lumot va uslubni yozing: siz kimsiz, nima ish qilasiz, qanday ohangda gaplashsin, "
-            f"nimalarni aytmasin (eng ko'pi {AI_INFO_MAX_LENGTH} belgi).\n"
-            "Tozalash uchun \"-\" yuboring. Bekor qilish: /cancel"
-        )
+        await query.message.reply_text(t(lang, "ai_info_prompt", max=AI_INFO_MAX_LENGTH))
         return
 
     if data == "sleep_menu":
@@ -1459,14 +1456,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "sleep_edit_time":
         set_pending_action(owner_id, "sleep_time")
-        await query.message.reply_text(
-            "Uxlash vaqt oralig'ini yuboring (masalan: 23:00-07:00):"
-        )
+        await query.message.reply_text(t(lang, "sleep_time_prompt"))
         return
 
     if data == "sleep_edit_text":
         set_pending_action(owner_id, "sleep_text")
-        await query.message.reply_text("Uxlash vaqtida yuboriladigan xabarni kiriting:")
+        await query.message.reply_text(t(lang, "sleep_text_prompt"))
         return
 
     text, markup = build_panel(owner_id)
@@ -1488,12 +1483,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return  # panelga aloqasi yo'q oddiy xabar
 
     value = update.message.text.strip()
+    lang = get_lang(owner_id)
 
     if action == "feedback":
         if len(value) > FEEDBACK_MAX_LENGTH:
-            await update.message.reply_text(
-                f"Xabar juda uzun ({len(value)} belgi). Iltimos, {FEEDBACK_MAX_LENGTH} belgidan qisqaroq yozing."
-            )
+            await update.message.reply_text(t(lang, "feedback_too_long", n=len(value), max=FEEDBACK_MAX_LENGTH))
             return  # amal saqlanadi — foydalanuvchi qisqartirib qayta yuboradi
         clear_pending_action(owner_id)
         reply = await submit_feedback(context.bot, update.effective_user, value)
@@ -1506,33 +1500,28 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         first, last = split_full_name(value)
         if not first:
-            await update.message.reply_text("Ism bo'sh bo'lishi mumkin emas. Qayta yuboring.")
+            await update.message.reply_text(t(lang, "nc_name_empty"))
             return
         db.update_settings(owner_id, name_clock_first=first, name_clock_last=last, name_clock_applied=None)
         clear_pending_action(owner_id)
-        text, markup = build_name_clock_menu(owner_id, "\u2705 Saqlandi.")
+        text, markup = build_name_clock_menu(owner_id, t(lang, "saved"))
         await update.message.reply_text(text, reply_markup=markup)
         return
 
     if action == "ai_info":
         if len(value) > AI_INFO_MAX_LENGTH:
-            await update.message.reply_text(
-                f"Matn juda uzun ({len(value)} belgi). {AI_INFO_MAX_LENGTH} belgidan qisqaroq yozing."
-            )
+            await update.message.reply_text(t(lang, "ai_info_too_long", n=len(value), max=AI_INFO_MAX_LENGTH))
             return  # amal saqlanadi
         db.update_settings(owner_id, ai_info=None if value == "-" else value)
         clear_pending_action(owner_id)
-        text, markup = build_ai_menu(owner_id, "\u2705 Saqlandi.")
+        text, markup = build_ai_menu(owner_id, t(lang, "saved"))
         await update.message.reply_text(text, reply_markup=markup)
         return
 
     if action == "cooldown":
         hours = parse_cooldown_input(value)
         if hours is None or hours <= 0:
-            await update.message.reply_text(
-                "Noto'g'ri format yoki 0. Spamning oldini olish uchun cooldown 0 bo'lishi mumkin emas "
-                "— eng kami 1 daqiqa kiriting. Masalan: '2 soat 30 daqiqa', '45 daqiqa', '1 daqiqa', '1:30' yoki '3'"
-            )
+            await update.message.reply_text(t(lang, "cooldown_bad"))
             return
         db.update_settings(owner_id, cooldown_hours=hours)
 
@@ -1542,9 +1531,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "birthday_date":
         parsed = parse_birthday_input(value)
         if parsed is None:
-            await update.message.reply_text(
-                "Noto'g'ri format. Kun.oy ko'rinishida yuboring, masalan: 15.03"
-            )
+            await update.message.reply_text(t(lang, "bio_birthday_bad"))
             return
         month, day = parsed
         db.update_settings(owner_id, birthday_month=month, birthday_day=day, bio_countdown_target="birthday")
@@ -1552,23 +1539,21 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_pending_action(owner_id)
         text, markup = build_bio_menu(owner_id)
         if not ok:
-            text += f"\n\n\u26A0\uFE0F BIO yangilanmadi: {info}"
-        await update.message.reply_text("Saqlandi.")
+            text += "\n\n" + t(lang, "bio_failed", info=info)
+        await update.message.reply_text(t(lang, "saved_plain"))
         await update.message.reply_text(text, reply_markup=markup)
         return
 
     elif action == "sleep_time":
         parsed = parse_time_range_input(value)
         if parsed is None:
-            await update.message.reply_text(
-                "Noto'g'ri format. Masalan: 23:00-07:00"
-            )
+            await update.message.reply_text(t(lang, "sleep_time_bad"))
             return
         start_minutes, end_minutes = parsed
         db.update_settings(owner_id, sleep_start_minutes=start_minutes, sleep_end_minutes=end_minutes)
         clear_pending_action(owner_id)
         text, markup = build_sleep_menu(owner_id)
-        await update.message.reply_text("Saqlandi.")
+        await update.message.reply_text(t(lang, "saved_plain"))
         await update.message.reply_text(text, reply_markup=markup)
         return
 
@@ -1576,13 +1561,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_settings(owner_id, sleep_reply_text=value)
         clear_pending_action(owner_id)
         text, markup = build_sleep_menu(owner_id)
-        await update.message.reply_text("Saqlandi.")
+        await update.message.reply_text(t(lang, "saved_plain"))
         await update.message.reply_text(text, reply_markup=markup)
         return
 
     clear_pending_action(owner_id)
     text, markup = build_panel(owner_id)
-    await update.message.reply_text("Yangilandi.")
+    await update.message.reply_text(t(lang, "updated"))
     await update.message.reply_text(text, reply_markup=markup)
 
 
@@ -1647,7 +1632,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cleared_admin = clear_pending_admin_action(owner_id)
     cleared_panel = clear_pending_action(owner_id)
     if cleared_admin or cleared_panel:
-        await update.message.reply_text("Bekor qilindi.")
+        await update.message.reply_text(t(get_lang(owner_id), "cancelled"))
 
 
 async def cmd_reklama_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1804,7 +1789,7 @@ async def handle_broadcast_confirmation(query, context: ContextTypes.DEFAULT_TYP
     aniq BIR marta chaqiriladi. Muddat tasdiq xabarining o'z vaqtidan olinadi
     (RAM'da emas), shuning uchun server restart bo'lsa ham to'g'ri ishlaydi."""
     if query.from_user.id != ADMIN_ID:
-        await query.answer("Ruxsat yo'q.", show_alert=True)
+        await query.answer(t(get_lang(query.from_user.id), "no_permission"), show_alert=True)
         return
 
     original = getattr(query.message, "text", None) or ""
@@ -2084,18 +2069,10 @@ async def resolve_target_user(bot, raw: str) -> tuple[int | None, str | None]:
     )
 
 
-def build_block_notice(reason: str):
-    text = "\U0001F6AB Siz admin tomonidan bloklandingiz.\n"
-    if reason:
-        text += f"Sabab: {reason}\n"
-    text += (
-        "\nBloklash davomida bot sizga xizmat ko'rsatmaydi: panel ishlamaydi, "
-        "avtojavob va BIO yangilash to'xtatiladi.\n\n"
-        "Agar bu xato deb o'ylasangiz, pastdagi tugma orqali izoh qoldiring — admin ko'rib chiqadi."
-    )
-    markup = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("\u270D\uFE0F Izoh qoldirish", callback_data="appeal_start")]]
-    )
+def build_block_notice(reason: str, lang: str = DEFAULT_LANG):
+    reason_line = t(lang, "block_reason_line", reason=reason) if reason else ""
+    text = t(lang, "block_notice", reason_line=reason_line)
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_appeal"), callback_data="appeal_start")]])
     return text, markup
 
 
@@ -2130,7 +2107,7 @@ async def cmd_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_appeal.pop(target_id, None)
     _last_block_notice.pop(target_id, None)
 
-    text, markup = build_block_notice(reason)
+    text, markup = build_block_notice(reason, get_lang(target_id))
     notified = await _try_send(context.bot, target_id, text, markup)
     await update.message.reply_text(
         f"\U0001F6AB {label} bloklandi.\n"
@@ -2150,9 +2127,7 @@ async def do_unblock(bot, target_id: int) -> bool:
     pending_appeal.pop(target_id, None)
     _last_block_notice.pop(target_id, None)
     if changed:
-        await _try_send(
-            bot, target_id, "\u2705 Siz blokdan chiqarildingiz. Davom etish uchun /start yozing."
-        )
+        await _try_send(bot, target_id, t(get_lang(target_id), "unblocked_user"))
     return changed
 
 
@@ -2315,7 +2290,7 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_users_page(query, context: ContextTypes.DEFAULT_TYPE, data: str):
     if query.from_user.id != ADMIN_ID:
-        await query.answer("Ruxsat yo'q.", show_alert=True)
+        await query.answer(t(get_lang(query.from_user.id), "no_permission"), show_alert=True)
         return
     await query.answer()
     try:
@@ -2354,7 +2329,7 @@ async def cmd_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_rmbots(query, context: ContextTypes.DEFAULT_TYPE, data: str):
     if query.from_user.id != ADMIN_ID:
-        await query.answer("Ruxsat yo'q.", show_alert=True)
+        await query.answer(t(get_lang(query.from_user.id), "no_permission"), show_alert=True)
         return
     if data == "rmbots:yes":
         count = db.delete_bot_like_users()
@@ -2396,20 +2371,13 @@ async def cmd_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _begin_appeal(bot, user_id: int):
     """Bloklangan foydalanuvchi "Izoh qoldirish"ni bosdi."""
+    lang = get_lang(user_id)
     used = db.count_recent_appeals(user_id, time.time() - 24 * 3600)
     if used >= APPEAL_MAX_PER_DAY:
-        await _try_send(
-            bot, user_id,
-            f"Siz oxirgi 24 soat ichida {used} marta izoh qoldirgansiz. Keyinroq qayta urinib ko'ring.",
-        )
+        await _try_send(bot, user_id, t(lang, "appeal_limit", used=used))
         return
     pending_appeal[user_id] = time.time()
-    await _try_send(
-        bot, user_id,
-        "\u270D\uFE0F Izohingizni bitta xabar qilib yuboring (ko'pi bilan "
-        f"{APPEAL_MAX_LENGTH} belgi). Nima uchun bu xato deb o'ylayotganingizni yozing.\n"
-        "Bekor qilish: /cancel",
-    )
+    await _try_send(bot, user_id, t(lang, "appeal_prompt", max=APPEAL_MAX_LENGTH))
 
 
 async def _submit_appeal(bot, user, block: dict, text: str):
@@ -2425,31 +2393,27 @@ async def _submit_appeal(bot, user, block: dict, text: str):
         [[InlineKeyboardButton("\u2705 Blokdan chiqarish", callback_data=f"unblock:{user.id}")]]
     )
     delivered = bool(ADMIN_ID) and await _try_send(bot, ADMIN_ID, admin_text, markup)
+    lang = get_lang(user.id)
     if not delivered:
-        await _try_send(
-            bot, user.id,
-            "Hozir izohingizni adminga yetkazib bo'lmadi. Keyinroq qayta urinib ko'ring.",
-        )
+        await _try_send(bot, user.id, t(lang, "appeal_fail"))
         return
     db.add_appeal(user.id, text)
     pending_appeal.pop(user.id, None)
-    await _try_send(
-        bot, user.id,
-        "\u2705 Izohingiz adminga yuborildi. Qaror qabul qilinsa, sizga xabar beriladi.",
-    )
+    await _try_send(bot, user.id, t(lang, "appeal_sent"))
 
 
 async def handle_blocked_update(update: Update, context: ContextTypes.DEFAULT_TYPE, block: dict):
     user = update.effective_user
     now = time.time()
     query = update.callback_query
+    lang = get_lang(user.id)
 
     if query is not None:
         if query.data == "appeal_start":
             await query.answer()
             await _begin_appeal(context.bot, user.id)
         else:
-            await query.answer("\U0001F6AB Siz bloklangansiz.", show_alert=True)
+            await query.answer(t(lang, "blocked_alert"), show_alert=True)
         return
 
     message = update.message
@@ -2463,13 +2427,11 @@ async def handle_blocked_update(update: Update, context: ContextTypes.DEFAULT_TY
     if started is not None:
         if text.startswith("/cancel"):
             pending_appeal.pop(user.id, None)
-            await message.reply_text("Bekor qilindi.")
+            await message.reply_text(t(lang, "cancelled"))
             return
         if text and not text.startswith("/"):
             if len(text) > APPEAL_MAX_LENGTH:
-                await message.reply_text(
-                    f"Izoh juda uzun ({len(text)} belgi). Ko'pi bilan {APPEAL_MAX_LENGTH} belgi — qisqaroq yozing."
-                )
+                await message.reply_text(t(lang, "appeal_too_long", n=len(text), max=APPEAL_MAX_LENGTH))
                 return
             await _submit_appeal(context.bot, user, block, text)
             return
@@ -2479,7 +2441,7 @@ async def handle_blocked_update(update: Update, context: ContextTypes.DEFAULT_TY
     if now - _last_block_notice.get(user.id, 0.0) < BLOCK_NOTICE_COOLDOWN_SECONDS:
         return
     _last_block_notice[user.id] = now
-    notice, markup = build_block_notice(block.get("reason") or "")
+    notice, markup = build_block_notice(block.get("reason") or "", lang)
     await message.reply_text(notice, reply_markup=markup)
 
 
@@ -2554,11 +2516,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 if db.get_settings(conn.user.id).get("name_clock_enabled"):
                     db.update_settings(conn.user.id, name_clock_enabled=False)
-                    await _try_send(
-                        context.bot, conn.user_chat_id,
-                        "\u26A0\uFE0F Ism soati o'chirildi: ismni o'zgartirish ruxsati yo'q. "
-                        "Ismingizdagi vaqtni Telegramda o'zingiz olib tashlang.",
-                    )
+                    await _try_send(context.bot, conn.user_chat_id, t(get_lang(conn.user.id), "nc_rights_lost"))
             except Exception:
                 logger.exception("Ism soatini o'chirishda xato (owner=%s)", conn.user.id)
         logger.info(
@@ -2577,12 +2535,12 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if conn.is_enabled:
                 await context.bot.send_message(
                     chat_id=conn.user_chat_id,
-                    text="\u2705 Akkountingiz ulandi! Panelni ochish uchun /start yozing.",
+                    text=t(get_lang(conn.user.id), "connected"),
                 )
             else:
                 await context.bot.send_message(
                     chat_id=conn.user_chat_id,
-                    text="Akkount uzildi. Avtojavob endi ishlamaydi.",
+                    text=t(get_lang(conn.user.id), "disconnected"),
                 )
         except TelegramError as e:
             logger.info("Ulanish xabarnomasi yuborilmadi (owner=%s): %s", conn.user.id, e)
@@ -2625,10 +2583,11 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             now_minutes, settings.get("sleep_start_minutes", 0), settings.get("sleep_end_minutes", 0)
         )
 
+        owner_lang = get_lang(owner_id)
         if sleeping:
-            reply_text = settings.get("sleep_reply_text") or DEFAULT_SLEEP_MESSAGE
+            reply_text = sleep_text_for(settings, owner_lang)
         elif settings["offline"]:
-            reply_text = settings["auto_reply_text"]
+            reply_text = auto_reply_text_for(settings, owner_lang)
         else:
             return
 
