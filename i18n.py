@@ -722,6 +722,22 @@ T: dict[str, dict] = {
         "✅ Ваш тариф активирован: {name}",
     ),
 
+    "plan_until": _(
+        "⏳ Amal qilish muddati: {date} gacha",
+        "⏳ Valid until: {date}",
+        "⏳ Действует до: {date}",
+    ),
+    "plan_activated_until": _(
+        "✅ Tarifingiz faollashtirildi: {name}\n⏳ Amal qilish muddati: {date} gacha",
+        "✅ Your plan has been activated: {name}\n⏳ Valid until: {date}",
+        "✅ Ваш тариф активирован: {name}\n⏳ Действует до: {date}",
+    ),
+    "plan_expired": _(
+        "⌛ {name} tarifingiz muddati tugadi, Bepul tarifga qaytdingiz.\nQayta faollashtirish uchun \U0001F3F7\uFE0F Tariflar bo'limiga o'ting.",
+        "⌛ Your {name} plan has expired and you are back on the Free plan.\nTo renew, open the \U0001F3F7\uFE0F Plans section.",
+        "⌛ Срок вашего тарифа {name} истёк, вы вернулись на Бесплатный тариф.\nЧтобы продлить, откройте раздел \U0001F3F7\uFE0F Тарифы.",
+    ),
+
     # ---------------- vaqt zonalari (shahar nomlari) ----------------
     "zone_tashkent": _("Toshkent", "Tashkent", "Ташкент"),
     "zone_moscow": _("Moskva", "Moscow", "Москва"),
