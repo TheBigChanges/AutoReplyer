@@ -11,6 +11,8 @@ import os
 
 import httpx
 
+from i18n import t
+
 logger = logging.getLogger(__name__)
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-2.5-flash"
@@ -67,8 +69,11 @@ def normalize_role(role: str | None) -> str:
     return role if role in ROLES else DEFAULT_ROLE
 
 
-def role_label(role: str | None) -> str:
-    return ROLES[normalize_role(role)][0]
+def role_label(role: str | None, lang: str = "uz") -> str:
+    return t(lang, "role_" + normalize_role(role))
+
+
+_FALLBACK_LANGUAGE = {"uz": "Uzbek (Latin script)", "en": "English", "ru": "Russian"}
 
 
 
@@ -81,7 +86,9 @@ def is_configured() -> bool:
     return get_api_key() is not None
 
 
-def build_system_prompt(owner_name: str | None, owner_info: str | None, role: str | None = None) -> str:
+def build_system_prompt(
+    owner_name: str | None, owner_info: str | None, role: str | None = None, lang: str = "uz"
+) -> str:
     name = (owner_name or "").strip() or "the account owner"
     prompt = (
         f"You write replies in {name}'s private Telegram chats on their behalf while they are away. "
@@ -89,7 +96,7 @@ def build_system_prompt(owner_name: str | None, owner_info: str | None, role: st
         "Style:\n"
         "- Write like a normal, friendly person texting: short (1-3 sentences), natural, no markdown, "
         "no lists, at most one emoji.\n"
-        "- Reply in the language the other person writes in. If unclear, use Uzbek (Latin script).\n"
+        f"- Reply in the language the other person writes in. If unclear, use {_FALLBACK_LANGUAGE.get(lang, _FALLBACK_LANGUAGE['uz'])}.\n"
         "- Never add labels, signatures or disclaimers such as 'I am an AI' or 'automatic reply'; "
         "do not bring up what you are unless asked.\n\n"
         "Honesty rules (strict):\n"
@@ -166,13 +173,14 @@ async def _post(url: str, api_key: str, payload: dict) -> dict:
 
 
 async def generate_reply(
-    history: list[dict], owner_name: str | None, owner_info: str | None, role: str | None = None
+    history: list[dict], owner_name: str | None, owner_info: str | None, role: str | None = None,
+    lang: str = "uz",
 ) -> str | None:
     """Javob matnini qaytaradi; har qanday xatoda (kalit yo'q, tarmoq, limit, bo'sh javob) None."""
     api_key = get_api_key()
     if api_key is None or not normalize_history(history):
         return None
-    payload = build_payload(history, build_system_prompt(owner_name, owner_info, role))
+    payload = build_payload(history, build_system_prompt(owner_name, owner_info, role, lang))
     try:
         data = await _post(GEMINI_URL.format(model=GEMINI_MODEL), api_key, payload)
     except httpx.HTTPStatusError as e:
