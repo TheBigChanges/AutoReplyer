@@ -61,7 +61,9 @@ from logic import (
     is_known_zone,
     is_within_sleep_window,
     parse_birthday_input,
+    add_plan_duration,
     parse_cooldown_input,
+    parse_plan_duration,
     parse_time_range_input,
     split_full_name,
     style_time,
@@ -446,6 +448,10 @@ def format_card_number(raw: str) -> str:
     return " ".join(digits[i:i + 4] for i in range(0, len(digits), 4)) if digits.isdigit() else raw
 
 
+def format_plan_date(ts: float) -> str:
+    return datetime.fromtimestamp(ts, TASHKENT_TZ).strftime("%d.%m.%Y")
+
+
 def plan_price_label(lang: str, price: int) -> str:
     return t(lang, "plan_price", price=f"{price:,}")
 
@@ -484,7 +490,14 @@ def build_plan_view(owner_id: int, key: str):
             text += "\n\n" + t(lang, "plan_current")
         return html.escape(text, quote=False), InlineKeyboardMarkup([back])
     if key == current:
-        return html.escape(t(lang, "plan_current"), quote=False), InlineKeyboardMarkup([back])
+        text = html.escape(t(lang, "plan_current"), quote=False)
+        try:
+            expires_at = db.get_user_plan_info(owner_id)[1]
+        except Exception:
+            expires_at = None
+        if expires_at:
+            text += "\n" + html.escape(t(lang, "plan_until", date=format_plan_date(expires_at)), quote=False)
+        return text, InlineKeyboardMarkup([back])
     if not PAYMENT_CARD_NUMBER:
         text = html.escape(t(lang, "plan_no_card"), quote=False)
     else:
@@ -1248,7 +1261,7 @@ ADMIN_HELP_TEXT = (
     "/bots — bazaga tushib qolgan botlarni topish va tozalash\n"
     "/block @username [sabab] — foydalanuvchini bloklash (yoki /block 123456789)\n"
     "/unblock @username — blokdan chiqarish\n"
-    "/setplan @username free|plus|pro|ultra — foydalanuvchi tarifini belgilash (to'lov tasdiqlangach)\n"
+    "/setplan @username plus 1oy — tarifni belgilash (muddat: 1oy, 2hafta, 30kun, 1yil; tugagach avtomatik Bepul; muddatsiz ham mumkin)\n"
     "/blocked — bloklanganlar ro'yxati\n"
     "/reklama — barcha foydalanuvchilarga xabar yuborish (yuborishdan oldin tasdiqlanadi)\n"
     "/reklama_status — oxirgi reklama holati\n"
@@ -2218,29 +2231,60 @@ async def do_unblock(bot, target_id: int) -> bool:
 
 
 async def cmd_setplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: to'lovni tasdiqlagach foydalanuvchining tarifini belgilaydi."""
+    """Admin: to'lovni tasdiqlagach tarifni belgilaydi. Muddat berilsa (1oy, 30kun, 2hafta, 1yil),
+    tugagach foydalanuvchi avtomatik Bepul tarifga qaytadi; berilmasa — muddatsiz."""
     if update.effective_user.id != ADMIN_ID:
         return
-    if len(context.args) != 2 or context.args[1].lower() not in PLAN_KEYS:
-        await update.message.reply_text(
-            "Foydalanish:\n/setplan @username plus\n/setplan 123456789 pro\n"
-            "Tariflar: " + ", ".join(PLAN_KEYS)
-        )
+    args = context.args or []
+    usage = (
+        "Foydalanish:\n/setplan @username plus 1oy\n/setplan 123456789 pro 30kun\n/setplan @username ultra\n"
+        "Tariflar: " + ", ".join(PLAN_KEYS) + "\nMuddat: 1oy, 3oy, 2hafta, 30kun, 1yil (yozilmasa — muddatsiz)"
+    )
+    if len(args) not in (2, 3) or args[1].lower() not in PLAN_KEYS:
+        await update.message.reply_text(usage)
         return
-    target_id, error = await resolve_target_user(context.bot, context.args[0])
+    plan = args[1].lower()
+    expires_at = None
+    if len(args) == 3:
+        duration = parse_plan_duration(args[2])
+        if duration is None:
+            await update.message.reply_text("Muddat noto'g'ri.\n\n" + usage)
+            return
+        if plan == "free":
+            await update.message.reply_text("Bepul tarifga muddat berilmaydi.")
+            return
+        expires_at = add_plan_duration(time.time(), duration[0], duration[1], TASHKENT_TZ)
+    target_id, error = await resolve_target_user(context.bot, args[0])
     if target_id is None:
         await update.message.reply_text(error)
         return
-    plan = context.args[1].lower()
-    db.set_user_plan(target_id, plan)
+    db.set_user_plan(target_id, plan, expires_at)
     label = _label_for(target_id)
-    notified = await _try_send(
-        context.bot, target_id, t(get_lang(target_id), "plan_activated", name=t(get_lang(target_id), "plan_name_" + plan))
-    )
+    lang = get_lang(target_id)
+    name = t(lang, "plan_name_" + plan)
+    if expires_at:
+        message = t(lang, "plan_activated_until", name=name, date=format_plan_date(expires_at))
+    else:
+        message = t(lang, "plan_activated", name=name)
+    notified = await _try_send(context.bot, target_id, message)
+    until = f" ({format_plan_date(expires_at)} gacha)" if expires_at else " (muddatsiz)" if plan != "free" else ""
     await update.message.reply_text(
-        f"\u2705 {label} tarifi: {plan}."
-        + ("" if notified else "\nFoydalanuvchiga xabar yuborib bo'lmadi.")
+        f"\u2705 {label} tarifi: {plan}{until}." + ("" if notified else "\nFoydalanuvchiga xabar yuborib bo'lmadi.")
     )
+
+
+async def plan_expiry_job(context: ContextTypes.DEFAULT_TYPE):
+    """Muddati tugagan tariflarni Bepulga qaytaradi va foydalanuvchilarga xabar beradi."""
+    try:
+        expired = db.expire_plans()
+    except Exception:
+        logger.exception("Tarif muddatini tekshirishda xato")
+        return
+    for user_id, old_plan in expired:
+        lang = get_lang(user_id)
+        await _try_send(context.bot, user_id, t(lang, "plan_expired", name=t(lang, "plan_name_" + old_plan)))
+    if expired:
+        logger.info("Tarif muddati tugadi: %d foydalanuvchi bepulga qaytdi", len(expired))
 
 
 async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2778,6 +2822,8 @@ def build_app() -> Application:
         app.job_queue.run_once(bio_startup_job, when=10)
         # Eski foydalanuvchilarning username/ismini to'ldirish (/block @username ishlashi uchun)
         app.job_queue.run_once(profile_backfill_job, when=20)
+        # Muddati tugagan tariflarni Bepulga qaytarish (har 10 daqiqada)
+        app.job_queue.run_repeating(plan_expiry_job, interval=600, first=30)
     else:
         logger.warning(
             "JobQueue mavjud emas — BIO hisoblagich avtomatik yangilanmaydi. "
