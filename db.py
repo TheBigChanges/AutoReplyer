@@ -260,6 +260,8 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS info_checked_at DOUBLE PRECISION")
         # Foydalanuvchi tanlagan til ('uz' | 'en' | 'ru'); NULL — hali tanlamagan (eski foydalanuvchilar)
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT")
+        # Tarif: NULL = bepul (hamma shu tarifdan boshlaydi)
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_users_first_seen ON users (first_seen DESC)")
         cur.execute(
             """
@@ -635,6 +637,26 @@ def get_user_lang(user_id: int):
         cur.execute("SELECT lang FROM users WHERE user_id = %s", (user_id,))
         row = cur.fetchone()
         return row[0] if row else None
+
+
+def get_user_plan(user_id: int) -> str:
+    """Foydalanuvchi tarifi ('free' | 'plus' | 'pro' | 'ultra'); yozuv yoki qiymat bo'lmasa — 'free'."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT plan FROM users WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        return row[0] if row and row[0] else "free"
+
+
+def set_user_plan(user_id: int, plan: str) -> None:
+    """Tarifni yozadi (foydalanuvchi qatori bo'lmasa yaratadi)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO users (user_id, first_seen, plan) VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan
+            """,
+            (user_id, time.time(), plan),
+        )
 
 
 def set_user_lang(user_id: int, lang: str) -> None:
