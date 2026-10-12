@@ -262,6 +262,8 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT")
         # Tarif: NULL = bepul (hamma shu tarifdan boshlaydi)
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT")
+        # Tarif tugash vaqti (epoch); NULL — muddatsiz
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expires_at DOUBLE PRECISION")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_users_first_seen ON users (first_seen DESC)")
         cur.execute(
             """
@@ -639,24 +641,55 @@ def get_user_lang(user_id: int):
         return row[0] if row else None
 
 
-def get_user_plan(user_id: int) -> str:
-    """Foydalanuvchi tarifi ('free' | 'plus' | 'pro' | 'ultra'); yozuv yoki qiymat bo'lmasa — 'free'."""
+def get_user_plan_info(user_id: int):
+    """(tarif, tugash vaqti yoki None). Muddati o'tgan bo'lsa (fon job hali ulgurmagan bo'lsa ham) — ('free', None)."""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT plan FROM users WHERE user_id = %s", (user_id,))
+        cur.execute("SELECT plan, plan_expires_at FROM users WHERE user_id = %s", (user_id,))
         row = cur.fetchone()
-        return row[0] if row and row[0] else "free"
+    if not row or not row[0]:
+        return "free", None
+    plan, expires_at = row
+    if expires_at is not None and expires_at <= time.time():
+        return "free", None
+    return plan, expires_at
 
 
-def set_user_plan(user_id: int, plan: str) -> None:
-    """Tarifni yozadi (foydalanuvchi qatori bo'lmasa yaratadi)."""
+def get_user_plan(user_id: int) -> str:
+    """Foydalanuvchi tarifi ('free' | 'plus' | 'pro' | 'ultra'); yozuv yoki qiymat bo'lmasa yoki muddati o'tgan bo'lsa — 'free'."""
+    return get_user_plan_info(user_id)[0]
+
+
+def set_user_plan(user_id: int, plan: str, expires_at: float | None = None) -> None:
+    """Tarifni yozadi (foydalanuvchi qatori bo'lmasa yaratadi). `expires_at=None` — muddatsiz."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO users (user_id, first_seen, plan) VALUES (%s, %s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan
+            INSERT INTO users (user_id, first_seen, plan, plan_expires_at) VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan, plan_expires_at = EXCLUDED.plan_expires_at
             """,
-            (user_id, time.time(), plan),
+            (user_id, time.time(), plan, None if plan == "free" else expires_at),
         )
+
+
+def expire_plans(now: float | None = None):
+    """Muddati tugagan tariflarni bepulga qaytaradi (atomik). [(user_id, eski_tarif)] qaytaradi."""
+    now = time.time() if now is None else now
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH old AS (
+                SELECT user_id, plan FROM users
+                WHERE plan IS NOT NULL AND plan <> 'free'
+                  AND plan_expires_at IS NOT NULL AND plan_expires_at <= %s
+                FOR UPDATE
+            )
+            UPDATE users u SET plan = 'free', plan_expires_at = NULL
+            FROM old WHERE u.user_id = old.user_id
+            RETURNING u.user_id, old.plan
+            """,
+            (now,),
+        )
+        return [(r[0], r[1]) for r in cur.fetchall()]
 
 
 def set_user_lang(user_id: int, lang: str) -> None:
