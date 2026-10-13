@@ -157,16 +157,6 @@ def init_db():
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_role TEXT")
         cur.execute(
             """
-            CREATE TABLE IF NOT EXISTS ai_usage (
-                owner_user_id BIGINT NOT NULL,
-                day TEXT NOT NULL,
-                count INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (owner_user_id, day)
-            )
-            """
-        )
-        cur.execute(
-            """
             CREATE TABLE IF NOT EXISTS ai_chat_history (
                 id BIGSERIAL PRIMARY KEY,
                 owner_user_id BIGINT NOT NULL,
@@ -1064,40 +1054,8 @@ def count_recent_feedback(user_id: int, since_ts: float) -> int:
 
 
 # --------------------------------------------------------------------------
-# AI-Yordamchi: kunlik limit, suhbat tarixi, "egasi o'zi yozdi" pauzasi
+# AI-Yordamchi: suhbat tarixi, "egasi o'zi yozdi" pauzasi
 # --------------------------------------------------------------------------
-def try_consume_ai_quota(owner_user_id: int, day: str, limit: int) -> bool:
-    """Bugungi AI javoblar limitidan bittasini ATOMIK band qiladi (bitta SQL).
-    True — ruxsat berildi; False — limit tugagan."""
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO ai_usage (owner_user_id, day, count) VALUES (%s, %s, 1)
-            ON CONFLICT (owner_user_id, day) DO UPDATE SET count = ai_usage.count + 1
-            WHERE ai_usage.count < %s
-            RETURNING count
-            """,
-            (owner_user_id, day, limit),
-        )
-        return cur.fetchone() is not None
-
-
-def refund_ai_quota(owner_user_id: int, day: str):
-    """Javob yuborilmagan bo'lsa, band qilingan limitni qaytaradi."""
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE ai_usage SET count = count - 1 WHERE owner_user_id = %s AND day = %s AND count > 0",
-            (owner_user_id, day),
-        )
-
-
-def get_ai_usage(owner_user_id: int, day: str) -> int:
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT count FROM ai_usage WHERE owner_user_id = %s AND day = %s", (owner_user_id, day))
-        row = cur.fetchone()
-        return row[0] if row else 0
-
-
 def add_ai_messages(owner_user_id: int, chat_id: int, messages: list, keep: int = 10):
     """messages: [(role, text), ...] — tartib bilan qo'shiladi. Shu chat uchun faqat
     oxirgi `keep` ta xabar saqlanadi (qolgani o'chadi)."""
@@ -1171,7 +1129,6 @@ def purge_old_ai_data(max_age_seconds: float = 7 * 86400):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM ai_chat_history WHERE created_at < %s", (cutoff,))
         cur.execute("DELETE FROM ai_chat_pause WHERE paused_until < %s", (time.time(),))
-        cur.execute("DELETE FROM ai_usage WHERE day < %s", (time.strftime("%Y-%m-%d", time.gmtime(cutoff)),))
 
 
 # --------------------------------------------------------------------------
