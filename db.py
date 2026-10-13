@@ -56,6 +56,7 @@ ALLOWED_SETTINGS_FIELDS = {
     "name_clock_first",
     "name_clock_last",
     "name_clock_applied",
+    "clock_bio_ad",
     "name_clock_style",
 }
 
@@ -186,6 +187,7 @@ def init_db():
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_first TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_last TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_applied TEXT")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS clock_bio_ad BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_style TEXT")
         cur.execute(
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_month INTEGER"
@@ -963,6 +965,27 @@ def get_all_bio_targets():
         return [dict(r) for r in cur.fetchall()]
 
 
+def get_bio_ad_candidates():
+    """Ism soati yoqilgan YOKI BIO'ga reklama yozib qo'yilgan (olib tashlash kerak bo'lishi mumkin) egalar."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT c.owner_user_id, c.business_connection_id,
+                   s.name_clock_enabled, s.clock_bio_ad,
+                   s.bio_countdown_target, s.birthday_month, s.birthday_day,
+                   u.lang,
+                   CASE WHEN u.plan IS NULL OR (u.plan_expires_at IS NOT NULL AND u.plan_expires_at <= EXTRACT(EPOCH FROM now())) THEN 'free' ELSE u.plan END AS plan
+            FROM connections c
+            JOIN settings s ON s.owner_user_id = c.owner_user_id
+            LEFT JOIN users u ON u.user_id = c.owner_user_id
+            WHERE c.is_enabled = TRUE AND c.can_edit_bio = TRUE
+              AND (s.name_clock_enabled = TRUE OR s.clock_bio_ad = TRUE)
+              AND NOT EXISTS (SELECT 1 FROM blocked_users b WHERE b.user_id = c.owner_user_id)
+            """
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
 # --------------------------------------------------------------------------
 # Bloklash (admin) va apellyatsiya (bloklangan foydalanuvchining izohi)
 # --------------------------------------------------------------------------
@@ -1212,7 +1235,7 @@ def retry_on_disconnect(fn):
 for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info",
-    "get_all_bio_targets", "get_user",
+    "get_all_bio_targets", "get_user", "get_bio_ad_candidates",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
