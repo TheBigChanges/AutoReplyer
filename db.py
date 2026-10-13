@@ -1230,3 +1230,32 @@ def get_name_clock_base(owner_user_id: int):
         )
         row = cur.fetchone()
         return dict(row) if row else None
+
+
+# --------------------------------------------------------------------------
+# Ulanish uzilsa — bitta qayta urinish (Supabase/tarmoq vaqtinchalik uzishi uchun)
+# --------------------------------------------------------------------------
+def retry_on_disconnect(fn):
+    """Faqat ULANISH xatosida (OperationalError/InterfaceError) funksiyani bir marta qayta chaqiradi.
+    `_PooledConnection` buzilgan ulanishni pool'dan chiqarib tashlagani uchun, ikkinchi urinish yangi ulanish oladi.
+    Faqat takrorlash xavfsiz bo'lgan (o'qish yoki idempotent yozish) funksiyalarga qo'llanadi."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            logger.warning("Baza ulanishi uzildi (%s) — qayta uriniladi", fn.__name__)
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+for _name in (
+    "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
+    "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info",
+    "get_all_bio_targets", "get_user",
+):
+    globals()[_name] = retry_on_disconnect(globals()[_name])
+del _name
