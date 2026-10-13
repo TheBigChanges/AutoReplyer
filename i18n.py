@@ -95,6 +95,17 @@ T: dict[str, dict] = {
         "\U0001F512 Чтобы пользоваться ботом, сначала подпишитесь на наш канал.\n\n"
         "После подписки нажмите кнопку \"✅ Проверить\" ниже.",
     ),
+    "gate_lost": _(
+        "\U0001F512 Kanalimizdan obunangiz topilmadi, shuning uchun botning barcha funksiyalari "
+        "(avtojavob, AI-Yordamchi, ism soati, BIO hisoblagich) vaqtincha to'xtatildi.\n\n"
+        "Kanalga obuna bo'ling va \"✅ Tekshirish\" tugmasini bosing — hammasi qayta ishlaydi.",
+        "\U0001F512 We couldn't find your subscription to our channel, so all bot features "
+        "(auto-reply, AI Assistant, name clock, BIO countdown) are temporarily paused.\n\n"
+        "Subscribe to the channel and press \"✅ Check\" — everything will work again.",
+        "\U0001F512 Ваша подписка на наш канал не найдена, поэтому все функции бота "
+        "(автоответ, AI-помощник, часы в имени, BIO-счётчик) временно приостановлены.\n\n"
+        "Подпишитесь на канал и нажмите \"✅ Проверить\" — всё снова заработает.",
+    ),
     "gate_btn_channel": _("\U0001F4E2 Kanalga o'tish", "\U0001F4E2 Go to channel", "\U0001F4E2 Перейти в канал"),
     "gate_btn_check": _("✅ Tekshirish", "✅ Check", "✅ Проверить"),
     "gate_ok": _("✅ Obuna tasdiqlandi!", "✅ Subscription confirmed!", "✅ Подписка подтверждена!"),
