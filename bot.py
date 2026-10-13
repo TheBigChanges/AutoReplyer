@@ -740,6 +740,36 @@ NAME_CLOCK_CONCURRENCY = 25
 NAME_CLOCK_SYNC_LEAD_SECONDS = 4.0  # ism o'zgarganini tekshirish: yangilashdan shuncha oldin
 NAME_CLOCK_MAX_FAILURES = 3  # ketma-ket shuncha xatodan keyin funksiya o'zi o'chadi
 FLOOD_NOTICE_COOLDOWN_SECONDS = 600
+# Telegram'ga soniyasiga eng ko'pi bilan shuncha ism-soat chaqiruvi (umumiy bot limiti ~30/s) — flood'dan saqlanish.
+NAME_CLOCK_RATE_PER_SEC = 20.0
+NAME_CLOCK_MAX_LEAD_SECONDS = 25.0       # ko'p foydalanuvchida yangilashni shuncha soniyagacha oldinroq boshlaymiz
+NAME_CLOCK_MAX_SYNC_LEAD_SECONDS = 55.0
+_name_clock_target_count = 0             # oxirgi ko'ringan faol soatlar soni (yangilash oldinligini hisoblash uchun)
+
+
+class _Pacer:
+    """Chaqiruvlarni teng oraliqda (rate/s) tarqatadi: hammasi bir lahzada Telegram'ga urilmasin."""
+
+    def __init__(self):
+        self._next = 0.0
+
+    async def wait(self, rate: float):
+        now = time.monotonic()
+        slot = max(self._next, now)
+        self._next = slot + 1.0 / max(rate, 0.001)
+        if slot > now:
+            await asyncio.sleep(slot - now)
+
+
+_clock_pacer = _Pacer()
+_sync_pacer = _Pacer()
+
+
+def clock_lead_seconds(n: int | None = None) -> float:
+    """Yangilashni daqiqa chegarasidan qancha oldin boshlash: foydalanuvchi ko'p bo'lsa, oxirgisi ham
+    deyarli o'z vaqtida yangilanishi uchun (n / tezlik soniya + kichik zaxira)."""
+    n = _name_clock_target_count if n is None else n
+    return min(NAME_CLOCK_MAX_LEAD_SECONDS, NAME_CLOCK_LEAD_SECONDS + n / NAME_CLOCK_RATE_PER_SEC)
 
 _name_clock_backoff_until = 0.0
 _name_clock_failures: dict[int, int] = {}
@@ -794,6 +824,7 @@ async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
     try:
         async with sem:
             try:
+                await _clock_pacer.wait(NAME_CLOCK_RATE_PER_SEC)
                 await _set_account_name(bot, target["business_connection_id"], first, last)
             except RetryAfter as e:
                 global _name_clock_backoff_until, _last_flood_notice
@@ -834,6 +865,8 @@ async def name_clock_tick(bot, at_ts: float):
     except Exception:
         logger.exception("Ism soati: ro'yxatni o'qib bo'lmadi")
         return
+    global _name_clock_target_count
+    _name_clock_target_count = len(targets)
     if not targets:
         return
     sem = asyncio.Semaphore(NAME_CLOCK_CONCURRENCY)
@@ -851,11 +884,12 @@ async def name_clock_tick(bot, at_ts: float):
         logger.exception("Ism soati: belgilashda xato")
 
 
-def next_clock_boundary(now: float) -> tuple[float, float]:
-    """(uyg'onish vaqti, yangi daqiqa chegarasi): chegaradan LEAD soniya oldin uyg'onadi."""
+def next_clock_boundary(now: float, lead: float | None = None) -> tuple[float, float]:
+    """(uyg'onish vaqti, yangi daqiqa chegarasi): chegaradan `lead` soniya oldin uyg'onadi."""
+    lead = NAME_CLOCK_LEAD_SECONDS if lead is None else lead
     boundary = (now // 60 + 1) * 60
-    fire_at = boundary - NAME_CLOCK_LEAD_SECONDS
-    if fire_at <= now:  # LEAD oynasiga kech tushdik — keyingi daqiqaga
+    fire_at = boundary - lead
+    if fire_at <= now:  # oldinlik oynasiga kech tushdik — keyingi daqiqaga
         boundary += 60
         fire_at += 60
     return fire_at, boundary
@@ -866,7 +900,7 @@ async def name_clock_loop(bot):
     (interval qo'shib bormaydi), shuning uchun vaqt siljimaydi. Sekin tick keyingisini kechiktirmaydi."""
     while True:
         try:
-            fire_at, boundary = next_clock_boundary(time.time())
+            fire_at, boundary = next_clock_boundary(time.time(), clock_lead_seconds())
             await asyncio.sleep(max(0.0, fire_at - time.time()))
             spawn_background(name_clock_tick(bot, boundary))
         except asyncio.CancelledError:
@@ -909,10 +943,13 @@ async def name_clock_sync(bot):
     except Exception:
         logger.exception("Ism soati: sinxronlash ro'yxati o'qilmadi")
         return
+    global _name_clock_target_count
+    _name_clock_target_count = len(targets)
     sem = asyncio.Semaphore(NAME_CLOCK_CONCURRENCY)
 
     async def one(target):
         async with sem:
+            await _sync_pacer.wait(NAME_CLOCK_RATE_PER_SEC)
             try:
                 chat = await bot.get_chat(target["owner_user_id"])
             except TelegramError:
@@ -924,18 +961,22 @@ async def name_clock_sync(bot):
     await asyncio.gather(*(one(t) for t in targets), return_exceptions=True)
 
 
+def clock_sync_lead_seconds(n: int | None = None) -> float:
+    """Ism tekshiruvi yangilashdan oldin tugashi kerak: yangilash oldinligi + tekshiruv davomiyligi + zaxira."""
+    n = _name_clock_target_count if n is None else n
+    return min(NAME_CLOCK_MAX_SYNC_LEAD_SECONDS, clock_lead_seconds(n) + n / NAME_CLOCK_RATE_PER_SEC + 3.0)
+
+
 async def name_clock_sync_loop(bot):
-    """Har daqiqada, yangilashdan NAME_CLOCK_SYNC_LEAD_SECONDS oldin ism o'zgarganini tekshiradi."""
+    """Har daqiqada, yangilashdan oldin ism o'zgarganini tekshiradi (egasi ismni o'zi o'zgartirgan bo'lsa,
+    bot uni eski ismga qaytarib yubormasligi uchun). Har daqiqada — chunki kamroq tekshirsak, bot
+    o'zgartirilgan ismni ustidan yozib yuborib, yangi ismni yo'qotib qo'yishi mumkin."""
     while True:
         try:
-            _, boundary = next_clock_boundary(time.time())
-            wake = boundary - NAME_CLOCK_SYNC_LEAD_SECONDS
-            if wake <= time.time():
-                boundary += 60
-                wake += 60
-            await asyncio.sleep(max(0.0, wake - time.time()))
+            fire_at, _ = next_clock_boundary(time.time(), clock_sync_lead_seconds())
+            await asyncio.sleep(max(0.0, fire_at - time.time()))
             spawn_background(name_clock_sync(bot))
-            await asyncio.sleep(NAME_CLOCK_SYNC_LEAD_SECONDS)  # keyingi aylanish boshqa daqiqaga tushsin
+            await asyncio.sleep(1.0)  # bir daqiqaga ikki marta ishga tushmasin
         except asyncio.CancelledError:
             raise
         except Exception:
