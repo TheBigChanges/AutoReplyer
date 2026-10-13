@@ -552,7 +552,7 @@ def plan_features_text(lang: str, plan: str) -> str:
         (None, "pf_clock_full" if full_clock else "pf_clock", {}),
         ("custom_text", "pf_text", {}),
         ("bio", "pf_bio", {}),
-        ("ai", "pf_ai", {"limit": AI_DAILY_LIMIT}),
+        ("ai", "pf_ai", {}),
         ("name_clock_fonts", "pf_fonts", {"n": len(NAME_CLOCK_STYLES) - 1}),
         ("name_clock_zones", "pf_zones", {"n": len(NAME_CLOCK_ZONES) - 1}),
     )
@@ -702,7 +702,6 @@ async def _display_name_for(bot, user_id: int) -> str:
     return f"ID {user_id}"
 
 
-AI_DAILY_LIMIT = 10  # oddiy foydalanuvchi uchun kuniga AI javoblar soni (admin uchun cheksiz)
 AI_HISTORY_MESSAGES = 10
 AI_INFO_MAX_LENGTH = 1000
 AI_TAKEOVER_PAUSE_SECONDS = 2 * 3600  # egasi chatga o'zi yozsa, AI shu chatda shuncha vaqt jim turadi
@@ -1187,14 +1186,9 @@ def build_ai_menu(owner_id: int, notice: str | None = None):
     s = db.get_settings(owner_id)
     enabled = bool(s.get("ai_enabled"))
     info = (s.get("ai_info") or "").strip()
-    if owner_id == ADMIN_ID:
-        usage_line = t(lang, "ai_usage_unlimited")
-    else:
-        usage_line = t(lang, "ai_usage", used=db.get_ai_usage(owner_id, str(today_tashkent())), limit=AI_DAILY_LIMIT)
     text = t(
         lang, "ai_menu",
         status=t(lang, "status_on" if enabled else "status_off"),
-        usage=usage_line,
         role=ai.role_label(s.get("ai_role"), lang),
         info=info if info else t(lang, "ai_info_empty"),
     )
@@ -1249,18 +1243,10 @@ async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str,
 
 
 async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings: dict, fallback_text: str, label: str):
-    """AI javobini yaratib yuboradi. Limit tugasa yoki xato bo'lsa — odatiy matnli avtojavob (zaxira)."""
+    """AI javobini yaratib yuboradi. Xato bo'lsa — odatiy matnli avtojavob (zaxira)."""
     business_connection_id = bm.business_connection_id
-    day = str(today_tashkent())
     try:
         async with _chat_lock(owner_id, chat_id):
-            consumed = False
-            if owner_id != ADMIN_ID:
-                if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT):
-                    await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-limit")
-                    return
-                consumed = True
-
             history = db.get_ai_history(owner_id, chat_id, AI_HISTORY_MESSAGES)
             history.append({"role": "user", "text": text})
             info = db.get_user(owner_id) or {}
@@ -1269,8 +1255,6 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 lang=get_lang(owner_id),
             )
             if not answer:
-                if consumed:
-                    db.refund_ai_quota(owner_id, day)
                 await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-failed")
                 return
             try:
@@ -1278,8 +1262,6 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                     chat_id=chat_id, text=answer, business_connection_id=business_connection_id
                 )
             except TelegramError as e:
-                if consumed:
-                    db.refund_ai_quota(owner_id, day)
                 logger.warning("AI javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
                 return
             _remember_sent(chat_id, sent)
