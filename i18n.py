@@ -674,9 +674,9 @@ T: dict[str, dict] = {
     # ---------------- tariflar ----------------
     "btn_plans": _("\U0001F3F7\uFE0F Tariflar", "\U0001F3F7\uFE0F Plans", "\U0001F3F7\uFE0F Тарифы"),
     "plans_menu": _(
-        "\U0001F6D2 Tarif rejalarimiz\n\nMa'lumot olish va xarid qilish uchun tarifni tanlang:",
-        "\U0001F6D2 Our plans\n\nChoose a plan to get details or to purchase:",
-        "\U0001F6D2 Наши тарифы\n\nВыберите тариф, чтобы узнать подробности или оплатить:",
+        "\U0001F6D2 Tarif rejalarimiz\n\nTarifni bosing — unda qanday imkoniyatlar borligini ko'rasiz va xarid qilishingiz mumkin:",
+        "\U0001F6D2 Our plans\n\nTap a plan to see exactly what it includes and to purchase it:",
+        "\U0001F6D2 Наши тарифы\n\nНажмите на тариф, чтобы увидеть, что в него входит, и оформить покупку:",
     ),
     "plan_name_free": _("Bepul", "Free", "Бесплатный"),
     "plan_name_plus": _("Plus", "Plus", "Plus"),
@@ -694,18 +694,71 @@ T: dict[str, dict] = {
         "✅ This is your current plan.",
         "✅ Это ваш текущий тариф.",
     ),
+    "plan_title": _(
+        "{emoji} {name} tarifi — {price}",
+        "{emoji} {name} plan — {price}",
+        "{emoji} Тариф {name} — {price}",
+    ),
+    "plan_includes": _("✅ Nimalar kiradi:", "✅ What's included:", "✅ Что входит:"),
+    "plan_excludes": _(
+        "\U0001F512 Bu tarifda yo'q (yuqoriroq tariflarda ochiladi):",
+        "\U0001F512 Not included (unlocked on higher plans):",
+        "\U0001F512 Не входит (открывается на более высоких тарифах):",
+    ),
+    "pf_autoreply": _(
+        "Siz oflayn bo'lganingizda mijozlarga avtomatik javob (qayta-qayta yozmasligi uchun cooldown sozlanadi)",
+        "Automatic reply to customers while you are offline (with a cooldown so it doesn't repeat itself)",
+        "Автоответ клиентам, пока вы офлайн (с паузой, чтобы бот не писал одно и то же снова и снова)",
+    ),
+    "pf_sleep": _(
+        "Uxlayapman rejimi — tunda alohida avtojavob yuboriladi",
+        "Sleep mode — a separate auto-reply is sent during your night hours",
+        "Режим сна — ночью отправляется отдельный автоответ",
+    ),
+    "pf_clock": _(
+        "Ism soati — ismingiz yonida joriy vaqt (standart shrift, faqat O'zbekiston vaqti)",
+        "Name clock — the current time next to your name (default font, Uzbekistan time only)",
+        "Часы в имени — текущее время рядом с вашим именем (стандартный шрифт, только время Узбекистана)",
+    ),
+    "pf_clock_full": _(
+        "Ism soati — ismingiz yonida joriy vaqt har daqiqada yangilanib turadi",
+        "Name clock — the current time next to your name, updated every minute",
+        "Часы в имени — текущее время рядом с вашим именем, обновляется каждую минуту",
+    ),
+    "pf_text": _(
+        "Avtojavob va uxlash xabarini o'zingiz yozish (aks holda tayyor standart matn ketadi)",
+        "Write your own auto-reply and sleep messages (otherwise a ready-made default text is sent)",
+        "Свой текст автоответа и сообщения для сна (иначе отправляется готовый стандартный текст)",
+    ),
+    "pf_bio": _(
+        "BIO hisoblagich — profilingizda Yangi yil, Navro'z yoki tug'ilgan kuningizgacha qolgan kunlar avtomatik yoziladi",
+        "BIO countdown — your profile bio automatically shows the days left until New Year, Navruz or your birthday",
+        "Счётчик в BIO — в описании профиля автоматически пишется, сколько дней осталось до Нового года, Навруза или вашего дня рождения",
+    ),
+    "pf_ai": _(
+        "AI-Yordamchi — mijozlarga sun'iy intellekt o'zi javob yozadi (kuniga {limit} tagacha javob, rolni tanlash mumkin)",
+        "AI Assistant — artificial intelligence writes replies to your customers for you (up to {limit} replies a day, you can pick a role)",
+        "AI-помощник — искусственный интеллект сам отвечает вашим клиентам (до {limit} ответов в день, можно выбрать роль)",
+    ),
+    "pf_fonts": _(
+        "Ism soati uchun {n} xil chiroyli shrift (qalin, yumaloq, chiziqli va boshqalar)",
+        "{n} stylish fonts for the name clock (bold, circled, strikethrough and more)",
+        "{n} красивых шрифтов для часов в имени (жирный, в кружках, зачёркнутый и другие)",
+    ),
+    "pf_zones": _(
+        "Ism soati uchun {n} ta shahar vaqti (Toshkentdan tashqari: Moskva, Dubay, London, Nyu-York va boshqalar)",
+        "{n} city time zones for the name clock (besides Tashkent: Moscow, Dubai, London, New York and more)",
+        "{n} часовых поясов для часов в имени (кроме Ташкента: Москва, Дубай, Лондон, Нью-Йорк и другие)",
+    ),
     "plan_pay": _(
-        "{emoji} {name} tarifi — {price}\n\n"
         "Sotib olish uchun quyidagi kartaga to'lov qiling:\n\n"
         "\U0001F4B3 Karta raqami: {card}\n"
         "\U0001F464 Karta egasi: {holder}\n\n"
         "To'lovdan so'ng chekni (skrinshot) adminga yuboring — tarifingiz faollashtiriladi.",
-        "{emoji} {name} plan — {price}\n\n"
         "To pay, transfer the amount to this card:\n\n"
         "\U0001F4B3 Card number: {card}\n"
         "\U0001F464 Card holder: {holder}\n\n"
         "After paying, send the receipt (screenshot) to the admin — your plan will be activated.",
-        "{emoji} Тариф {name} — {price}\n\n"
         "Для оплаты переведите сумму на эту карту:\n\n"
         "\U0001F4B3 Номер карты: {card}\n"
         "\U0001F464 Владелец карты: {holder}\n\n"
@@ -743,6 +796,7 @@ T: dict[str, dict] = {
     "feature_text": _("Xabar matnini o'zgartirish", "Changing the message text", "Изменение текста сообщения"),
     "feature_ai": _("AI-Yordamchi", "AI Assistant", "AI-помощник"),
     "feature_fonts": _("Soat shriftlari", "Clock fonts", "Шрифты часов"),
+    "feature_zones": _("Soat uchun boshqa vaqt zonalari", "Other time zones for the clock", "Другие часовые пояса для часов"),
     "locked_feature": _(
         "\U0001F512 «{feature}» faqat {plans} tariflarida mavjud.\n\nTarifni \U0001F3F7\uFE0F Tariflar bo'limidan o'zgartirishingiz mumkin.",
         "\U0001F512 “{feature}” is available only on the {plans} plans.\n\nYou can change your plan in the \U0001F3F7\uFE0F Plans section.",
