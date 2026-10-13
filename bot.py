@@ -561,6 +561,64 @@ def plan_of(user_id: int) -> str:
         return "free"
 
 
+AD_FREE_PLANS = ("plus", "pro", "ultra")  # pullik tariflarda reklama yo'q
+
+
+def shows_ads(user_id: int, plan: str | None = None) -> bool:
+    """Bepul tarifdagi (admin emas) egaga reklama qo'shiladi."""
+    if ADMIN_ID and user_id == ADMIN_ID:
+        return False
+    return (plan if plan is not None else plan_of(user_id)) not in AD_FREE_PLANS
+
+
+def with_ad(text: str, owner_id: int) -> str:
+    """Avtojavob matni tagiga (ikki bo'sh qator qoldirib) reklama qo'shadi (faqat bepul tarifda)."""
+    if not shows_ads(owner_id):
+        return text
+    ad = t(get_lang(owner_id), "ad_reply")
+    suffix = "\n\n" + ad
+    room = 4096 - len(suffix)
+    return (text[:room] if len(text) > room else text) + suffix
+
+
+async def reconcile_clock_bio_ads(bot):
+    """Bepul tarifda ism soati yoqilgan bo'lsa — BIO'ga reklama yoziladi; yoqilmagan/pullik bo'lsa — olib tashlanadi
+    (BIO hisoblagich bo'lsa u qaytariladi, bo'lmasa BIO bo'shatiladi)."""
+    try:
+        rows = db.get_bio_ad_candidates()
+    except Exception:
+        logger.exception("BIO reklamasi: ro'yxat o'qilmadi")
+        return
+    for row in rows:
+        uid = row["owner_user_id"]
+        want = bool(row["name_clock_enabled"]) and shows_ads(uid, row.get("plan"))
+        have = bool(row["clock_bio_ad"])
+        if want == have or (want and not sub_ok_sync(uid)):
+            continue
+        lang = row.get("lang") if is_lang(row.get("lang")) else DEFAULT_LANG
+        if want:
+            bio = t(lang, "ad_bio")
+        else:
+            bio = ""
+            if row.get("bio_countdown_target") and plan_allows(uid, row.get("plan"), "bio"):
+                bio = compute_bio_text(
+                    row["bio_countdown_target"], row.get("birthday_month"), row.get("birthday_day"),
+                    today=today_tashkent(), lang=lang,
+                ) or ""
+        try:
+            await bot.set_business_account_bio(business_connection_id=row["business_connection_id"], bio=bio)
+            db.update_settings(uid, clock_bio_ad=want)
+        except TelegramError as e:
+            logger.info("BIO reklamasi o'zgartirilmadi (owner=%s): %s", uid, e)
+        except Exception:
+            logger.exception("BIO reklamasi xatosi (owner=%s)", uid)
+        await asyncio.sleep(0.05)
+
+
+async def clock_bio_ad_job(context: ContextTypes.DEFAULT_TYPE):
+    await reconcile_clock_bio_ads(context.bot)
+
+
 def has_feature(user_id: int, feature: str) -> bool:
     return plan_allows(user_id, plan_of(user_id), feature)
 
@@ -641,6 +699,7 @@ def plan_features_text(lang: str, plan: str) -> str:
     included, excluded = [], []
     for feature, key, kw in items:
         (included if feature is None or plan in FEATURE_PLANS.get(feature, ()) else excluded).append(t(lang, key, **kw))
+    included.append(t(lang, "pf_ads_off" if plan in AD_FREE_PLANS else "pf_ads_on"))
     parts = [t(lang, "plan_includes")] + [f"• {line}" for line in included]
     if excluded:
         parts += ["", t(lang, "plan_excludes")] + [f"• {line}" for line in excluded]
@@ -1311,7 +1370,7 @@ async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str,
     try:
         sent = await bot.send_message(
             chat_id=chat_id,
-            text=reply_text,
+            text=with_ad(reply_text, owner_id),
             business_connection_id=bm.business_connection_id,
         )
     except Exception as e:
@@ -3114,6 +3173,8 @@ def build_app() -> Application:
         app.job_queue.run_repeating(plan_expiry_job, interval=600, first=30)
         # Ism soati/BIO egalarining kanal a'zoligini yangilab turish (har daqiqada, faqat eskirganlarni)
         app.job_queue.run_repeating(subscription_refresh_job, interval=60, first=45)
+        # Bepul tarifdagi ism soati egalarining BIO'siga reklama qo'yish/olib tashlash
+        app.job_queue.run_repeating(clock_bio_ad_job, interval=60, first=50)
     else:
         logger.warning(
             "JobQueue mavjud emas — BIO hisoblagich avtomatik yangilanmaydi. "
