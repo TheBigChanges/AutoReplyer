@@ -307,6 +307,8 @@ async def refresh_bios(bot, only_stale: bool) -> tuple[int, int]:
     for row in rows:
         if not plan_allows(row["owner_user_id"], row.get("plan"), "bio"):
             continue  # tarif pasaygan: BIO hisoblagich yangilanmaydi
+        if not sub_ok_sync(row["owner_user_id"]):
+            continue  # kanalga obuna emas: BIO hisoblagich yangilanmaydi
         text = compute_bio_text(
             row["bio_countdown_target"], row["birthday_month"], row["birthday_day"], today=today,
             lang=row.get("lang") if is_lang(row.get("lang")) else DEFAULT_LANG,
@@ -344,23 +346,103 @@ async def bio_startup_job(context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # Menyu va panel
 # ---------------------------------------------------------------------------
-async def is_subscribed(bot, user_id: int) -> bool:
-    """Majburiy kanalga a'zoligini tekshiradi. Sozlanmagan bo'lsa — har doim
-    True (tekshiruv o'chirilgan). Xato chiqsa (masalan bot kanalda admin
-    emas) — butun botni to'sib qo'ymaslik uchun xavfsiz tomonga (ruxsat
-    berilgan deb) og'amiz, lekin loglab qo'yamiz, chunki bu sozlama xatosi
-    belgisi bo'lishi mumkin."""
-    if REQUIRED_CHANNEL_ID is None:
-        return True
+SUB_CACHE_OK_SECONDS = 600.0   # a'zo bo'lgan odam natijasi shuncha vaqt eslab qolinadi
+SUB_CACHE_NO_SECONDS = 60.0    # a'zo bo'lmagan odam tezroq qayta tekshiriladi (obuna bo'lgach tez tiklansin)
+_sub_cache: dict[int, tuple[float, bool]] = {}
+_sub_notice_at: dict[int, float] = {}
+SUB_NOTICE_COOLDOWN_SECONDS = 24 * 3600.0
+_gate_reply_at: dict[int, float] = {}
+GATE_REPLY_COOLDOWN_SECONDS = 3.0
+
+
+def _sub_exempt(user_id: int) -> bool:
+    """Tekshiruvdan ozod: majburiy kanal sozlanmagan yoki admin."""
+    return REQUIRED_CHANNEL_ID is None or (bool(ADMIN_ID) and user_id == ADMIN_ID)
+
+
+async def check_membership(bot, user_id: int) -> bool | None:
+    """Telegramdan HAQIQIY a'zolikni so'raydi va keshga yozadi. True/False; xato bo'lsa None
+    (keshga yozilmaydi)."""
     try:
         member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL_ID, user_id=user_id)
-        return member.status not in ("left", "kicked")
     except TelegramError as e:
         logger.warning(
             "Obuna tekshiruvida xato (user=%s, channel=%s): %s — bot kanalda admin ekanini tekshiring",
             user_id, REQUIRED_CHANNEL_ID, e,
         )
+        return None
+    ok = member.status not in ("left", "kicked")
+    _sub_cache[user_id] = (time.time(), ok)
+    return ok
+
+
+async def is_subscribed(bot, user_id: int) -> bool:
+    """Majburiy kanalga a'zoligini (har doim yangidan) tekshiradi. Sozlanmagan bo'lsa — True.
+    Xato chiqsa (masalan bot kanalda admin emas) — butun botni to'sib qo'ymaslik uchun
+    ruxsat berilgan deb olinadi, lekin loglanadi."""
+    if REQUIRED_CHANNEL_ID is None:
         return True
+    ok = await check_membership(bot, user_id)
+    return True if ok is None else ok
+
+
+async def is_subscribed_cached(bot, user_id: int) -> bool:
+    """Har bir xabar/tugma uchun: kesh yangi bo'lsa — API'siz javob beradi."""
+    if _sub_exempt(user_id):
+        return True
+    hit = _sub_cache.get(user_id)
+    if hit is not None:
+        ttl = SUB_CACHE_OK_SECONDS if hit[1] else SUB_CACHE_NO_SECONDS
+        if time.time() - hit[0] < ttl:
+            return hit[1]
+    return await is_subscribed(bot, user_id)
+
+
+def sub_ok_sync(user_id: int) -> bool:
+    """Faqat keshga qaraydi (tarmoqsiz): ism soati/BIO kabi ommaviy sikllar uchun. Noma'lum — ruxsat."""
+    if _sub_exempt(user_id):
+        return True
+    hit = _sub_cache.get(user_id)
+    return True if hit is None else hit[1]
+
+
+async def notify_subscription_lost(bot, user_id: int):
+    """Funksiyalar to'xtaganini bildiradi (kuniga ko'pi bilan 1 marta)."""
+    now = time.time()
+    if now - _sub_notice_at.get(user_id, 0.0) < SUB_NOTICE_COOLDOWN_SECONDS:
+        return
+    _sub_notice_at[user_id] = now
+    lang = get_lang(user_id)
+    await _try_send(bot, user_id, t(lang, "gate_lost"), build_subscribe_gate_markup(None, lang))
+
+
+async def subscription_refresh_job(context: ContextTypes.DEFAULT_TYPE):
+    """Har daqiqada: ism soati/BIO yoqilgan odamlarning obunasini (keshi eskirganlarni) yangilaydi.
+    Obunani yo'qotgan odamning ismi asl holiga qaytariladi va unga xabar yuboriladi."""
+    if REQUIRED_CHANNEL_ID is None:
+        return
+    try:
+        ids = {r["owner_user_id"] for r in db.get_name_clock_targets()}
+        ids |= {r["owner_user_id"] for r in db.get_all_bio_targets()}
+    except Exception:
+        logger.exception("Obuna yangilash: ro'yxat o'qilmadi")
+        return
+    now = time.time()
+    for uid in ids:
+        if _sub_exempt(uid):
+            continue
+        hit = _sub_cache.get(uid)
+        if hit is not None and now - hit[0] < (SUB_CACHE_OK_SECONDS if hit[1] else SUB_CACHE_NO_SECONDS):
+            continue
+        was_ok = hit[1] if hit is not None else True
+        ok = await check_membership(context.bot, uid)
+        if ok is False and was_ok:
+            try:
+                await restore_base_name(context.bot, uid)
+            except Exception:
+                logger.exception("Obuna yo'qolganda ismni qaytarishda xato (owner=%s)", uid)
+            await notify_subscription_lost(context.bot, uid)
+        await asyncio.sleep(0.05)
 
 
 def build_subscribe_gate_markup(inviter_id: int | None = None, lang: str = DEFAULT_LANG):
@@ -864,6 +946,7 @@ async def name_clock_tick(bot, at_ts: float):
     except Exception:
         logger.exception("Ism soati: ro'yxatni o'qib bo'lmadi")
         return
+    targets = [x for x in targets if sub_ok_sync(x["owner_user_id"])]
     global _name_clock_target_count
     _name_clock_target_count = len(targets)
     if not targets:
@@ -942,6 +1025,7 @@ async def name_clock_sync(bot):
     except Exception:
         logger.exception("Ism soati: sinxronlash ro'yxati o'qilmadi")
         return
+    targets = [x for x in targets if sub_ok_sync(x["owner_user_id"])]
     global _name_clock_target_count
     _name_clock_target_count = len(targets)
     sem = asyncio.Semaphore(NAME_CLOCK_CONCURRENCY)
@@ -2759,6 +2843,45 @@ async def handle_blocked_update(update: Update, context: ContextTypes.DEFAULT_TY
     await message.reply_text(notice, reply_markup=markup)
 
 
+async def subscribe_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Botning HAR BIR xabari/tugmasi uchun majburiy obuna. Obuna bo'lmaganda faqat
+    /start, til tanlash va "Tekshirish" tugmasi ishlaydi; qolganlari to'xtatiladi."""
+    if REQUIRED_CHANNEL_ID is None:
+        return
+    query = update.callback_query
+    message = update.message
+    if query is None and message is None:
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    if user is None or user.is_bot or _sub_exempt(user.id) or (chat is not None and chat.type != "private"):
+        return
+    if query is not None:
+        data = query.data or ""
+        if data.startswith("check_subscription") or data.startswith("lang:"):
+            return
+    else:
+        text = (message.text or "").strip()
+        if text.split("@", 1)[0].split(" ", 1)[0] == "/start":
+            return
+    if await is_subscribed_cached(context.bot, user.id):
+        return
+    lang = get_lang(user.id)
+    markup = build_subscribe_gate_markup(None, lang)
+    if query is not None:
+        try:
+            await query.answer(t(lang, "gate_fail"), show_alert=True)
+            await query.edit_message_text(t(lang, "gate_text"), reply_markup=markup)
+        except TelegramError as e:
+            logger.info("Obuna oynasini ko'rsatib bo'lmadi (user=%s): %s", user.id, e)
+    else:
+        now = time.time()
+        if now - _gate_reply_at.get(user.id, 0.0) >= GATE_REPLY_COOLDOWN_SECONDS:
+            _gate_reply_at[user.id] = now
+            await message.reply_text(t(lang, "gate_text"), reply_markup=markup)
+    raise ApplicationHandlerStop
+
+
 async def block_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Eng birinchi (group -2) handler: bot bilan to'g'ridan-to'g'ri muloqot
     (xabar yoki tugma) qilayotgan bloklangan foydalanuvchini ushlab qoladi va
@@ -2873,6 +2996,11 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if connection.get("is_blocked"):
             return
 
+        # Majburiy kanalga obuna bo'lmagan egasining avtojavobi/AI'si ishlamaydi.
+        if not await is_subscribed_cached(context.bot, owner_id):
+            await notify_subscription_lost(context.bot, owner_id)
+            return
+
         # Bu SIZNING (akkaunt egasining) o'zi yozgan xabari — botlarga emas,
         # mijozlarga javob berishimiz kerak, shuning uchun o'tkazib yuboramiz.
         if bm.from_user and bm.from_user.id == owner_id:
@@ -2936,7 +3064,9 @@ def build_app() -> Application:
     only_messages = filters.UpdateType.MESSAGE
 
     # Bloklangan foydalanuvchini eng birinchi to'xtatadi (qolgan hamma handlerdan oldin)
-    app.add_handler(TypeHandler(Update, block_gate), group=-2)
+    app.add_handler(TypeHandler(Update, block_gate), group=-3)
+    # Keyin majburiy obuna: obuna bo'lmagan odam botning hech bir funksiyasidan foydalana olmaydi
+    app.add_handler(TypeHandler(Update, subscribe_gate), group=-2)
 
     app.add_handler(CommandHandler("start", cmd_start, filters=only_messages))
     app.add_handler(CommandHandler("help", cmd_help, filters=only_messages))
@@ -2982,6 +3112,8 @@ def build_app() -> Application:
         app.job_queue.run_once(profile_backfill_job, when=20)
         # Muddati tugagan tariflarni Bepulga qaytarish (har 10 daqiqada)
         app.job_queue.run_repeating(plan_expiry_job, interval=600, first=30)
+        # Ism soati/BIO egalarining kanal a'zoligini yangilab turish (har daqiqada, faqat eskirganlarni)
+        app.job_queue.run_repeating(subscription_refresh_job, interval=60, first=45)
     else:
         logger.warning(
             "JobQueue mavjud emas — BIO hisoblagich avtomatik yangilanmaydi. "
