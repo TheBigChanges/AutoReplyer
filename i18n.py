@@ -746,6 +746,18 @@ T: dict[str, dict] = {
         "AI Assistant — artificial intelligence writes replies to your customers for you (you can pick a role)",
         "AI-помощник — искусственный интеллект сам отвечает вашим клиентам (можно выбрать роль)",
     ),
+    "pf_ads_on": _("Reklama bilan", "With ads", "С рекламой"),
+    "pf_ads_off": _("Reklama yo'q", "No ads", "Без рекламы"),
+    "ad_reply": _(
+        "\U0001F680 Ushbu xabar @autoreplyer_dbot orqali yuborildi!",
+        "\U0001F680 This message was sent via @autoreplyer_dbot!",
+        "\U0001F680 Это сообщение отправлено через @autoreplyer_dbot!",
+    ),
+    "ad_bio": _(
+        "\U0001F680 Ushbu soat @autoreplyer_dbot orqali o'rnatildi!",
+        "\U0001F680 This clock was set via @autoreplyer_dbot!",
+        "\U0001F680 Эти часы установлены через @autoreplyer_dbot!",
+    ),
     "pf_fonts": _(
         "Ism soati uchun {n} xil chiroyli shrift (qalin, yumaloq, chiziqli va boshqalar)",
         "{n} stylish fonts for the name clock (bold, circled, strikethrough and more)",
