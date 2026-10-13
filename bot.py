@@ -457,10 +457,12 @@ DEFAULT_FEATURE_PLANS = {
     "custom_text": ("pro", "ultra"),    # avtojavob / uxlash matnini o'zgartirish
     "ai": ("ultra",),                   # AI-Yordamchi
     "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
+    "name_clock_zones": ("ultra",),    # ism soatining Toshkentdan boshqa vaqt zonalari
 }
 FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
 FEATURE_NAME_KEYS = {
     "bio": "feature_bio", "custom_text": "feature_text", "ai": "feature_ai", "name_clock_fonts": "feature_fonts",
+    "name_clock_zones": "feature_zones",
 }
 
 
@@ -540,41 +542,69 @@ def build_plans_menu(owner_id: int):
     return t(lang, "plans_menu"), InlineKeyboardMarkup(rows)
 
 
+def plan_features_text(lang: str, plan: str) -> str:
+    """Tarifga nimalar kirishi va kirmasligi — oddiy foydalanuvchi tushunadigan ro'yxat.
+    Manba — haqiqiy cheklovlar jadvali (FEATURE_PLANS), shuning uchun matn doim amaldagi holatga mos."""
+    full_clock = plan in FEATURE_PLANS.get("name_clock_fonts", ()) and plan in FEATURE_PLANS.get("name_clock_zones", ())
+    items = (
+        (None, "pf_autoreply", {}),
+        (None, "pf_sleep", {}),
+        (None, "pf_clock_full" if full_clock else "pf_clock", {}),
+        ("custom_text", "pf_text", {}),
+        ("bio", "pf_bio", {}),
+        ("ai", "pf_ai", {"limit": AI_DAILY_LIMIT}),
+        ("name_clock_fonts", "pf_fonts", {"n": len(NAME_CLOCK_STYLES) - 1}),
+        ("name_clock_zones", "pf_zones", {"n": len(NAME_CLOCK_ZONES) - 1}),
+    )
+    included, excluded = [], []
+    for feature, key, kw in items:
+        (included if feature is None or plan in FEATURE_PLANS.get(feature, ()) else excluded).append(t(lang, key, **kw))
+    parts = [t(lang, "plan_includes")] + [f"• {line}" for line in included]
+    if excluded:
+        parts += ["", t(lang, "plan_excludes")] + [f"• {line}" for line in excluded]
+    return "\n".join(parts)
+
+
 def build_plan_view(owner_id: int, key: str):
-    """Tanlangan tarif ekrani. HTML parse_mode bilan yuboriladi (karta raqami bosib nusxalanadi)."""
+    """Tanlangan tarif ekrani: nimalar kirishi + (pullik bo'lsa) to'lov ma'lumoti.
+    HTML parse_mode bilan yuboriladi (karta raqami bosib nusxalanadi)."""
     lang = get_lang(owner_id)
     emoji, price = next(((e, p) for k, e, p in PLANS if k == key), ("", 0))
     try:
         current = db.get_user_plan(owner_id)
     except Exception:
         current = "free"
+    esc = lambda x: html.escape(x, quote=False)  # noqa: E731
     back = [InlineKeyboardButton(t(lang, "btn_back"), callback_data="plans")]
+    name = t(lang, "plan_name_" + key)
+    features = esc(plan_features_text(lang, key))
+
     if key == "free":
-        text = t(lang, "plan_free_info")
+        text = esc(t(lang, "plan_free_info")) + "\n\n" + features
         if current == "free":
-            text += "\n\n" + t(lang, "plan_current")
-        return html.escape(text, quote=False), InlineKeyboardMarkup([back])
+            text += "\n\n" + esc(t(lang, "plan_current"))
+        return text, InlineKeyboardMarkup([back])
+
+    title = esc(t(lang, "plan_title", emoji=emoji, name=name, price=plan_price_label(lang, price)))
     if key == current:
-        text = html.escape(t(lang, "plan_current"), quote=False)
+        text = title + "\n\n" + features + "\n\n" + esc(t(lang, "plan_current"))
         try:
             expires_at = db.get_user_plan_info(owner_id)[1]
         except Exception:
             expires_at = None
         if expires_at:
-            text += "\n" + html.escape(t(lang, "plan_until", date=format_plan_date(expires_at)), quote=False)
+            text += "\n" + esc(t(lang, "plan_until", date=format_plan_date(expires_at)))
         return text, InlineKeyboardMarkup([back])
     if not PAYMENT_CARD_NUMBER:
-        text = html.escape(t(lang, "plan_no_card"), quote=False)
+        pay = esc(t(lang, "plan_no_card"))
     else:
-        text = t(
+        pay = t(
             lang, "plan_pay",
-            emoji=emoji, name=html.escape(t(lang, "plan_name_" + key), quote=False),
-            price=html.escape(plan_price_label(lang, price), quote=False),
-            card="<code>" + html.escape(format_card_number(PAYMENT_CARD_NUMBER), quote=False) + "</code>",
-            holder=html.escape(PAYMENT_CARD_HOLDER, quote=False),
+            card="<code>" + esc(format_card_number(PAYMENT_CARD_NUMBER)) + "</code>",
+            holder=esc(PAYMENT_CARD_HOLDER),
         )
     rows = [[InlineKeyboardButton(t(lang, "support_btn_admin"), url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")], back]
-    return text, InlineKeyboardMarkup(rows)
+    return title + "\n\n" + features + "\n\n" + pay, InlineKeyboardMarkup(rows)
 
 
 SUPPORT_CHANNEL_LINK = "https://t.me/+P_Uv4zsFGE03NmI6"
@@ -752,8 +782,11 @@ async def _apply_clock(bot, target: dict, at_ts: float, sem: asyncio.Semaphore):
     style = target.get("name_clock_style")
     if not plan_allows(owner_id, target.get("plan"), "name_clock_fonts"):
         style = None  # standart bo'lmagan shriftlar tarifda yo'q — standart shriftga qaytadi
+    tz_name = target.get("name_clock_tz")
+    if not plan_allows(owner_id, target.get("plan"), "name_clock_zones"):
+        tz_name = None  # boshqa vaqt zonalari tarifda yo'q — Toshkent vaqtiga qaytadi
     first, last, key = clock_names_for(
-        target["name_clock_first"], target.get("name_clock_last"), target.get("name_clock_tz"), at_ts, style,
+        target["name_clock_first"], target.get("name_clock_last"), tz_name, at_ts, style,
     )
     if target.get("name_clock_applied") == key or owner_id in _name_clock_inflight:
         return None
@@ -944,6 +977,8 @@ def build_name_clock_menu(owner_id: int, notice: str | None = None):
     enabled = bool(s.get("name_clock_enabled"))
     first, last = s.get("name_clock_first"), s.get("name_clock_last")
     tz = s.get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE
+    if not has_feature(owner_id, "name_clock_zones"):
+        tz = DEFAULT_NAME_CLOCK_ZONE
     fonts_ok = has_feature(owner_id, "name_clock_fonts")
     chosen_style = s.get("name_clock_style") if fonts_ok else None
     if first:
@@ -975,9 +1010,14 @@ def build_name_clock_menu(owner_id: int, notice: str | None = None):
 
 def build_name_clock_zones_menu(owner_id: int):
     lang = get_lang(owner_id)
-    current = db.get_settings(owner_id).get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE
+    zones_ok = has_feature(owner_id, "name_clock_zones")
+    current = (db.get_settings(owner_id).get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE) if zones_ok else DEFAULT_NAME_CLOCK_ZONE
     rows = [
-        [InlineKeyboardButton(("✅ " if tz == current else "") + zone_button_label(key, label, lang), callback_data=f"nc_tz:{key}")]
+        [InlineKeyboardButton(
+            lock_label(("✅ " if tz == current else "") + zone_button_label(key, label, lang),
+                       zones_ok or tz == DEFAULT_NAME_CLOCK_ZONE),
+            callback_data=f"nc_tz:{key}",
+        )]
         for key, label, tz in NAME_CLOCK_ZONES
     ]
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="nc_menu")])
@@ -1021,10 +1061,14 @@ async def handle_name_clock_button(query, context, data: str, owner_id: int):
     elif data.startswith("nc_tz:"):
         key = data.split(":", 1)[1]
         zone = next((tz for k, _, tz in NAME_CLOCK_ZONES if k == key), None)
+        notice = None
         if zone:
-            db.update_settings(owner_id, name_clock_tz=zone, name_clock_applied=None)
-            _apply_now_if_enabled(bot, owner_id)
-        text, markup = build_name_clock_menu(owner_id)
+            if zone != DEFAULT_NAME_CLOCK_ZONE and not has_feature(owner_id, "name_clock_zones"):
+                notice = locked_text(get_lang(owner_id), "name_clock_zones")
+            else:
+                db.update_settings(owner_id, name_clock_tz=zone, name_clock_applied=None)
+                _apply_now_if_enabled(bot, owner_id)
+        text, markup = build_name_clock_menu(owner_id, notice)
     elif data == "nc_style_menu":
         text, markup = build_name_clock_styles_menu(owner_id)
     elif data.startswith("nc_style:"):
