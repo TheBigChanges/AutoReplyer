@@ -439,29 +439,34 @@ T: dict[str, dict] = {
     "ai_menu": _(
         "\U0001F916 AI-Yordamchi\n\n"
         "Holat: {status}\n"
+        "{usage}\n"
         "Rol: {role}\n"
         "Ma'lumot va uslub: {info}\n\n"
         "Yoqilganda, avtojavob ishlaydigan paytda (Oflayn holat yoki uxlash vaqti) odatiy matn o'rniga "
         "sun'iy intellekt suhbatdoshingizga o'zi javob yozadi. Oddiy avtojavob matnlari o'chmaydi — "
-        "AI o'chirilsa yoki xato bo'lsa, ular ishlatiladi.\n"
+        "AI o'chirilsa, kunlik limit tugasa yoki xato bo'lsa, ular ishlatiladi.\n"
         "Chatga o'zingiz yozsangiz, AI shu chatda 2 soat jim turadi.",
         "\U0001F916 AI Assistant\n\n"
         "Status: {status}\n"
+        "{usage}\n"
         "Role: {role}\n"
         "Info and style: {info}\n\n"
         "When on, while auto-reply is active (Offline status or sleep time), artificial intelligence "
         "writes the reply to your contact instead of the usual text. The regular auto-reply texts are kept — "
-        "they are used if AI is turned off or an error occurs.\n"
+        "they are used if AI is turned off, the daily limit runs out or an error occurs.\n"
         "If you write in a chat yourself, the AI stays silent in that chat for 2 hours.",
         "\U0001F916 AI-помощник\n\n"
         "Статус: {status}\n"
+        "{usage}\n"
         "Роль: {role}\n"
         "Информация и стиль: {info}\n\n"
         "Когда включён, в моменты работы автоответа (статус Офлайн или время сна) вместо обычного текста "
         "собеседнику отвечает искусственный интеллект. Обычные тексты автоответа не удаляются — "
-        "они используются, если AI выключен или произошла ошибка.\n"
+        "они используются, если AI выключен, закончился дневной лимит или произошла ошибка.\n"
         "Если вы сами напишете в чат, AI будет молчать в этом чате 2 часа.",
     ),
+    "ai_usage_unlimited": _("Limit: cheklovsiz", "Limit: unlimited", "Лимит: без ограничений"),
+    "ai_usage": _("Bugun: {used}/{limit} ta javob", "Today: {used}/{limit} replies", "Сегодня: {used}/{limit} ответов"),
     "ai_info_empty": _("kiritilmagan", "not set", "не указано"),
     "btn_ai_roles": _("\U0001F3AD Rolni tanlash", "\U0001F3AD Choose role", "\U0001F3AD Выбрать роль"),
     "btn_ai_info": _("\U0001F4DD Ma'lumot va uslub", "\U0001F4DD Info and style", "\U0001F4DD Информация и стиль"),
@@ -742,9 +747,9 @@ T: dict[str, dict] = {
         "Счётчик в BIO — в описании профиля автоматически пишется, сколько дней осталось до Нового года, Навруза или вашего дня рождения",
     ),
     "pf_ai": _(
-        "AI-Yordamchi — mijozlarga sun'iy intellekt o'zi javob yozadi (rolni tanlash mumkin)",
-        "AI Assistant — artificial intelligence writes replies to your customers for you (you can pick a role)",
-        "AI-помощник — искусственный интеллект сам отвечает вашим клиентам (можно выбрать роль)",
+        "AI-Yordamchi — mijozlarga sun'iy intellekt o'zi javob yozadi (kuniga 50 tagacha javob, rolni tanlash mumkin)",
+        "AI Assistant — artificial intelligence writes replies to your customers for you (up to 50 replies per day, you can pick a role)",
+        "AI-помощник — искусственный интеллект сам отвечает вашим клиентам (до 50 ответов в день, можно выбрать роль)",
     ),
     "pf_ads_on": _("Reklama bilan", "With ads", "С рекламой"),
     "pf_ads_off": _("Reklama yo'q", "No ads", "Без рекламы"),
