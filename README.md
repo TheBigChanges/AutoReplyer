@@ -84,7 +84,7 @@ Prices below are **the currently configured public bot prices for one month**, i
 | Profile name clock (standard) | ✅ | ✅ | ✅ | ✅ |
 | Ad-free experience | — | ✅ | ✅ | ✅ |
 | Custom auto-reply and sleep text | — | ✅ | ✅ | ✅ |
-| BIO countdown | — | ✅ | ✅ | ✅ |
+| BIO countdown | — | — | ✅ | ✅ |
 | Gemini AI assistant | — | — | — | ✅ |
 | Extra clock fonts | — | — | — | ✅ |
 | Extra time zones | — | — | ✅ | ✅ |
