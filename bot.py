@@ -539,7 +539,7 @@ DEFAULT_FEATURE_PLANS = {
     "custom_text": ("plus", "pro", "ultra"),  # avtojavob / uxlash matnini o'zgartirish
     "ai": ("ultra",),                   # AI-Yordamchi
     "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
-    "name_clock_zones": ("ultra",),    # ism soatining Toshkentdan boshqa vaqt zonalari
+    "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
 }
 FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
 FEATURE_NAME_KEYS = {
@@ -685,11 +685,13 @@ def build_plans_menu(owner_id: int):
 def plan_features_text(lang: str, plan: str) -> str:
     """Tarifga nimalar kirishi va kirmasligi — oddiy foydalanuvchi tushunadigan ro'yxat.
     Manba — haqiqiy cheklovlar jadvali (FEATURE_PLANS), shuning uchun matn doim amaldagi holatga mos."""
-    full_clock = plan in FEATURE_PLANS.get("name_clock_fonts", ()) and plan in FEATURE_PLANS.get("name_clock_zones", ())
+    fonts_ok = plan in FEATURE_PLANS.get("name_clock_fonts", ())
+    zones_ok = plan in FEATURE_PLANS.get("name_clock_zones", ())
+    clock_key = "pf_clock_full" if fonts_ok and zones_ok else "pf_clock_zones" if zones_ok else "pf_clock_fonts" if fonts_ok else "pf_clock"
     items = (
         (None, "pf_autoreply", {}),
         (None, "pf_sleep", {}),
-        (None, "pf_clock_full" if full_clock else "pf_clock", {}),
+        (None, clock_key, {}),
         ("custom_text", "pf_text", {}),
         ("bio", "pf_bio", {}),
         ("ai", "pf_ai", {}),
