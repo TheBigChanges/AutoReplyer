@@ -731,6 +731,16 @@ T: dict[str, dict] = {
         "Name clock — the current time next to your name (default font, Uzbekistan time only)",
         "Часы в имени — текущее время рядом с вашим именем (стандартный шрифт, только время Узбекистана)",
     ),
+    "pf_clock_zones": _(
+        "Ism soati — ismingiz yonida joriy vaqt (standart shrift, barcha shaharlar vaqti)",
+        "Name clock — the current time next to your name (default font, all city time zones)",
+        "Часы в имени — текущее время рядом с вашим именем (стандартный шрифт, время всех городов)",
+    ),
+    "pf_clock_fonts": _(
+        "Ism soati — ismingiz yonida joriy vaqt (barcha shriftlar, faqat O'zbekiston vaqti)",
+        "Name clock — the current time next to your name (all fonts, Uzbekistan time only)",
+        "Часы в имени — текущее время рядом с вашим именем (все шрифты, только время Узбекистана)",
+    ),
     "pf_clock_full": _(
         "Ism soati — ismingiz yonida joriy vaqt har daqiqada yangilanib turadi",
         "Name clock — the current time next to your name, updated every minute",
