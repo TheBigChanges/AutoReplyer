@@ -1,161 +1,137 @@
 <div align="center">
 
-# AutoReplyer 🤖
+# 🤖 AutoReplyer
 
-**Smart Telegram Business automation — even when you're offline.**
+### Your Telegram Business assistant — replies, automation, and a live profile clock.
 
-Automate personal-chat replies, let an AI assistant handle conversations, schedule Sleep Mode, refresh your BIO countdown, and manage broadcasts with persistent PostgreSQL storage.
+**Built with Python · Telegram Business · PostgreSQL · Google Gemini**
 
-[Repository](https://github.com/TheBigChanges/AutoReplyer) · [Report a bug](https://github.com/TheBigChanges/AutoReplyer/issues) · [Request a feature](https://github.com/TheBigChanges/AutoReplyer/issues)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Telegram](https://img.shields.io/badge/Telegram-Try%20the%20bot-26A5E4?logo=telegram&logoColor=white)](https://t.me/autoreplyer_dbot)
+[![News](https://img.shields.io/badge/Telegram-Updates-26A5E4?logo=telegram&logoColor=white)](https://t.me/AutoReplyer_News)
+[![GitHub issues](https://img.shields.io/github/issues/TheBigChanges/AutoReplyer)](https://github.com/TheBigChanges/AutoReplyer/issues)
+
+[**🚀 Open Bot**](https://t.me/autoreplyer_dbot) · [**📢 News & Updates**](https://t.me/AutoReplyer_News) · [**🐛 Report a Bug**](https://github.com/TheBigChanges/AutoReplyer/issues) · [**💡 Request a Feature**](https://github.com/TheBigChanges/AutoReplyer/issues)
+
+**Languages:** 🇺🇿 Uzbek · 🇬🇧 English · 🇷🇺 Russian
 
 </div>
 
 ---
 
-## 📌 Overview
+## ✨ What is AutoReplyer?
 
-**AutoReplyer** is a Telegram bot that connects to a user's **Telegram Business account** through Telegram's official Business chatbot connection flow. It can reply while the owner is offline, use a configurable AI assistant, switch to a separate sleep message during chosen hours, and provide account-management tools.
+**AutoReplyer** is a Telegram Business automation bot that helps account owners stay responsive when they are away. Connect it through Telegram's official Business bot interface, configure replies and schedules, and optionally enable Gemini-powered AI responses.
 
-The project is built with **Python, `python-telegram-bot`, PostgreSQL, asyncio, and the Google Gemini API**.
+It also supports a clock in your Telegram profile name, BIO countdowns, user plans, and operational tools for the bot administrator.
 
-> **Important:** AutoReplyer does not need your Telegram login code or account password. Connect it through Telegram's own **Settings → Telegram Business → Chatbots / Chat Automation** flow and grant only the permissions you want it to use.
+> **Important:** This project uses Telegram's **official Business bot connection**. It is **not** a userbot and does **not** require your Telegram password, login code, or session file. Telegram Business access and available permissions depend on Telegram's current account/client requirements.
 
-## ✨ Features
+## 📑 Contents
 
-### 💬 Telegram Business auto-replies
+- [Features](#-features)
+- [Plans & pricing](#-plans--pricing)
+- [Getting started as a user](#-getting-started-as-a-user)
+- [Run your own instance](#-run-your-own-instance)
+- [Environment configuration](#-environment-configuration)
+- [Deployment on Render](#-deployment-on-render)
+- [Architecture & data](#-architecture--data)
+- [Bot commands](#-bot-commands)
+- [Testing](#-testing)
+- [Privacy, security & limitations](#-privacy-security--limitations)
+- [Contributing & support](#-contributing--support)
+- [License](#-license)
 
-- Reply to incoming private Business messages while the owner is offline.
-- Customize the standard offline reply.
-- Enable or disable auto-replies from the bot's control panel.
-- Configure a per-chat cooldown to avoid repetitive messages.
-- Use atomic PostgreSQL reply claims to prevent concurrent messages from bypassing cooldown checks.
-- Keep existing static auto-replies available when AI replies are disabled, unavailable, or over quota.
+## 🚀 Features
 
-### 🧠 AI-Yordamchi (Gemini-powered assistant)
-
-Enable an AI assistant to generate natural replies on the owner's behalf.
-
-- Powered by the Google Gemini API.
-- Supports configurable owner information and style notes.
-- Includes selectable conversation styles:
-  - **Personal assistant**
-  - **Sales manager**
-  - **Customer support**
-  - **Friendly conversation**
-  - **Developer representative**
-  - **Formal business**
-- Uses recent conversation history to maintain context.
-- Pauses AI replies in a chat after the owner takes over, so the bot is less likely to interrupt a live conversation.
-- Falls back to the normal auto-reply when AI is disabled, not configured, over quota, or unable to generate a reply.
-- Limits ordinary users to **10 AI replies per day**. The configured administrator has unlimited AI replies.
-- Uses a PostgreSQL-backed quota counter designed for atomic updates.
-
-AI-generated messages are not guaranteed to be correct. Review important replies and configure the assistant's owner information carefully.
-
-### 😴 Sleep Mode
-
-Set a separate reply for your sleeping hours, for example:
-
-```text
-23:00–07:00
-```
-
-- Configure the start and end time.
-- Set a custom sleep message.
-- Enable or disable Sleep Mode.
-- Supports schedules that cross midnight.
-- Uses the `Asia/Tashkent` timezone.
-- Applies the configured cooldown behavior to sleep replies.
-
-### ⏱️ Smart cooldown
-
-Prevent the same chat from receiving repeated standard replies too frequently.
-
-Examples of accepted cooldown input include:
-
-```text
-1
-0.5
-1.5
-2
-1:30
-```
-
-The minimum allowed cooldown is **1 minute**. Invalid, negative, zero, or non-finite values are rejected. Database-level atomic claims help protect the cooldown when multiple updates arrive close together.
-
-### 🕐 BIO countdown
-
-Automatically update a connected Business account's BIO with a countdown to:
-
-- 🎆 New Year
-- 🌱 Navruz
-- 🎂 The owner's birthday
-
-BIO updates use **Tashkent local time**. A scheduled refresh runs daily at **00:05**, and a startup check updates records that are stale for the current day. BIO editing must be enabled for the connected Business account.
-
-### 👥 Referral tracking
-
-- Generate a personal referral link.
-- Record who invited a new user.
-- Prevent self-referrals and duplicate referral assignments.
-- Store referral data in PostgreSQL.
-- Provide referral statistics to the configured administrator.
-
-### 📢 Admin broadcasts
-
-Administrator tools support sending broadcast content to eligible users.
-
-- Track broadcast progress and failed deliveries.
-- Retry failed recipients.
-- Persist jobs and progress in PostgreSQL.
-- Resume unfinished broadcasts after a restart.
-- Handle Telegram rate limits (`RetryAfter`) and users who can no longer be reached.
-- Prevent multiple broadcast jobs from running at the same time.
-
-**Delivery note:** persistent progress and retries improve reliability, but strict exactly-once delivery is not guaranteed. If the process crashes after Telegram accepts a message but before progress is saved, a recipient could receive that message again after a resume.
-
-### 🛠️ User and admin tools
-
-Depending on the configured permissions and enabled features, the bot also includes:
-
-- `/start` and `/help`
-- Admin statistics and broadcast controls
-- User blocking and unblocking tools
-- User lookup/listing and appeal/feedback handling
-- A support section for questions and suggestions
-- Optional force-subscription checks for a configured channel
-
-## 🧱 Tech stack
-
-| Component | Technology |
+| Feature | Description |
 |---|---|
-| Language | Python 3.10+ |
-| Telegram integration | `python-telegram-bot` |
-| Persistent database | PostgreSQL |
-| Async operations | `asyncio` |
-| AI replies | Google Gemini API via `httpx` |
-| Configuration | Environment variables / `.env` |
-| Deployment target | Render or another Python host |
+| 📨 **Offline replies** | Automatically reply to incoming private Business messages when offline mode is enabled. |
+| 🌙 **Sleep Mode** | Send a separate reply during configured sleeping hours, including overnight schedules. |
+| ⏳ **Cooldown** | Avoid repeatedly responding to the same chat; persistent, atomic reply claims help with concurrency. |
+| 🤖 **Gemini AI assistant** | Generate contextual replies with role presets and owner-provided instructions; falls back to a static reply on failure. |
+| 🕒 **Profile name clock** | Show local time in a connected account's name, with selectable styles and time zones (plan-dependent). |
+| 🎂 **BIO countdown** | Show a countdown to New Year, Navruz, or a birthday in the Telegram Business BIO (requires editing permission). |
+| 🌍 **3 interface languages** | Uzbek, English, and Russian. AI aims to answer in the sender's language. |
+| 👥 **Referrals** | Generate referral links and track invitations. |
+| 💎 **Subscription plans** | Free, Plus, Pro, and Ultra tiers with feature access restrictions and expiry handling. |
+| 📢 **Admin broadcasts** | Persistent broadcast jobs, progress tracking, retry of failed deliveries, and resume after restart. |
+| 🛡️ **Moderation & support** | Admin user controls, feedback, appeals, and optional required-channel subscription checks. |
 
-## ⚡ Quick Start
+### AI assistant roles
 
-### 1. Clone the repository
+The Gemini assistant can be configured as a **personal assistant**, **sales representative**, **customer-support assistant**, **friendly responder**, **developer representative**, or **formal business assistant**. It uses limited conversation history for context and pauses after the account owner intervenes in a chat.
+
+AI-generated replies can be wrong. Never rely on them to commit to prices, appointments, transactions, or other important decisions without human review. Messages processed by the AI are sent to Google Gemini.
+
+### Business automation details
+
+- Static replies and Sleep Mode work without a Gemini API key.
+- AI is an **Ultra** feature in the current plan configuration.
+- Ordinary static replies support per-chat cooldowns; AI replies use a separate reply flow.
+- The name clock updates periodically, subject to Telegram Business permissions and API rate limits.
+- Free-tier accounts may see a promotional footer in auto-replies and a promotional BIO message when using the profile clock. Paid plans are configured as ad-free.
+
+## 💎 Plans & pricing
+
+Prices below are **the currently configured public bot prices for one month**, in Uzbek soʻm (UZS). They are defined in [`bot.py`](bot.py), so the live bot is the final reference if prices change.
+
+| Included feature | 🆓 Free | ⏰ Plus | ✨ Pro | ⭐ Ultra |
+|---|:---:|:---:|:---:|:---:|
+| **Monthly price** | **0 UZS** | **2,000 UZS** | **5,000 UZS** | **10,000 UZS** |
+| Offline auto-replies | ✅ | ✅ | ✅ | ✅ |
+| Sleep Mode | ✅ | ✅ | ✅ | ✅ |
+| Profile name clock (standard) | ✅ | ✅ | ✅ | ✅ |
+| Ad-free experience | — | ✅ | ✅ | ✅ |
+| Custom auto-reply and sleep text | — | — | ✅ | ✅ |
+| BIO countdown | — | — | ✅ | ✅ |
+| Gemini AI assistant | — | — | — | ✅ |
+| Extra clock fonts | — | — | — | ✅ |
+| Extra time zones | — | — | — | ✅ |
+
+**Payment flow:** The bot displays payment details configured by the operator. Users submit proof of payment to the administrator, who activates the selected plan. Plan durations and expiration are handled by the bot; this is **manual verification**, not an automated payment gateway. Payment options for international users may vary.
+
+> Plan access does not remove Telegram platform restrictions, Business permission requirements, or external Gemini API rate limits. Prices are not automatically converted into other currencies.
+
+## 📱 Getting started as a user
+
+1. Open **[@autoreplyer_dbot](https://t.me/autoreplyer_dbot)** and send `/start`.
+2. Select your preferred language and review the control panel.
+3. In Telegram, open **Settings → Telegram Business → Chatbots** (menu labels may vary by client).
+4. Connect **@autoreplyer_dbot**, choose the chats it may access, and grant the permissions needed for the features you want (for example, replying to messages).
+5. Enable **offline auto-replies**, configure **Sleep Mode**, or choose the **profile clock** from the bot's panel.
+6. Visit **Plans** to see available upgrades and feature restrictions.
+
+For feature announcements, visit **[@AutoReplyer_News](https://t.me/AutoReplyer_News)**.
+
+## 🛠️ Run your own instance
+
+### Prerequisites
+
+- **Python 3.10+** (the project uses modern typing syntax).
+- A Telegram bot token from [@BotFather](https://t.me/BotFather).
+- A reachable **PostgreSQL** database (for example, Supabase).
+- A Telegram user ID to configure as the administrator.
+- An optional [Google AI Studio](https://aistudio.google.com/) API key for AI replies.
+- A host that can run a long-lived Python process for polling; Render is one option.
+
+### 1. Clone
 
 ```bash
 git clone https://github.com/TheBigChanges/AutoReplyer.git
 cd AutoReplyer
 ```
 
-### 2. Create and activate a virtual environment
+### 2. Create a virtual environment
 
-**Linux / macOS**
+**Linux / macOS:**
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-**Windows PowerShell**
+**Windows PowerShell:**
 
 ```powershell
 py -m venv .venv
@@ -166,34 +142,49 @@ py -m venv .venv
 
 ```bash
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-### 4. Configure environment variables
+### 4. Configure the environment
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root (it is gitignored):
 
-```env
+```dotenv
 # Required
-BOT_TOKEN=your_telegram_bot_token
-DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE
-ADMIN_ID=your_telegram_user_id
+BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME
+ADMIN_ID=YOUR_NUMERIC_TELEGRAM_USER_ID
 
-# Optional: set BOTH values to enable force-subscription
+# Recommended
+BOT_USERNAME=your_bot_username_without_at
+
+# Gemini (optional; only needed for AI)
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.1-flash-lite
+
+# Optional Telegram channel membership gate: set both or neither
 REQUIRED_CHANNEL_ID=
 REQUIRED_CHANNEL_LINK=
 
-# Optional: needed only for AI-Yordamchi
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
+# Manual payment information shown by the bot (optional)
+PAYMENT_CARD_NUMBER=
+PAYMENT_CARD_HOLDER=
 
-# Optional: used to build the bot's referral link
-BOT_USERNAME=your_bot_username
+# Optional: set to 0 to restrict public use of the name clock
+NAME_CLOCK_PUBLIC=1
+
+# Health-check HTTP port (hosting provider typically sets this)
+PORT=10000
 ```
 
-Replace the example values with your own. Use a PostgreSQL database that the application can reach. If force-subscription is not needed, leave both `REQUIRED_CHANNEL_ID` and `REQUIRED_CHANNEL_LINK` empty.
+**Notes:**
 
-**Never commit `.env`, bot tokens, database credentials, or API keys to Git.**
+- `GEMINI_MODEL=gemini-3.1-flash-lite` is an **example of the model used by the hosted project**; use a model actually enabled for your own Gemini API project. If `GEMINI_MODEL` is omitted, the current source code defaults to `gemini-2.5-flash`.
+- `ADMIN_ID` should be a numeric Telegram user ID, not a username. Without a correctly set admin ID, privileged commands will not work as intended.
+- Use a valid Supabase PostgreSQL connection string if you use Supabase. Follow your provider's SSL and pooling guidance; do not publish the URL.
+- Set **both** required-channel variables to turn on the membership gate. Your bot needs suitable channel permissions to check membership.
+- Do **not** publish payment card details in your repository. Set them in the hosting environment. Payment activation is handled by the bot operator.
+- This repository is configured for the public **@autoreplyer_dbot** instance. If you run an independent fork, review hard-coded support links/usernames in `bot.py` and substitute your own.
 
 ### 5. Start the bot
 
@@ -201,168 +192,172 @@ Replace the example values with your own. Use a PostgreSQL database that the app
 python bot.py
 ```
 
-On startup, the application initializes its database structures, starts Telegram polling and scheduled jobs, checks for stale BIO updates, and starts its health-check server.
+On startup, the bot initializes PostgreSQL tables, starts polling, schedules recurring jobs, and serves a basic HTTP health endpoint on `PORT`.
 
-### 6. Connect your Telegram Business account
+> **Do not run multiple polling instances using the same bot token.** Stop the production instance before testing that token locally, or use a separate development bot token and database.
 
-1. Open Telegram **Settings**.
-2. Open **Telegram Business**.
-3. Choose **Chatbots** or **Chat Automation** (the wording can vary by Telegram client).
-4. Find and select your bot by its username.
-5. Choose which chats it may access.
-6. Enable the permission to **reply to messages**.
-7. Return to the bot and send `/start` to open its control panel.
+## ⚙️ Environment configuration
 
-Only grant the access and permissions you intend to use. Availability of Telegram Business features may depend on your Telegram account and client.
-
-## ⚙️ Configuration
-
-### Environment variables
-
-| Variable | Required? | Purpose |
+| Variable | Purpose | Required? |
 |---|---|---|
-| `BOT_TOKEN` | Yes | Token from BotFather |
-| `DATABASE_URL` | Yes | PostgreSQL connection URL |
-| `ADMIN_ID` | Yes | Telegram user ID allowed to use admin tools |
-| `REQUIRED_CHANNEL_ID` | Optional | Channel ID or username for force-subscription |
-| `REQUIRED_CHANNEL_LINK` | Optional | Invite/public link for the required channel |
-| `GEMINI_API_KEY` | AI only | Google Gemini API key |
-| `GEMINI_MODEL` | Optional | Gemini model name; defaults to `gemini-2.5-flash` |
-| `BOT_USERNAME` | Optional | Bot username used to create referral links |
-| `PORT` | Host-dependent | Port used by the health-check server when supplied by the host |
+| `BOT_TOKEN` | Telegram Bot API token | **Yes** |
+| `DATABASE_URL` | PostgreSQL connection string | **Yes** |
+| `ADMIN_ID` | Numeric admin Telegram ID | Strongly recommended |
+| `BOT_USERNAME` | Bot username used for referral links | Recommended |
+| `GEMINI_API_KEY` | Gemini API key | AI features only |
+| `GEMINI_MODEL` | Gemini model ID; code default `gemini-2.5-flash` | Optional |
+| `REQUIRED_CHANNEL_ID` | Channel ID/username for membership gate | Optional, paired |
+| `REQUIRED_CHANNEL_LINK` | Public/invite link for membership gate | Optional, paired |
+| `PAYMENT_CARD_NUMBER` | Operator's manual payment card | Optional |
+| `PAYMENT_CARD_HOLDER` | Displayed payment recipient | Optional |
+| `NAME_CLOCK_PUBLIC` | `0` restricts name clock to admin | Optional |
+| `PORT` | HTTP health server port, default `10000` | Host-dependent |
 
-For force-subscription to be enabled, configure **both** `REQUIRED_CHANNEL_ID` and `REQUIRED_CHANNEL_LINK`. If either value is missing, the check is disabled.
+Secrets belong in your local `.env` file or your provider's **environment variables**, never in committed files.
 
-### PostgreSQL
+## ☁️ Deployment on Render
 
-AutoReplyer stores persistent application data in PostgreSQL, including user records, Business connections, settings, cooldown/reply-claim state, BIO refresh dates, referrals, broadcast jobs, and AI-related state.
+The current entrypoint runs **Telegram long polling** and starts a lightweight HTTP health server in a separate thread.
 
-The application initializes its required database structures during startup. Keep the database URL private and use a database with persistent storage for production deployments.
+1. Create a new Render service linked to your GitHub repository.
+2. Configure the runtime for Python and install dependencies with:
 
-### AI-Yordamchi setup
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-1. Create or obtain a Gemini API key from Google AI Studio.
-2. Set `GEMINI_API_KEY` in your local `.env` file or hosting provider's environment settings.
-3. Optionally set `GEMINI_MODEL`; the default is `gemini-2.5-flash`.
-4. Restart the application and enable **AI-Yordamchi** in the bot's panel.
-5. Select a role and provide useful, non-sensitive owner information or style notes.
+3. Use this start command:
 
-For ordinary users, the AI quota is **10 replies per day**. The configured administrator is exempt from that quota. When AI cannot answer or the quota is exhausted, the bot can use the normal static auto-reply instead.
+   ```bash
+   python bot.py
+   ```
 
-## 🔐 AI data and privacy
+4. Add `BOT_TOKEN`, `DATABASE_URL`, `ADMIN_ID` and any optional variables in **Environment**.
+5. Use a persistent external PostgreSQL database such as Supabase.
+6. If running as a web service, let Render provide `PORT` and configure a health check at `/` as applicable.
+7. Review logs after deployment. Keep **one polling replica** for a given bot token.
 
-When AI-Yordamchi is enabled:
+> A successful HTTP health response only means the local health server is responding; it does **not** guarantee Telegram polling, Gemini, or PostgreSQL is currently healthy. Use application logs and provider monitoring for those components.
 
-- The incoming message text and relevant conversation history are sent to Google's Gemini API to generate a reply.
-- AI conversation history and usage information are stored in the configured PostgreSQL database.
-- Do not put passwords, authentication codes, payment details, or other sensitive information into the assistant's owner notes.
-- Anyone deploying this project should clearly disclose AI processing and data handling to users, review Google's applicable terms and privacy documentation, and set a suitable data-retention policy.
-- AI output can be mistaken or incomplete; important or business-critical replies should be checked by the account owner.
+## 🧱 Architecture & data
 
-AutoReplyer is not a substitute for reviewing the permissions of a connected Telegram Business account.
+```text
+Telegram users / Business messages
+                │
+                ▼
+        python-telegram-bot
+                │
+       ┌────────┴─────────┐
+       │                  │
+       ▼                  ▼
+    bot.py              ai.py ──► Google Gemini API
+  handlers/jobs      optional AI replies
+       │
+       ├── logic.py  (pure business logic)
+       ├── i18n.py   (Uzbek / English / Russian)
+       │
+       ▼
+     db.py ───────────────► PostgreSQL / Supabase
+       │                      settings, plans, connections,
+       │                      broadcasts, conversation history
+       ▼
+  Render / Python host
+```
 
-## 🧪 Tests
+| File | Responsibility |
+|---|---|
+| [`bot.py`](bot.py) | Telegram handlers, Business updates, interface, plans, scheduling, broadcasts, name clock, and health server |
+| [`db.py`](db.py) | PostgreSQL access, schema initialization, stored settings, plans, and job persistence |
+| [`ai.py`](ai.py) | Gemini requests, AI prompts, role presets, and response extraction |
+| [`logic.py`](logic.py) | Cooldown parsing, time/date handling, countdowns, and name formatting |
+| [`i18n.py`](i18n.py) | User-facing strings in three languages |
+| [`tests/`](tests/) | Unit and behavior tests for key features |
+| [`requirements.txt`](requirements.txt) | Python runtime dependencies |
 
-The repository includes unit and flow tests for core behavior, including cooldown validation, Sleep Mode, BIO countdowns and timezone handling, reply flows, broadcast behavior, callbacks, AI prompt construction, AI generation errors, AI reply quotas, fallback behavior, and owner-takeover pauses.
+**Operational notes:**
 
-Install the test runner if it is not already available:
+- PostgreSQL keeps account settings and jobs across Render restarts.
+- Broadcasts persist progress, have a one-active-job database constraint, support recovery and retry, and handle Telegram rate limits.
+- Exactly-once broadcast delivery is **not guaranteed**: an interruption between Telegram accepting a message and database progress being saved can produce a duplicate.
+- Bot-level feature restrictions and subscription status are enforced in application logic; third-party services still enforce their own limits.
+- The built-in health endpoint answers `GET /` with `OK`.
+
+## ⌨️ Bot commands
+
+Regular users use the **inline control panel** reached through `/start`.
+
+| Command | Who | What it does |
+|---|---|---|
+| `/start` | Everyone | Open the bot and its menu |
+| `/help` | Everyone | Help and available commands |
+| `/stats` | Admin | Summary statistics |
+| `/setplan` | Admin | Assign a user plan, optionally with an expiry |
+| `/reklama` | Admin | Prepare a broadcast for confirmation |
+| `/reklama_status` | Admin | View latest broadcast progress |
+| `/reklama_retry` | Admin | Resume or retry a broadcast where applicable |
+| `/users` | Admin | List users |
+| `/bots` | Admin | Bot-like user checks/tools |
+| `/block`, `/unblock`, `/blocked` | Admin | User moderation tools |
+| `/cancel` | Admin / applicable flows | Cancel an in-progress action |
+
+Example admin command:
+
+```text
+/setplan 123456789 ultra 1oy
+```
+
+This assigns a time-limited plan to the specified user ID; use the bot's help text for accepted user identifiers and duration formats. Administrator commands are checked against `ADMIN_ID`.
+
+## 🧪 Testing
+
+The repository includes tests for AI, cooldown and reply flows, admin broadcasting, Business-account state, the profile clock, BIO countdowns, permissions, and related utilities.
 
 ```bash
 python -m pip install pytest
+python -m pytest -q
 ```
 
-Run all tests from the repository root:
+For verbose output:
 
 ```bash
-pytest -q
+python -m pytest -v
 ```
 
-For more detailed output:
+Some tests use mocks; any database integration testing should use a **separate test database**. Never point destructive test fixtures at production Supabase data. The existence of tests does not imply that every deployment environment has been tested.
 
-```bash
-pytest -v
-```
+## 🔐 Privacy, security & limitations
 
-Tests that require a real PostgreSQL database may need a test database configured separately. Do not point integration tests at production data.
+- **Official permissions only:** use the Telegram Business connection flow. The bot should never request Telegram passwords or authentication codes.
+- **AI message processing:** incoming text and relevant chat context may be sent to Google's Gemini API when AI replies are enabled. Ensure users understand this data flow.
+- **Stored data:** PostgreSQL stores settings, Business connections, history for applicable AI features, referral and broadcast data, and related metadata. Check retention and deletion behavior in [`db.py`](db.py) before deployment.
+- **Secrets:** never commit `.env`, API keys, database URLs, Telegram tokens, or customer information. Rotate any exposed secrets immediately.
+- **AI limitations:** the model may be inaccurate, unavailable, or rate-limited. Static reply fallback is available, but delivery is not guaranteed under every failure mode.
+- **Telegram restrictions:** Business rights, flood limits, profile editing privileges, and availability of features are controlled by Telegram.
+- **Commercial use:** payment verification in the current code is manual; the repository does not provide a full automated billing provider integration.
+- **Responsible broadcasting:** only message users who have opted to interact with the bot and comply with Telegram policies and local messaging rules.
 
-## 🚀 Deployment
+## 🤝 Contributing & support
 
-AutoReplyer can be deployed to **Render** or a compatible Python hosting service.
+Feedback, bug reports, and suggestions are welcome. For code changes:
 
-Typical setup:
+1. Open an [issue](https://github.com/TheBigChanges/AutoReplyer/issues) explaining the bug or proposed feature.
+2. Make your change on a separate branch or fork.
+3. Update or add tests where relevant.
+4. Run `python -m pytest -q` and describe testing performed in your pull request.
+5. Do not include private Telegram chats, credentials, or production database exports.
 
-1. Create a persistent PostgreSQL database.
-2. Deploy the repository as a Python service.
-3. Install dependencies from `requirements.txt`.
-4. Add the required environment variables in the host's dashboard.
-5. Set a health-check path if your hosting provider requires one.
-6. Check service logs for startup and database errors.
-
-```text
-Hosting provider
-├── AutoReplyer Python service
-└── PostgreSQL database
-```
-
-For production, use persistent PostgreSQL rather than relying on a local SQLite file or other ephemeral filesystem storage. Never place secrets directly in source code.
-
-## 🗂️ Project structure
-
-```text
-AutoReplyer/
-├── ai.py                 # Gemini integration and prompt construction
-├── bot.py                # Telegram handlers, panels, scheduling and flows
-├── db.py                 # PostgreSQL persistence and database operations
-├── logic.py              # Reusable validation and business logic
-├── requirements.txt      # Runtime dependencies
-├── README.md
-└── tests/                # Unit and flow tests
-```
-
-The exact contents of `tests/` may evolve as features are added.
-
-## 🛡️ Reliability and security
-
-- PostgreSQL-backed state helps preserve settings and jobs across application restarts.
-- Atomic database operations protect key concurrent workflows such as cooldown claims and AI quota usage.
-- Admin commands are restricted to the configured administrator ID.
-- Environment variables are used for credentials and deployment configuration.
-- The HTTP client logging level is reduced to help avoid leaking token-bearing Telegram URLs into logs.
-- Broadcast progress is persisted, although rare crash timing can still result in duplicate delivery.
-
-Before deploying, verify that `.env`, virtual environments, local databases, caches, and credentials are excluded from version control. Rotate any credential that has accidentally been published.
-
-## 🗺️ Roadmap
-
-Ideas for future improvements include:
-
-- Automated CI test runs
-- More integration tests against PostgreSQL
-- Improved operational monitoring and diagnostics
-- More detailed broadcast analytics
-- Additional Telegram Business automation features
-
-These are possible future improvements, not promises of a particular release date.
-
-## 🤝 Contributing
-
-Bug reports, suggestions, and pull requests are welcome.
-
-Before submitting a change:
-
-1. Explain the problem or proposed improvement.
-2. Keep secrets and personal data out of commits and test fixtures.
-3. Add or update tests for changed behavior.
-4. Run `pytest -q` and report any failures.
+For user help or release notes, follow [@AutoReplyer_News](https://t.me/AutoReplyer_News) or open [@autoreplyer_dbot](https://t.me/autoreplyer_dbot).
 
 ## 📄 License
 
-Please check the repository for a `LICENSE` file and its terms before redistributing or using this project in ways that require a license grant.
+**No `LICENSE` file was present in the repository when this README was prepared.** Public visibility on GitHub does **not** automatically grant an open-source license. Unless the repository owner adds a license, reuse and redistribution remain subject to applicable copyright law. Contributors should request permission where needed.
 
 ---
 
 <div align="center">
 
-**AutoReplyer — reliable Telegram Business automation, with AI when you need it.**
+### 💙 AutoReplyer — stay responsive, even when you're away.
+
+[**Start on Telegram**](https://t.me/autoreplyer_dbot) · [**Follow Updates**](https://t.me/AutoReplyer_News) · [**View Source**](https://github.com/TheBigChanges/AutoReplyer)
 
 </div>
