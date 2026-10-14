@@ -83,11 +83,11 @@ Prices below are **the currently configured public bot prices for one month**, i
 | Sleep Mode | ✅ | ✅ | ✅ | ✅ |
 | Profile name clock (standard) | ✅ | ✅ | ✅ | ✅ |
 | Ad-free experience | — | ✅ | ✅ | ✅ |
-| Custom auto-reply and sleep text | — | — | ✅ | ✅ |
-| BIO countdown | — | — | ✅ | ✅ |
+| Custom auto-reply and sleep text | — | ✅ | ✅ | ✅ |
+| BIO countdown | — | ✅ | ✅ | ✅ |
 | Gemini AI assistant | — | — | — | ✅ |
 | Extra clock fonts | — | — | — | ✅ |
-| Extra time zones | — | — | — | ✅ |
+| Extra time zones | — | — | ✅ | ✅ |
 
 **Payment flow:** The bot displays payment details configured by the operator. Users submit proof of payment to the administrator, who activates the selected plan. Plan durations and expiration are handled by the bot; this is **manual verification**, not an automated payment gateway. Payment options for international users may vary.
 
