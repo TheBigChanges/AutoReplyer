@@ -535,7 +535,7 @@ def format_card_number(raw: str) -> str:
 # Qaysi funksiya qaysi tariflarda ochiq. Admin (ADMIN_ID) hamma narsadan cheklovsiz foydalanadi.
 # Bo'sh ro'yxat — hech bir tarifda ochiq emas (faqat admin).
 DEFAULT_FEATURE_PLANS = {
-    "bio": ("plus", "pro", "ultra"),    # BIO hisoblagich
+    "bio": ("pro", "ultra"),            # BIO hisoblagich
     "custom_text": ("plus", "pro", "ultra"),  # avtojavob / uxlash matnini o'zgartirish
     "ai": ("ultra",),                   # AI-Yordamchi
     "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
