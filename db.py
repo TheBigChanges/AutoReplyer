@@ -57,6 +57,7 @@ ALLOWED_SETTINGS_FIELDS = {
     "name_clock_last",
     "name_clock_applied",
     "clock_bio_ad",
+    "faq_enabled",
     "name_clock_style",
 }
 
@@ -198,6 +199,21 @@ def init_db():
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_last TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_applied TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS clock_bio_ad BOOLEAN NOT NULL DEFAULT FALSE")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS faq_enabled BOOLEAN NOT NULL DEFAULT TRUE")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS faq_entries (
+                id BIGSERIAL PRIMARY KEY,
+                owner_user_id BIGINT NOT NULL,
+                question TEXT NOT NULL,
+                keywords TEXT[] NOT NULL DEFAULT '{}',
+                answer TEXT NOT NULL,
+                is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_faq_owner ON faq_entries(owner_user_id)")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_style TEXT")
         cur.execute(
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_month INTEGER"
@@ -975,6 +991,75 @@ def get_all_bio_targets():
         return [dict(r) for r in cur.fetchall()]
 
 
+# --------------------------------------------------------------------------
+# Smart FAQ (har bir egasining savol-javoblari alohida; hamma so'rov owner_user_id bilan cheklangan)
+# --------------------------------------------------------------------------
+_FAQ_COLS = "id, owner_user_id, question, keywords, answer, is_enabled"
+
+
+def add_faq_entry(owner_user_id: int, question: str, keywords: list[str], answer: str, max_entries: int) -> int | None:
+    """Yangi yozuv qo'shadi va id qaytaradi; limit to'lgan bo'lsa — None (limit tekshiruvi atomik, bitta SQL)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO faq_entries (owner_user_id, question, keywords, answer)
+            SELECT %s, %s, %s, %s
+            WHERE (SELECT COUNT(*) FROM faq_entries WHERE owner_user_id = %s) < %s
+            RETURNING id
+            """,
+            (owner_user_id, question, keywords, answer, owner_user_id, max_entries),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def list_faq_entries(owner_user_id: int) -> list[dict]:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"SELECT {_FAQ_COLS} FROM faq_entries WHERE owner_user_id = %s ORDER BY id", (owner_user_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_enabled_faq_entries(owner_user_id: int) -> list[dict]:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"SELECT {_FAQ_COLS} FROM faq_entries WHERE owner_user_id = %s AND is_enabled = TRUE ORDER BY id",
+            (owner_user_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_faq_entry(owner_user_id: int, entry_id: int) -> dict | None:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"SELECT {_FAQ_COLS} FROM faq_entries WHERE owner_user_id = %s AND id = %s", (owner_user_id, entry_id)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def count_faq_entries(owner_user_id: int) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM faq_entries WHERE owner_user_id = %s", (owner_user_id,))
+        return cur.fetchone()[0]
+
+
+def delete_faq_entry(owner_user_id: int, entry_id: int) -> bool:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM faq_entries WHERE owner_user_id = %s AND id = %s", (owner_user_id, entry_id))
+        return cur.rowcount > 0
+
+
+def toggle_faq_entry(owner_user_id: int, entry_id: int) -> bool | None:
+    """Yozuvni yoqadi/o'chiradi; yangi holatni qaytaradi (yozuv topilmasa — None)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE faq_entries SET is_enabled = NOT is_enabled WHERE owner_user_id = %s AND id = %s RETURNING is_enabled",
+            (owner_user_id, entry_id),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
 def get_bio_ad_candidates():
     """Ism soati yoqilgan YOKI BIO'ga reklama yozib qo'yilgan (olib tashlash kerak bo'lishi mumkin) egalar."""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1278,7 +1363,7 @@ def retry_on_disconnect(fn):
 for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info",
-    "get_all_bio_targets", "get_user", "get_bio_ad_candidates",
+    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_enabled_faq_entries", "list_faq_entries", "get_faq_entry", "count_faq_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
