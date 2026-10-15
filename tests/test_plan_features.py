@@ -51,6 +51,8 @@ class TableTests(Base):
         self.assertEqual(bot.DEFAULT_FEATURE_PLANS["ai"], ("ultra",))
         self.assertEqual(bot.DEFAULT_FEATURE_PLANS["name_clock_fonts"], ("ultra",))
         self.assertEqual(bot.DEFAULT_FEATURE_PLANS["name_clock_zones"], ("pro", "ultra"))
+        self.assertEqual(bot.DEFAULT_FEATURE_PLANS["faq"], ("plus", "pro", "ultra"))
+        self.assertEqual(bot.FAQ_PLAN_LIMITS, {"plus": 15, "pro": 30, "ultra": 65})
 
     def test_matrix(self):
         expect = {
@@ -59,6 +61,7 @@ class TableTests(Base):
             "ai": {"free": False, "plus": False, "pro": False, "ultra": True},
             "name_clock_fonts": {"free": False, "plus": False, "pro": False, "ultra": True},
             "name_clock_zones": {"free": False, "plus": False, "pro": True, "ultra": True},
+            "faq": {"free": False, "plus": True, "pro": True, "ultra": True},
         }
         for feature, row in expect.items():
             for plan, allowed in row.items():
@@ -184,7 +187,7 @@ class ButtonGateTests(Base):
 
 class PanelLockMarkTests(Base):
     def test_panel_marks_locked_buttons(self):
-        for plan, locked in (("free", {"edit_text", "bio_menu", "ai_menu"}), ("pro", {"ai_menu"}), ("ultra", set())):
+        for plan, locked in (("free", {"edit_text", "bio_menu", "ai_menu", "faq_menu"}), ("plus", {"bio_menu", "ai_menu"}), ("pro", {"ai_menu"}), ("ultra", set())):
             self.plan(plan)
             with patch.object(db, "get_settings", return_value=_settings()):
                 _, markup = bot.build_panel(USER)
