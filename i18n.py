@@ -948,6 +948,17 @@ T: dict[str, dict] = {
     "feature_ai": _("AI-Yordamchi", "AI Assistant", "AI-помощник"),
     "feature_fonts": _("Soat shriftlari", "Clock fonts", "Шрифты часов"),
     "feature_zones": _("Soat uchun boshqa vaqt zonalari", "Other time zones for the clock", "Другие часовые пояса для часов"),
+    "feature_faq": _("Smart FAQ", "Smart FAQ", "Smart FAQ"),
+    "pf_faq": _(
+        "Smart FAQ — tayyor savol-javoblar bilan tez avtomatik javob (ko'pi bilan {n} ta savol)",
+        "Smart FAQ — quick automatic answers from your ready Q&A (up to {n} questions)",
+        "Smart FAQ — быстрые автоответы из ваших готовых вопросов и ответов (до {n} вопросов)",
+    ),
+    "pf_faq_locked": _(
+        "Smart FAQ — tayyor savol-javoblar bilan tez avtomatik javob (savollar soni: {limits})",
+        "Smart FAQ — quick automatic answers from your ready Q&A (number of questions: {limits})",
+        "Smart FAQ — быстрые автоответы из ваших готовых вопросов и ответов (количество вопросов: {limits})",
+    ),
     "locked_feature": _(
         "\U0001F512 «{feature}» faqat {plans} tariflarida mavjud.\n\nTarifni \U0001F3F7\uFE0F Tariflar bo'limidan o'zgartirishingiz mumkin.",
         "\U0001F512 “{feature}” is available only on the {plans} plans.\n\nYou can change your plan in the \U0001F3F7\uFE0F Plans section.",
