@@ -431,3 +431,94 @@ def add_plan_duration(start_ts: float, n: int, kind: str, tz) -> float:
         day = min(start.day, calendar.monthrange(year, month)[1])
         return start.replace(year=year, month=month, day=day).timestamp()
     return (start + timedelta(days=n * (7 if kind == "week" else 1))).timestamp()
+
+
+# ---------------------------------------------------------------------------
+# Smart FAQ: mijoz xabariga mos tayyor javobni topish (Gemini'siz, qoidalar asosida)
+# ---------------------------------------------------------------------------
+FAQ_MAX_ENTRIES = 20
+FAQ_MAX_QUESTION = 200
+FAQ_MAX_KEYWORDS = 10
+FAQ_MAX_KEYWORD_LENGTH = 40
+FAQ_MAX_ANSWER = 1000
+FAQ_MAX_MESSAGE_TOKENS = 60  # juda uzun (ko'p mavzuli) xabarga FAQ javobi berilmaydi
+
+_APOSTROPHES = "‘’ʻʼʹ`´'"
+# "yo'qmi", "emas", "нет" kabi inkor so'zlari: savol aksini so'rayotgan bo'lishi mumkin -> aniq emas
+_NEGATIONS = frozenset({
+    "yoq", "yoqmi", "yoqku", "yoqmidi", "emas", "emasmi", "bolmaydi", "mumkinmas",
+    "no", "not", "dont", "cant", "нет", "не", "нету", "без", "нельзя",
+})
+
+
+def faq_tokens(text: str | None) -> list[str]:
+    """Kichik harf, apostrof/tinish belgilarsiz so'zlar ro'yxati ("O'zbekiston?" -> ["ozbekiston"])."""
+    if not text:
+        return []
+    s = text.lower().replace("ё", "е")
+    for ch in _APOSTROPHES:
+        s = s.replace(ch, "")
+    return re.findall(r"[^\W_]+", s, flags=re.UNICODE)
+
+
+def parse_faq_keywords(raw: str) -> list[str] | None:
+    """Vergul/yangi qator bilan ajratilgan kalit so'z/iboralar -> normallashtirilgan, takrorsiz ro'yxat.
+    Noto'g'ri bo'lsa (bo'sh, juda ko'p yoki juda uzun) — None."""
+    out: list[str] = []
+    for part in re.split(r"[,;\n]", raw or ""):
+        toks = faq_tokens(part)
+        if not toks:
+            continue
+        phrase = " ".join(toks)
+        if len(phrase) > FAQ_MAX_KEYWORD_LENGTH:
+            return None
+        if phrase not in out:
+            out.append(phrase)
+    if not out or len(out) > FAQ_MAX_KEYWORDS:
+        return None
+    return out
+
+
+def _contains_phrase(tokens: list[str], phrase: list[str]) -> bool:
+    n = len(phrase)
+    if n == 0 or n > len(tokens):
+        return False
+    return any(tokens[i:i + n] == phrase for i in range(len(tokens) - n + 1))
+
+
+def match_faq(message: str | None, entries) -> dict | None:
+    """Xabarga eng mos FAQ yozuvini qaytaradi; ishonchli bo'lmasa — None (oddiy javobga qaytiladi).
+
+    Qoidalar: faqat BUTUN so'z/ibora mosligi; inkor so'zi bor xabar — noaniq; juda uzun xabar — noaniq;
+    bir nechta yozuv bir xil darajada mos kelsa — noaniq. Daraja = mos kelgan kalit so'zlardagi so'zlar soni;
+    savolning o'zi bilan aynan bir xil xabar eng yuqori darajaga ega."""
+    tokens = faq_tokens(message)
+    if not tokens or len(tokens) > FAQ_MAX_MESSAGE_TOKENS:
+        return None
+    if any(tok in _NEGATIONS for tok in tokens):
+        return None
+    scored: list[tuple[int, dict]] = []
+    for entry in entries:
+        if entry.get("is_enabled") is False:
+            continue
+        score = 0
+        if tokens == faq_tokens(entry.get("question")):
+            score = 1000
+        else:
+            seen = set()
+            for kw in entry.get("keywords") or []:
+                kt = faq_tokens(kw)
+                key = tuple(kt)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if _contains_phrase(tokens, kt):
+                    score += len(kt)
+        if score > 0:
+            scored.append((score, entry))
+    if not scored:
+        return None
+    scored.sort(key=lambda x: -x[0])
+    if len(scored) > 1 and scored[1][0] == scored[0][0]:
+        return None
+    return scored[0][1]
