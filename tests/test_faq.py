@@ -224,6 +224,13 @@ class PanelFlowTests(unittest.TestCase):
         bot._faq_drafts.clear()
         bot.pending_settings_action.clear()
         self.addCleanup(bot.pending_settings_action.clear)
+        p = patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS))  # haqiqiy tarif cheklovlari
+        p.start()
+        self.addCleanup(p.stop)
+        self.plan_name = "ultra"
+        p = patch.object(db, "get_user_plan", side_effect=lambda o: self.plan_name)
+        p.start()
+        self.addCleanup(p.stop)
 
     def press(self, data, user=OWNER):
         q = MagicMock()
@@ -259,7 +266,7 @@ class PanelFlowTests(unittest.TestCase):
         self.assertIn("faq_menu", [b.callback_data for r in markup.inline_keyboard for b in r])
         q = self.press("faq_menu")
         text = q.edit_message_text.call_args.args[0]
-        self.assertIn("0/20", text)
+        self.assertIn("0/65", text)
         datas = [b.callback_data for r in q.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard for b in r]
         self.assertEqual(datas, ["faq_add", "faq_list", "faq_settings", "open_panel"])
 
@@ -283,7 +290,7 @@ class PanelFlowTests(unittest.TestCase):
         self.assertEqual(len(self.fake.mine(OWNER)), 1)
         self.assertEqual(self.fake.mine(OWNER)[0]["keywords"], ["dostavka", "delivery", "yetkazish"])
         self.assertIn("saqlandi", q.edit_message_text.call_args.args[0])
-        self.assertIn("1/20", q.edit_message_text.call_args.args[0])
+        self.assertIn("1/65", q.edit_message_text.call_args.args[0])
         self.assertIsNone(bot.get_pending_action(OWNER))
 
     def test_cancel_discards_draft(self):
@@ -330,24 +337,68 @@ class PanelFlowTests(unittest.TestCase):
         self.assertIn("Qoralama", r.call_args.args[0])
         self.assertIsNone(bot.get_pending_action(OWNER))
 
-    def test_limit_blocks_adding(self):
-        for n in range(logic.FAQ_MAX_ENTRIES):
-            self.fake.add(OWNER, f"q{n}", ["k"], "a", 99)
-        q = self.press("faq_add")
-        self.assertIn("limiti", q.edit_message_text.call_args.args[0])
-        self.assertIsNone(bot.get_pending_action(OWNER))
-        self.assertIn("20/20", q.edit_message_text.call_args.args[0])
+    def test_limit_per_plan_blocks_adding(self):
+        for plan, limit in (("plus", 15), ("pro", 30), ("ultra", 65)):
+            self.plan_name = plan
+            self.fake.rows.clear()
+            for n in range(limit):
+                self.fake.add(OWNER, f"q{n}", ["k"], "a", 999)
+            q = self.press("faq_add")
+            text = q.edit_message_text.call_args.args[0]
+            self.assertIn("limiti", text, plan)
+            self.assertIn(f"{limit}/{limit}", text, plan)
+            self.assertIsNone(bot.get_pending_action(OWNER))
+            self.fake.rows.pop()  # bitta joy bo'shadi
+            q = self.press("faq_add")
+            self.assertEqual(bot.get_pending_action(OWNER), "faq_q", plan)
+            bot.clear_pending_action(OWNER)
 
     def test_limit_reached_during_save_is_safe(self):
+        self.plan_name = "plus"
         self.press("faq_add")
         self.say("Savol?")
         self.say("kalit")
         self.say("Javob")
-        for n in range(logic.FAQ_MAX_ENTRIES):
-            self.fake.add(OWNER, f"q{n}", ["k"], "a", 99)
+        for n in range(15):
+            self.fake.add(OWNER, f"q{n}", ["k"], "a", 999)
         q = self.press("faq_save")
-        self.assertEqual(len(self.fake.mine(OWNER)), logic.FAQ_MAX_ENTRIES)
+        self.assertEqual(len(self.fake.mine(OWNER)), 15)
         self.assertIn("limiti", q.edit_message_text.call_args.args[0])
+
+    def test_free_plan_is_locked_everywhere(self):
+        self.plan_name = "free"
+        _, markup = bot.build_panel(OWNER)
+        label = next(b.text for r in markup.inline_keyboard for b in r if b.callback_data == "faq_menu")
+        self.assertTrue(label.startswith("\U0001F512"))
+        for data in ("faq_menu", "faq_add", "faq_list", "faq_settings", "faq_toggle", "faq_save", "faq_view:1", "faq_del:1"):
+            q = self.press(data)
+            self.assertIn("Plus / Pro / Ultra", q.edit_message_text.call_args.args[0], data)
+        self.assertEqual(self.fake.rows, [])
+        self.assertNotIn("faq_enabled", self.settings_extra)
+        self.assertIsNone(bot.get_pending_action(OWNER))
+
+    def test_free_cannot_continue_a_started_draft(self):
+        self.press("faq_add")
+        self.say("Savol?")
+        self.plan_name = "free"  # tarif muddati tugadi
+        r = self.say("kalit")
+        self.assertIn("Plus / Pro / Ultra", r.call_args.args[0])
+        self.assertIsNone(bot.get_pending_action(OWNER))
+        self.assertEqual(self.fake.rows, [])
+
+    def test_free_cannot_save_even_with_old_confirm_button(self):
+        self.press("faq_add")
+        self.say("Savol?")
+        self.say("kalit")
+        self.say("Javob")
+        self.plan_name = "free"
+        self.press("faq_save")
+        self.assertEqual(self.fake.rows, [])
+
+    def test_admin_gets_top_limit(self):
+        self.plan_name = "free"
+        self.assertEqual(bot.faq_limit_for(ADMIN), 65)
+        self.assertEqual([bot.faq_limit_for(OWNER, p) for p in ("free", "plus", "pro", "ultra")], [0, 15, 30, 65])
 
     def test_list_view_toggle_delete(self):
         self.add_entry()
@@ -406,9 +457,12 @@ class ReplyOrderTests(unittest.TestCase):
         p = patch.object(bot, "find_faq_answer", _REAL_FIND_FAQ_ANSWER)
         p.start()
         self.addCleanup(p.stop)
+        p = patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS))  # haqiqiy tarif cheklovlari
+        p.start()
+        self.addCleanup(p.stop)
 
     def flow(self, text="Toshkentga dostavka bormi?", settings=None, entries=None, faq_error=False, ai_ready=False,
-             paused=False, owner=OWNER, ads=False, claim=123.0):
+             paused=False, owner=OWNER, ads=False, claim=123.0, plan="ultra"):
         settings = settings or _settings()
         u = MagicMock()
         u.channel_post = None
@@ -441,6 +495,7 @@ class ReplyOrderTests(unittest.TestCase):
             "conf": patch.object(ai, "is_configured", return_value=ai_ready),
             "gen": patch.object(ai, "generate_reply", new=AsyncMock(return_value="AI javobi")),
             "ai_feature": patch.object(bot, "has_feature", return_value=True),
+            "plan": patch.object(db, "get_user_plan", return_value=plan),
             "ads": patch.object(bot, "shows_ads", return_value=ads),
             "faq": faq,
         }
@@ -522,6 +577,24 @@ class ReplyOrderTests(unittest.TestCase):
     def test_paused_chat_gets_no_faq_when_ai_on(self):
         texts, _ = self.flow(settings=_settings(ai_enabled=True), ai_ready=True, paused=True)
         self.assertEqual(texts, [])
+
+    def test_free_plan_gets_no_faq_answer(self):
+        texts, m = self.flow(plan="free")
+        self.assertEqual(texts, ["Oflaynman"])
+        m["faq"].assert_not_called()
+
+    def test_downgraded_plan_uses_only_first_entries_within_limit(self):
+        many = [E(f"q{n}", [f"kalit{n}"], f"javob{n}", id_=n) for n in range(1, 41)]
+        texts, _ = self.flow(text="kalit3", entries=many, plan="plus")  # 15 ichida
+        self.assertEqual(texts, ["javob3"])
+        texts, _ = self.flow(text="kalit20", entries=many, plan="plus")  # 15 dan keyin — ishlamaydi
+        self.assertEqual(texts, ["Oflaynman"])
+        texts, _ = self.flow(text="kalit20", entries=many, plan="pro")
+        self.assertEqual(texts, ["javob20"])
+        texts, _ = self.flow(text="kalit40", entries=many, plan="ultra")
+        self.assertEqual(texts, ["javob40"])
+        texts, _ = self.flow(text="kalit31", entries=many, plan="pro")
+        self.assertEqual(texts, ["Oflaynman"])
 
     def test_free_plan_ad_is_appended_to_faq_answer(self):
         texts, _ = self.flow(ads=True)
