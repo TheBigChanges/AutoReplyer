@@ -1520,6 +1520,7 @@ def build_panel(owner_id: int):
 # ---------------------------------------------------------------------------
 # Smart FAQ
 # ---------------------------------------------------------------------------
+_faq_edit_target: dict[int, dict] = {}  # {owner_id: {"id", "ts"}} — qaysi savol tahrirlanmoqda
 _faq_drafts: dict[int, dict] = {}  # {owner_id: {"q","kw","ans","ts"}} — saqlashdan oldingi qoralama (RAM, 10 daqiqa)
 
 
@@ -1581,7 +1582,7 @@ def build_faq_list(owner_id: int):
     return text, InlineKeyboardMarkup(keyboard)
 
 
-def build_faq_entry(owner_id: int, entry_id: int):
+def build_faq_entry(owner_id: int, entry_id: int, notice: str | None = None):
     """(matn, tugmalar) yoki None — yozuv topilmasa (boshqa egasiniki ham 'topilmadi')."""
     lang = get_lang(owner_id)
     e = db.get_faq_entry(owner_id, entry_id)
@@ -1592,7 +1593,12 @@ def build_faq_entry(owner_id: int, entry_id: int):
         q=e["question"], kw=", ".join(e["keywords"]), a=e["answer"],
         status=t(lang, "status_on" if e["is_enabled"] else "status_off"),
     )
+    if notice:
+        text += f"\n\n{notice}"
     keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_faq_edit_q"), callback_data=f"faq_edit:q:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_faq_edit_kw"), callback_data=f"faq_edit:kw:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_faq_edit_ans"), callback_data=f"faq_edit:ans:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_faq_entry_off" if e["is_enabled"] else "btn_faq_entry_on"), callback_data=f"faq_entry_toggle:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_faq_delete"), callback_data=f"faq_del:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="faq_list")],
@@ -2002,6 +2008,23 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(view[0], reply_markup=view[1])
         return
 
+    if data.startswith("faq_edit:"):
+        _, _, rest = data.partition(":")
+        field, _, raw_id = rest.partition(":")
+        entry_id = int(raw_id) if raw_id.isdigit() else -1
+        entry = db.get_faq_entry(owner_id, entry_id) if field in ("q", "kw", "ans") else None
+        if entry is None:
+            text, markup = build_faq_list(owner_id)
+            await query.edit_message_text(f"{t(lang, 'faq_entry_gone')}\n\n{text}", reply_markup=markup)
+            return
+        current = {"q": entry["question"], "kw": ", ".join(entry["keywords"]), "ans": entry["answer"]}[field]
+        _faq_edit_target[owner_id] = {"id": entry_id, "ts": time.time()}
+        set_pending_action(owner_id, f"faq_edit_{field}")
+        await query.message.reply_text(
+            t(lang, f"faq_edit_{field}_prompt", cur=current, max=FAQ_MAX_ANSWER if field == "ans" else FAQ_MAX_QUESTION)
+        )
+        return
+
     if data == "faq_add":
         limit = faq_limit_for(owner_id)
         if db.count_faq_entries(owner_id) >= limit:
@@ -2111,7 +2134,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(owner_id)
 
     gated = {"text": "custom_text", "sleep_text": "custom_text", "birthday_date": "bio", "ai_info": "ai",
-             "faq_q": "faq", "faq_kw": "faq", "faq_ans": "faq", "faq_confirm": "faq"}.get(action)
+             "faq_q": "faq", "faq_kw": "faq", "faq_ans": "faq", "faq_confirm": "faq",
+             "faq_edit_q": "faq", "faq_edit_kw": "faq", "faq_edit_ans": "faq"}.get(action)
     if gated and not has_feature(owner_id, gated):
         clear_pending_action(owner_id)
         text, markup = build_locked_view(owner_id, gated)
@@ -2149,6 +2173,38 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_pending_action(owner_id)
         text, markup = build_ai_menu(owner_id, t(lang, "saved"))
         await update.message.reply_text(text, reply_markup=markup)
+        return
+
+    if action in ("faq_edit_q", "faq_edit_kw", "faq_edit_ans"):
+        target = _faq_edit_target.get(owner_id)
+        if target is None or time.time() - target["ts"] > PENDING_ACTION_TTL_SECONDS:
+            _faq_edit_target.pop(owner_id, None)
+            clear_pending_action(owner_id)
+            await update.message.reply_text(t(lang, "faq_draft_lost"))
+            return
+        if not value:
+            await update.message.reply_text(t(lang, "faq_empty_text"))
+            return
+        if action == "faq_edit_kw":
+            keywords = parse_faq_keywords(value)
+            if keywords is None:
+                await update.message.reply_text(t(lang, "faq_kw_bad", max=FAQ_MAX_KEYWORDS, len=FAQ_MAX_KEYWORD_LENGTH))
+                return
+            changes = {"keywords": keywords}
+        else:
+            limit_chars = FAQ_MAX_QUESTION if action == "faq_edit_q" else FAQ_MAX_ANSWER
+            if len(value) > limit_chars:
+                await update.message.reply_text(t(lang, "faq_too_long", n=len(value), max=limit_chars))
+                return
+            changes = {"question" if action == "faq_edit_q" else "answer": value}
+        _faq_edit_target.pop(owner_id, None)
+        clear_pending_action(owner_id)
+        if not db.update_faq_entry(owner_id, target["id"], **changes):
+            text, markup = build_faq_list(owner_id)
+            await update.message.reply_text(f"{t(lang, 'faq_entry_gone')}\n\n{text}", reply_markup=markup)
+            return
+        view = build_faq_entry(owner_id, target["id"], t(lang, "faq_updated"))
+        await update.message.reply_text(view[0], reply_markup=view[1])
         return
 
     if action in ("faq_q", "faq_kw", "faq_ans", "faq_confirm"):
