@@ -998,19 +998,51 @@ _FAQ_COLS = "id, owner_user_id, question, keywords, answer, is_enabled"
 
 
 def add_faq_entry(owner_user_id: int, question: str, keywords: list[str], answer: str, max_entries: int) -> int | None:
-    """Yangi yozuv qo'shadi va id qaytaradi; limit to'lgan bo'lsa — None (limit tekshiruvi atomik, bitta SQL)."""
+    """Yangi yozuv qo'shadi va id qaytaradi; limit to'lgan bo'lsa — None.
+
+    Parallel so'rovlardan himoya: bir egasi uchun yozishlar tranzaksiya-darajali advisory lock bilan ketma-ket
+    bajariladi (lock olingach INSERT yangi snapshot bilan sanaydi, shuning uchun boshqa so'rov qo'shgan yozuv
+    ham hisobga olinadi). Oddiy `INSERT ... WHERE count < limit` READ COMMITTED'da ikki so'rovga ham ruxsat berardi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("BEGIN")
+        try:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('faq_entries'), (%s %% 2147483647)::int)", (owner_user_id,))
+            cur.execute(
+                """
+                INSERT INTO faq_entries (owner_user_id, question, keywords, answer)
+                SELECT %s, %s, %s, %s
+                WHERE (SELECT COUNT(*) FROM faq_entries WHERE owner_user_id = %s) < %s
+                RETURNING id
+                """,
+                (owner_user_id, question, keywords, answer, owner_user_id, max_entries),
+            )
+            row = cur.fetchone()
+            cur.execute("COMMIT")
+        except BaseException:
+            try:
+                cur.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        return row[0] if row else None
+
+
+_FAQ_EDITABLE = {"question": "question", "keywords": "keywords", "answer": "answer"}
+
+
+def update_faq_entry(owner_user_id: int, entry_id: int, **fields) -> bool:
+    """Yozuvning savol/kalit so'z/javobini o'zgartiradi (id, egasi va yoqilgan holati o'zgarmaydi).
+    Yozuv shu egasiga tegishli bo'lmasa yoki topilmasa — False."""
+    invalid = set(fields) - set(_FAQ_EDITABLE)
+    if invalid or not fields:
+        raise ValueError(f"Ruxsat etilmagan FAQ maydoni: {invalid or 'bo`sh'}")
+    assignments = ", ".join(f"{_FAQ_EDITABLE[k]} = %s" for k in fields)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            """
-            INSERT INTO faq_entries (owner_user_id, question, keywords, answer)
-            SELECT %s, %s, %s, %s
-            WHERE (SELECT COUNT(*) FROM faq_entries WHERE owner_user_id = %s) < %s
-            RETURNING id
-            """,
-            (owner_user_id, question, keywords, answer, owner_user_id, max_entries),
+            f"UPDATE faq_entries SET {assignments} WHERE owner_user_id = %s AND id = %s",
+            list(fields.values()) + [owner_user_id, entry_id],
         )
-        row = cur.fetchone()
-        return row[0] if row else None
+        return cur.rowcount > 0
 
 
 def list_faq_entries(owner_user_id: int) -> list[dict]:
