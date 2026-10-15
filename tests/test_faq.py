@@ -3,6 +3,7 @@ import asyncio
 import os
 import random
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -144,6 +145,75 @@ class FaqDbTests(unittest.TestCase):
         self.assertTrue(db.delete_faq_entry(self.a, i))
         self.assertFalse(db.delete_faq_entry(self.a, i))
 
+    def test_update_each_field_keeps_id_owner_and_state(self):
+        i = db.add_faq_entry(self.a, "Eski savol", ["eski"], "Eski javob", 20)
+        db.toggle_faq_entry(self.a, i)  # o'chirilgan holat saqlanishi kerak
+        self.assertTrue(db.update_faq_entry(self.a, i, question="Yangi savol"))
+        self.assertTrue(db.update_faq_entry(self.a, i, keywords=["yangi", "ikki uch"]))
+        self.assertTrue(db.update_faq_entry(self.a, i, answer="Yangi javob"))
+        row = db.get_faq_entry(self.a, i)
+        self.assertEqual((row["id"], row["owner_user_id"]), (i, self.a))
+        self.assertEqual((row["question"], row["keywords"], row["answer"]), ("Yangi savol", ["yangi", "ikki uch"], "Yangi javob"))
+        self.assertFalse(row["is_enabled"])
+        self.assertEqual(db.count_faq_entries(self.a), 1)  # yangi yozuv qo'shilmadi
+
+    def test_update_several_fields_at_once(self):
+        i = db.add_faq_entry(self.a, "q", ["k"], "a", 20)
+        self.assertTrue(db.update_faq_entry(self.a, i, question="q2", answer="a2"))
+        row = db.get_faq_entry(self.a, i)
+        self.assertEqual((row["question"], row["keywords"], row["answer"]), ("q2", ["k"], "a2"))
+
+    def test_other_owner_cannot_update(self):
+        i = db.add_faq_entry(self.a, "q", ["k"], "a", 20)
+        self.assertFalse(db.update_faq_entry(self.b, i, answer="buzildi"))
+        self.assertFalse(db.update_faq_entry(self.a, i + 10**9, answer="yo'q yozuv"))
+        self.assertEqual(db.get_faq_entry(self.a, i)["answer"], "a")
+
+    def test_update_rejects_unknown_or_dangerous_fields(self):
+        i = db.add_faq_entry(self.a, "q", ["k"], "a", 20)
+        for bad in ({"owner_user_id": self.b}, {"is_enabled": False}, {"id": 5}, {"answer = 'x', question": "y"}, {}):
+            with self.assertRaises((ValueError, TypeError)):  # owner_user_id nomi funksiya argumenti bilan to'qnashadi
+                db.update_faq_entry(self.a, i, **bad)
+        row = db.get_faq_entry(self.a, i)
+        self.assertEqual((row["owner_user_id"], row["question"], row["answer"]), (self.a, "q", "a"))
+
+    def test_limit_holds_under_parallel_writes(self):
+        # Oddiy INSERT..WHERE count<limit bilan bu test limit 3 da 10 tagacha yozuv qo'shilishiga olib kelardi
+        for _round in range(8):
+            owner = self.a + 1000 + _round
+            self.addCleanup(lambda o=owner: self._purge(o))
+            barrier = threading.Barrier(10)
+            results = []
+
+            def worker():
+                barrier.wait()
+                results.append(db.add_faq_entry(owner, "q", ["k"], "a", 3))
+
+            threads = [threading.Thread(target=worker) for _ in range(10)]
+            [x.start() for x in threads]
+            [x.join() for x in threads]
+            self.assertEqual(db.count_faq_entries(owner), 3, f"round {_round}")
+            self.assertEqual(sum(r is not None for r in results), 3)
+
+    def test_parallel_writes_of_different_owners_do_not_block_each_other(self):
+        owners = [self.a + 2000 + n for n in range(5)]
+        for o in owners:
+            self.addCleanup(lambda o=o: self._purge(o))
+        threads = [threading.Thread(target=lambda o=o: [db.add_faq_entry(o, "q", ["k"], "a", 4) for _ in range(6)]) for o in owners]
+        [x.start() for x in threads]
+        [x.join() for x in threads]
+        self.assertEqual([db.count_faq_entries(o) for o in owners], [4] * 5)
+
+    def test_failed_insert_does_not_leave_transaction_open(self):
+        with self.assertRaises(Exception):
+            db.add_faq_entry(self.a, None, ["k"], "a", 5)  # question NOT NULL buzilishi
+        self.assertIsNotNone(db.add_faq_entry(self.a, "q", ["k"], "a", 5))  # keyingi so'rov ishlaydi
+        self.assertEqual(db.count_faq_entries(self.a), 1)
+
+    def _purge(self, owner):
+        with db.get_conn() as c, c.cursor() as cur:
+            cur.execute("DELETE FROM faq_entries WHERE owner_user_id = %s", (owner,))
+
     def test_faq_enabled_setting_defaults_true(self):
         self.assertTrue(db.get_settings(self.a)["faq_enabled"])
         db.update_settings(self.a, faq_enabled=False)
@@ -186,8 +256,15 @@ class FakeFaqDb:
             r["is_enabled"] = not r["is_enabled"]
         return r["is_enabled"] if r else None
 
+    def update(self, owner, i, **fields):
+        r = self.get(owner, i)
+        if r:
+            r.update(fields)
+        return bool(r)
+
     def install(self, test):
         for name, fn in (
+            ("update_faq_entry", self.update),
             ("add_faq_entry", self.add), ("list_faq_entries", self.mine), ("get_faq_entry", self.get),
             ("delete_faq_entry", self.delete), ("toggle_faq_entry", self.toggle),
             ("count_faq_entries", lambda o: len(self.mine(o))),
@@ -416,6 +493,123 @@ class PanelFlowTests(unittest.TestCase):
         self.assertEqual(self.fake.mine(OWNER), [])
         self.assertIn("o'chirildi", q.edit_message_text.call_args.args[0])
 
+    def _edit(self, field, new_value, entry_id=None, user=OWNER):
+        entry_id = entry_id or self.fake.mine(user)[0]["id"]
+        q = self.press(f"faq_edit:{field}:{entry_id}", user)
+        prompt = q.message.reply_text.call_args.args[0] if q.message.reply_text.call_args else None
+        r = self.say(new_value, user)
+        return prompt, r
+
+    def test_entry_view_has_three_edit_buttons(self):
+        self.add_entry()
+        q = self.press(f"faq_view:{self.fake.mine(OWNER)[0]['id']}")
+        datas = [b.callback_data for r in q.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard for b in r]
+        eid = self.fake.mine(OWNER)[0]["id"]
+        for field in ("q", "kw", "ans"):
+            self.assertIn(f"faq_edit:{field}:{eid}", datas)
+        self.assertLess(max(len(d) for d in datas), 64)  # callback_data limiti
+
+    def test_edit_question_keywords_answer_without_delete_and_readd(self):
+        self.add_entry(q="Eski savol", kw="eski", a="Eski javob")
+        eid = self.fake.mine(OWNER)[0]["id"]
+        prompt, r = self._edit("q", "Yangi savol?")
+        self.assertIn("Eski savol", prompt)  # hozirgi qiymat ko'rsatiladi
+        self.assertEqual(self.fake.get(OWNER, eid)["question"], "Yangi savol?")
+        self.assertIn("yangilandi", r.call_args.args[0])
+        self.assertIn("Yangi savol?", r.call_args.args[0])
+        prompt, _ = self._edit("kw", "Yangi, IKKI uch")
+        self.assertIn("eski", prompt)
+        self.assertEqual(self.fake.get(OWNER, eid)["keywords"], ["yangi", "ikki uch"])
+        prompt, _ = self._edit("ans", "Yangi javob")
+        self.assertIn("Eski javob", prompt)
+        row = self.fake.get(OWNER, eid)
+        self.assertEqual((row["id"], row["answer"], row["is_enabled"]), (eid, "Yangi javob", True))
+        self.assertEqual(len(self.fake.mine(OWNER)), 1)  # yangi yozuv qo'shilmadi
+        self.assertIsNone(bot.get_pending_action(OWNER))
+
+    def test_edit_keeps_disabled_state(self):
+        self.add_entry()
+        eid = self.fake.mine(OWNER)[0]["id"]
+        self.press(f"faq_entry_toggle:{eid}")
+        self._edit("ans", "Boshqa javob")
+        self.assertFalse(self.fake.get(OWNER, eid)["is_enabled"])
+
+    def test_edit_validation_keeps_step_and_changes_nothing(self):
+        self.add_entry()
+        eid = self.fake.mine(OWNER)[0]["id"]
+        before = dict(self.fake.get(OWNER, eid))
+        for field, bad, action in (("q", "x" * (logic.FAQ_MAX_QUESTION + 1), "faq_edit_q"),
+                                   ("kw", " , !!! ", "faq_edit_kw"),
+                                   ("ans", "y" * (logic.FAQ_MAX_ANSWER + 1), "faq_edit_ans")):
+            self.press(f"faq_edit:{field}:{eid}")
+            self.say(bad)
+            self.assertEqual(bot.get_pending_action(OWNER), action)
+            self.assertEqual(self.fake.get(OWNER, eid), before)
+            bot.clear_pending_action(OWNER)
+
+    def test_edit_applies_to_matching_immediately(self):
+        self.add_entry(q="Savol", kw="eski", a="Eski javob")
+        self._edit("kw", "yangi")
+        entries = db.get_enabled_faq_entries(OWNER)
+        self.assertIsNotNone(logic.match_faq("yangi kalit", entries))
+        self.assertIsNone(logic.match_faq("eski kalit", entries))
+
+    def test_other_owner_cannot_edit_entry(self):
+        self.add_entry()
+        eid = self.fake.mine(OWNER)[0]["id"]
+        before = dict(self.fake.get(OWNER, eid))
+        q = self.press(f"faq_edit:ans:{eid}", user=OTHER)
+        self.assertIn("topilmadi", q.edit_message_text.call_args.args[0])
+        self.assertIsNone(bot.get_pending_action(OTHER))
+        self.say("buzildi", user=OTHER)
+        self.assertEqual(self.fake.get(OWNER, eid), before)
+
+    def test_edit_of_deleted_entry_is_safe(self):
+        self.add_entry()
+        eid = self.fake.mine(OWNER)[0]["id"]
+        self.press(f"faq_edit:q:{eid}")
+        self.fake.delete(OWNER, eid)  # tahrirlash paytida o'chirildi
+        r = self.say("Yangi")
+        self.assertIn("topilmadi", r.call_args.args[0])
+        self.assertIsNone(bot.get_pending_action(OWNER))
+
+    def test_bad_edit_callbacks_do_not_crash(self):
+        for data in ("faq_edit:", "faq_edit:zzz:1", "faq_edit:q:abc", "faq_edit:q:", "faq_edit:q:99999"):
+            self.press(data)
+            self.assertIsNone(bot.get_pending_action(OWNER))
+
+    def test_edit_expires(self):
+        self.add_entry()
+        eid = self.fake.mine(OWNER)[0]["id"]
+        self.press(f"faq_edit:q:{eid}")
+        bot._faq_edit_target[OWNER]["ts"] -= bot.PENDING_ACTION_TTL_SECONDS + 5
+        r = self.say("Yangi")
+        self.assertIn("Qoralama", r.call_args.args[0])
+        self.assertEqual(self.fake.get(OWNER, eid)["question"], "Yetkazib berish bormi?")
+
+    def test_free_plan_cannot_edit(self):
+        self.add_entry()
+        eid = self.fake.mine(OWNER)[0]["id"]
+        self.plan_name = "free"
+        q = self.press(f"faq_edit:ans:{eid}")
+        self.assertIn("Plus / Pro / Ultra", q.edit_message_text.call_args.args[0])
+        self.assertNotEqual(bot.get_pending_action(OWNER), "faq_edit_ans")
+        self.plan_name = "plus"
+        self.press(f"faq_edit:ans:{eid}")
+        self.plan_name = "free"  # tahrir boshlangach tarif tugadi
+        r = self.say("Yangi javob")
+        self.assertIn("Plus / Pro / Ultra", r.call_args.args[0])
+        self.assertEqual(self.fake.get(OWNER, eid)["answer"], "Ha.")
+
+    def test_edit_still_allowed_when_over_limit_after_downgrade(self):
+        for n in range(40):
+            self.fake.add(OWNER, f"q{n}", ["k"], "a", 999)
+        self.plan_name = "plus"  # 40 > 15
+        eid = self.fake.mine(OWNER)[0]["id"]
+        self._edit("ans", "Tuzatilgan", entry_id=eid)
+        self.assertEqual(self.fake.get(OWNER, eid)["answer"], "Tuzatilgan")
+        self.assertEqual(len(self.fake.mine(OWNER)), 40)
+
     def test_other_owner_cannot_see_or_change_entry(self):
         self.add_entry()
         entry_id = self.fake.mine(OWNER)[0]["id"]
@@ -441,7 +635,7 @@ class PanelFlowTests(unittest.TestCase):
         for lang in i18n.LANGS:
             with patch.object(bot, "get_lang", return_value=lang):
                 for text, markup in (bot.build_faq_menu(OWNER, "x"), bot.build_faq_settings(OWNER), bot.build_faq_list(OWNER),
-                                     bot.build_faq_entry(OWNER, self.fake.mine(OWNER)[0]["id"])):
+                                     bot.build_faq_entry(OWNER, self.fake.mine(OWNER)[0]["id"], "x")):
                     self.assertNotIn("{", text)
                     self.assertTrue(all(b.text for r in markup.inline_keyboard for b in r))
 
