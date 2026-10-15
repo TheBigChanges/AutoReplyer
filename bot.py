@@ -70,6 +70,13 @@ from logic import (
     strip_clock_suffix,
     zone_button_label,
     zone_label,
+    FAQ_MAX_ANSWER,
+    FAQ_MAX_ENTRIES,
+    FAQ_MAX_KEYWORD_LENGTH,
+    FAQ_MAX_KEYWORDS,
+    FAQ_MAX_QUESTION,
+    match_faq,
+    parse_faq_keywords,
 )
 
 load_dotenv()
@@ -1393,6 +1400,23 @@ async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str,
     logger.info("auto reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
 
 
+async def send_faq_reply(bot, bm, owner_id: int, chat_id: int, answer: str, cooldown_hours: float, label: str, ai_mode: bool):
+    """FAQ javobini yuboradi. Oddiy rejimda — cooldown bilan (avtojavob kabi); AI yoqilgan egada cooldown
+    ishlatilmaydi (AI javoblari kabi), shunda mijozning keyingi savoliga ham javob ketadi."""
+    if not ai_mode:
+        await send_auto_reply(bot, bm, owner_id, chat_id, answer, cooldown_hours, label)
+        return
+    try:
+        sent = await bot.send_message(
+            chat_id=chat_id, text=with_ad(answer, owner_id), business_connection_id=bm.business_connection_id
+        )
+    except TelegramError as e:
+        logger.warning("FAQ javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
+        return
+    _remember_sent(chat_id, sent)
+    logger.info("faq reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
+
+
 async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings: dict, fallback_text: str, label: str):
     """AI javobini yaratib yuboradi. Limit tugasa yoki xato bo'lsa — odatiy matnli avtojavob (zaxira)."""
     business_connection_id = bm.business_connection_id
@@ -1468,11 +1492,105 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton(lock_label(t(lang, "btn_bio"), plan_allows(owner_id, plan, "bio")), callback_data="bio_menu")],
         [InlineKeyboardButton(t(lang, "btn_sleep"), callback_data="sleep_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_ai"), plan_allows(owner_id, plan, "ai")), callback_data="ai_menu")],
+        [InlineKeyboardButton(t(lang, "btn_faq"), callback_data="faq_menu")],
     ]
     if name_clock_allowed(owner_id):
         keyboard.append([InlineKeyboardButton(t(lang, "btn_name_clock"), callback_data="nc_menu")])
     keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="back")])
     return text, InlineKeyboardMarkup(keyboard)
+
+
+# ---------------------------------------------------------------------------
+# Smart FAQ
+# ---------------------------------------------------------------------------
+_faq_drafts: dict[int, dict] = {}  # {owner_id: {"q","kw","ans","ts"}} — saqlashdan oldingi qoralama (RAM, 10 daqiqa)
+
+
+def _faq_draft(owner_id: int) -> dict | None:
+    d = _faq_drafts.get(owner_id)
+    if d is None or time.time() - d["ts"] > PENDING_ACTION_TTL_SECONDS:
+        _faq_drafts.pop(owner_id, None)
+        return None
+    return d
+
+
+def _faq_short(text: str, n: int = 40) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "\u2026"
+
+
+def build_faq_menu(owner_id: int, notice: str | None = None):
+    lang = get_lang(owner_id)
+    s = db.get_settings(owner_id)
+    enabled = s.get("faq_enabled", True)
+    text = t(
+        lang, "faq_menu",
+        count=db.count_faq_entries(owner_id), max=FAQ_MAX_ENTRIES,
+        status=t(lang, "status_on" if enabled else "status_off"),
+        notice=f"\n\n{notice}" if notice else "",
+    )
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_faq_add"), callback_data="faq_add")],
+        [InlineKeyboardButton(t(lang, "btn_faq_list"), callback_data="faq_list")],
+        [InlineKeyboardButton(t(lang, "btn_faq_settings"), callback_data="faq_settings")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_faq_settings(owner_id: int):
+    lang = get_lang(owner_id)
+    enabled = db.get_settings(owner_id).get("faq_enabled", True)
+    text = t(lang, "faq_settings", status=t(lang, "status_on" if enabled else "status_off"))
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="faq_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="faq_menu")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_faq_list(owner_id: int):
+    lang = get_lang(owner_id)
+    entries = db.list_faq_entries(owner_id)
+    if not entries:
+        text = t(lang, "faq_list_empty")
+    else:
+        text = t(lang, "faq_list_title", count=len(entries), max=FAQ_MAX_ENTRIES)
+    keyboard = [
+        [InlineKeyboardButton(("" if e["is_enabled"] else "\u23F8 ") + _faq_short(e["question"]), callback_data=f"faq_view:{e['id']}")]
+        for e in entries
+    ]
+    keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="faq_menu")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_faq_entry(owner_id: int, entry_id: int):
+    """(matn, tugmalar) yoki None — yozuv topilmasa (boshqa egasiniki ham 'topilmadi')."""
+    lang = get_lang(owner_id)
+    e = db.get_faq_entry(owner_id, entry_id)
+    if e is None:
+        return None
+    text = t(
+        lang, "faq_entry_view",
+        q=e["question"], kw=", ".join(e["keywords"]), a=e["answer"],
+        status=t(lang, "status_on" if e["is_enabled"] else "status_off"),
+    )
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_faq_entry_off" if e["is_enabled"] else "btn_faq_entry_on"), callback_data=f"faq_entry_toggle:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_faq_delete"), callback_data=f"faq_del:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="faq_list")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def find_faq_answer(owner_id: int, text: str) -> str | None:
+    """Mijoz xabariga mos FAQ javobi (ishonchli bo'lsagina), aks holda None. Xatolik oqimni buzmaydi."""
+    try:
+        entry = match_faq(text, db.get_enabled_faq_entries(owner_id))
+    except Exception:
+        logger.exception("Smart FAQ qidiruvida xato (owner=%s)", owner_id)
+        return None
+    return entry["answer"] if entry else None
 
 
 def build_sleep_menu(owner_id: int):
@@ -1820,6 +1938,76 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_name_clock_button(query, context, data, owner_id)
         return
 
+    if data == "faq_menu":
+        _faq_drafts.pop(owner_id, None)
+        text, markup = build_faq_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "faq_settings":
+        text, markup = build_faq_settings(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "faq_toggle":
+        enabled = db.get_settings(owner_id).get("faq_enabled", True)
+        db.update_settings(owner_id, faq_enabled=not enabled)
+        text, markup = build_faq_settings(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "faq_list":
+        text, markup = build_faq_list(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith(("faq_view:", "faq_del:", "faq_entry_toggle:")):
+        action, _, raw_id = data.partition(":")
+        entry_id = int(raw_id) if raw_id.isdigit() else -1
+        notice = None
+        if action == "faq_del":
+            notice = t(lang, "faq_deleted") if db.delete_faq_entry(owner_id, entry_id) else t(lang, "faq_entry_gone")
+            text, markup = build_faq_list(owner_id)
+            await query.edit_message_text(f"{notice}\n\n{text}", reply_markup=markup)
+            return
+        if action == "faq_entry_toggle":
+            db.toggle_faq_entry(owner_id, entry_id)
+        view = build_faq_entry(owner_id, entry_id)
+        if view is None:
+            text, markup = build_faq_list(owner_id)
+            await query.edit_message_text(f"{t(lang, 'faq_entry_gone')}\n\n{text}", reply_markup=markup)
+            return
+        await query.edit_message_text(view[0], reply_markup=view[1])
+        return
+
+    if data == "faq_add":
+        if db.count_faq_entries(owner_id) >= FAQ_MAX_ENTRIES:
+            text, markup = build_faq_menu(owner_id, t(lang, "faq_limit", max=FAQ_MAX_ENTRIES))
+            await query.edit_message_text(text, reply_markup=markup)
+            return
+        _faq_drafts[owner_id] = {"ts": time.time()}
+        set_pending_action(owner_id, "faq_q")
+        await query.message.reply_text(t(lang, "faq_q_prompt"))
+        return
+
+    if data == "faq_cancel":
+        _faq_drafts.pop(owner_id, None)
+        text, markup = build_faq_menu(owner_id, t(lang, "faq_cancelled"))
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "faq_save":
+        d = _faq_draft(owner_id)
+        _faq_drafts.pop(owner_id, None)
+        if d is None or not all(k in d for k in ("q", "kw", "ans")):
+            text, markup = build_faq_menu(owner_id, t(lang, "faq_draft_lost"))
+        elif db.add_faq_entry(owner_id, d["q"], d["kw"], d["ans"], FAQ_MAX_ENTRIES) is None:
+            text, markup = build_faq_menu(owner_id, t(lang, "faq_limit", max=FAQ_MAX_ENTRIES))
+        else:
+            text, markup = build_faq_menu(owner_id, t(lang, "faq_saved"))
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
     if data == "ai_menu":
         text, markup = build_ai_menu(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
@@ -1937,6 +2125,50 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_pending_action(owner_id)
         text, markup = build_ai_menu(owner_id, t(lang, "saved"))
         await update.message.reply_text(text, reply_markup=markup)
+        return
+
+    if action in ("faq_q", "faq_kw", "faq_ans", "faq_confirm"):
+        d = _faq_draft(owner_id)
+        if d is None:
+            clear_pending_action(owner_id)
+            await update.message.reply_text(t(lang, "faq_draft_lost"))
+            return
+        if action == "faq_confirm":
+            await update.message.reply_text(t(lang, "faq_confirm_hint"))
+            return  # amal saqlanadi
+        if not value:
+            await update.message.reply_text(t(lang, "faq_empty_text"))
+            return
+        if action == "faq_q":
+            if len(value) > FAQ_MAX_QUESTION:
+                await update.message.reply_text(t(lang, "faq_too_long", n=len(value), max=FAQ_MAX_QUESTION))
+                return
+            d["q"] = value
+            set_pending_action(owner_id, "faq_kw")
+            await update.message.reply_text(t(lang, "faq_kw_prompt"))
+            return
+        if action == "faq_kw":
+            keywords = parse_faq_keywords(value)
+            if keywords is None:
+                await update.message.reply_text(t(lang, "faq_kw_bad", max=FAQ_MAX_KEYWORDS, len=FAQ_MAX_KEYWORD_LENGTH))
+                return
+            d["kw"] = keywords
+            set_pending_action(owner_id, "faq_ans")
+            await update.message.reply_text(t(lang, "faq_ans_prompt", max=FAQ_MAX_ANSWER))
+            return
+        if len(value) > FAQ_MAX_ANSWER:
+            await update.message.reply_text(t(lang, "faq_too_long", n=len(value), max=FAQ_MAX_ANSWER))
+            return
+        d["ans"] = value
+        d["ts"] = time.time()
+        set_pending_action(owner_id, "faq_confirm")
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(t(lang, "btn_faq_save"), callback_data="faq_save"),
+            InlineKeyboardButton(t(lang, "btn_faq_cancel"), callback_data="faq_cancel"),
+        ]])
+        await update.message.reply_text(
+            t(lang, "faq_confirm", q=d["q"], kw=", ".join(d["kw"]), a=value), reply_markup=markup
+        )
         return
 
     if action == "cooldown":
@@ -3118,6 +3350,20 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         chat_id = bm.chat.id
         label = f"sleeping={sleeping}"
+
+        ai_usable = bool(settings.get("ai_enabled")) and ai.is_configured() and has_feature(owner_id, "ai")
+
+        # Smart FAQ: faqat Oflayn holatda (uxlash vaqtida emas) va faqat aniq, yagona moslik bo'lsa
+        if not sleeping and settings["offline"] and settings.get("faq_enabled", True):
+            faq_text = (bm.text or bm.caption or "").strip()
+            faq_answer = find_faq_answer(owner_id, faq_text) if faq_text else None
+            if faq_answer:
+                if settings.get("ai_enabled") and db.is_ai_paused(owner_id, chat_id):
+                    return  # egasi shu chatda o'zi yozmoqda
+                await send_faq_reply(
+                    context.bot, bm, owner_id, chat_id, faq_answer, settings["cooldown_hours"], label + ",faq", ai_usable
+                )
+                return
 
         # AI-Yordamchi: odatiy matn o'rniga AI javob beradi (matn faqat zaxira sifatida qoladi)
         if settings.get("ai_enabled") and ai.is_configured() and has_feature(owner_id, "ai"):
