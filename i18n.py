@@ -467,6 +467,124 @@ T: dict[str, dict] = {
     ),
     "ai_usage_unlimited": _("Limit: cheklovsiz", "Limit: unlimited", "Лимит: без ограничений"),
     "ai_usage": _("Bugun: {used}/{limit} ta javob", "Today: {used}/{limit} replies", "Сегодня: {used}/{limit} ответов"),
+    # ---------------- Smart FAQ ----------------
+    "btn_faq": _("\U0001F4DA Smart FAQ", "\U0001F4DA Smart FAQ", "\U0001F4DA Smart FAQ"),
+    "faq_menu": _(
+        "\U0001F4DA SMART FAQ\n\nKo'p beriladigan savollar\n\n"
+        "\U0001F4CA Saqlangan savollar: {count}/{max}\n"
+        "Holat: {status}\n\n"
+        "Mijoz savolingizga mos so'z yozsa, bot tayyor javobni o'zi yuboradi (AI ishlatilmaydi — tez va tejamkor). "
+        "Faqat Oflayn holatda ishlaydi; uxlash vaqtida uxlash xabari ketadi.{notice}",
+        "\U0001F4DA SMART FAQ\n\nFrequently Asked Questions\n\n"
+        "\U0001F4CA Saved questions: {count}/{max}\n"
+        "Status: {status}\n\n"
+        "When a customer's message matches your keywords, the bot sends your ready answer (no AI used — fast and cheap). "
+        "Works only while you are Offline; during sleep time the sleep message is sent.{notice}",
+        "\U0001F4DA SMART FAQ\n\nЧасто задаваемые вопросы\n\n"
+        "\U0001F4CA Сохранено вопросов: {count}/{max}\n"
+        "Статус: {status}\n\n"
+        "Если сообщение клиента совпадает с вашими ключевыми словами, бот отправит готовый ответ (без AI — быстро и дёшево). "
+        "Работает только в статусе Офлайн; во время сна отправляется сообщение для сна.{notice}",
+    ),
+    "btn_faq_add": _("➕ Savol qo'shish", "➕ Add Question", "➕ Добавить вопрос"),
+    "btn_faq_list": _("\U0001F4CB Savollarim", "\U0001F4CB My Questions", "\U0001F4CB Мои вопросы"),
+    "btn_faq_settings": _("⚙️ Sozlamalar", "⚙️ Settings", "⚙️ Настройки"),
+    "btn_faq_save": _("✅ Saqlash", "✅ Save", "✅ Сохранить"),
+    "btn_faq_cancel": _("❌ Bekor qilish", "❌ Cancel", "❌ Отмена"),
+    "btn_faq_delete": _("\U0001F5D1 O'chirish", "\U0001F5D1 Delete", "\U0001F5D1 Удалить"),
+    "btn_faq_entry_off": _("⏸ Vaqtincha o'chirish", "⏸ Pause", "⏸ Приостановить"),
+    "btn_faq_entry_on": _("▶️ Yoqish", "▶️ Resume", "▶️ Включить"),
+    "faq_q_prompt": _(
+        "1/3. Savolni yozing (masalan: Yetkazib berish bormi?).\nBekor qilish: /cancel",
+        "1/3. Write the question (e.g. Do you deliver?).\nCancel: /cancel",
+        "1/3. Напишите вопрос (например: Есть доставка?).\nОтмена: /cancel",
+    ),
+    "faq_kw_prompt": _(
+        "2/3. Kalit so'zlarni vergul bilan yozing (masalan: dostavka, delivery, yetkazish).\n"
+        "Mijoz xabarida shu so'zlardan biri butun so'z sifatida bo'lsa, javob ketadi. "
+        "So'zning turli shakllarini (dostavka, dostavkasi...) alohida yozing.\nBekor qilish: /cancel",
+        "2/3. Write the keywords separated by commas (e.g. delivery, shipping, dostavka).\n"
+        "If a customer's message contains one of them as a whole word, the answer is sent. "
+        "Write different forms of a word (delivery, deliver...) separately.\nCancel: /cancel",
+        "2/3. Напишите ключевые слова через запятую (например: доставка, delivery, dostavka).\n"
+        "Если в сообщении клиента есть одно из них как целое слово, будет отправлен ответ. "
+        "Разные формы слова (доставка, доставки...) пишите отдельно.\nОтмена: /cancel",
+    ),
+    "faq_ans_prompt": _(
+        "3/3. Javob matnini yozing (eng ko'pi {max} belgi).\nBekor qilish: /cancel",
+        "3/3. Write the answer text (up to {max} characters).\nCancel: /cancel",
+        "3/3. Напишите текст ответа (до {max} символов).\nОтмена: /cancel",
+    ),
+    "faq_confirm": _(
+        "Saqlashdan oldin tekshiring:\n\n❓ Savol: {q}\n\U0001F511 Kalit so'zlar: {kw}\n\U0001F4AC Javob: {a}",
+        "Please check before saving:\n\n❓ Question: {q}\n\U0001F511 Keywords: {kw}\n\U0001F4AC Answer: {a}",
+        "Проверьте перед сохранением:\n\n❓ Вопрос: {q}\n\U0001F511 Ключевые слова: {kw}\n\U0001F4AC Ответ: {a}",
+    ),
+    "faq_confirm_hint": _(
+        "Pastdagi tugmalardan birini bosing: Saqlash yoki Bekor qilish.",
+        "Please press one of the buttons below: Save or Cancel.",
+        "Нажмите одну из кнопок ниже: Сохранить или Отмена.",
+    ),
+    "faq_too_long": _(
+        "Matn juda uzun ({n} belgi, eng ko'pi {max}). Qisqartirib qayta yuboring.",
+        "The text is too long ({n} characters, max {max}). Shorten it and send again.",
+        "Текст слишком длинный ({n} симв., максимум {max}). Сократите и отправьте снова.",
+    ),
+    "faq_empty_text": _("Matn bo'sh bo'lmasligi kerak.", "The text can't be empty.", "Текст не должен быть пустым."),
+    "faq_kw_bad": _(
+        "Kalit so'zlar noto'g'ri: kamida 1 ta, ko'pi bilan {max} ta so'z/ibora kerak (har biri {len} belgigacha). "
+        "Vergul bilan ajratib qayta yuboring.",
+        "Invalid keywords: you need 1 to {max} words/phrases (each up to {len} characters). "
+        "Separate them with commas and send again.",
+        "Неверные ключевые слова: нужно от 1 до {max} слов/фраз (каждое до {len} символов). "
+        "Разделите запятыми и отправьте снова.",
+    ),
+    "faq_saved": _("✅ Savol saqlandi.", "✅ Question saved.", "✅ Вопрос сохранён."),
+    "faq_limit": _(
+        "Savollar limiti to'lgan ({max} ta). Yangisini qo'shish uchun eskisini o'chiring.",
+        "Question limit reached ({max}). Delete an old one to add a new one.",
+        "Лимит вопросов исчерпан ({max}). Удалите старый, чтобы добавить новый.",
+    ),
+    "faq_cancelled": _("Bekor qilindi.", "Cancelled.", "Отменено."),
+    "faq_draft_lost": _(
+        "Qoralama yo'qolgan (vaqt o'tdi). Iltimos, boshidan boshlang.",
+        "The draft was lost (timed out). Please start again.",
+        "Черновик потерян (истекло время). Начните сначала.",
+    ),
+    "faq_list_empty": _(
+        "Hali savol qo'shilmagan. \"➕ Savol qo'shish\" tugmasini bosing.",
+        "No questions yet. Press \"➕ Add Question\".",
+        "Вопросов пока нет. Нажмите «➕ Добавить вопрос».",
+    ),
+    "faq_list_title": _(
+        "\U0001F4CB Savollarim ({count}/{max}). Ko'rish uchun tanlang:",
+        "\U0001F4CB My Questions ({count}/{max}). Pick one to view:",
+        "\U0001F4CB Мои вопросы ({count}/{max}). Выберите для просмотра:",
+    ),
+    "faq_entry_view": _(
+        "❓ Savol: {q}\n\U0001F511 Kalit so'zlar: {kw}\n\U0001F4AC Javob: {a}\n\nHolat: {status}",
+        "❓ Question: {q}\n\U0001F511 Keywords: {kw}\n\U0001F4AC Answer: {a}\n\nStatus: {status}",
+        "❓ Вопрос: {q}\n\U0001F511 Ключевые слова: {kw}\n\U0001F4AC Ответ: {a}\n\nСтатус: {status}",
+    ),
+    "faq_entry_gone": _("Bu savol topilmadi.", "This question was not found.", "Этот вопрос не найден."),
+    "faq_deleted": _("\U0001F5D1 Savol o'chirildi.", "\U0001F5D1 Question deleted.", "\U0001F5D1 Вопрос удалён."),
+    "faq_settings": _(
+        "⚙️ Smart FAQ sozlamalari\n\nHolat: {status}\n\n"
+        "Ishlash tartibi: Oflayn holatda mijoz yozsa, avval Smart FAQ tekshiriladi. Aniq va yagona mos javob topilsa — "
+        "o'sha yuboriladi. Aks holda AI-Yordamchi (yoqilgan bo'lsa) yoki oddiy avtojavob ishlaydi.\n\n"
+        "Bot ehtiyotkor: inkor so'zi bor xabar (masalan \"yo'qmi\"), bir nechta javob bir xil darajada mos kelsa yoki "
+        "mos kelish aniq bo'lmasa — FAQ javobi yuborilmaydi.",
+        "⚙️ Smart FAQ settings\n\nStatus: {status}\n\n"
+        "How it works: while you're Offline and a customer writes, Smart FAQ is checked first. If one clear match is found, "
+        "that answer is sent. Otherwise the AI Assistant (if on) or the regular auto-reply works.\n\n"
+        "The bot is careful: a message with a negation (e.g. \"no\", \"not\"), several equally good matches, or an unclear "
+        "match gets no FAQ answer.",
+        "⚙️ Настройки Smart FAQ\n\nСтатус: {status}\n\n"
+        "Как работает: когда вы в статусе Офлайн и клиент пишет, сначала проверяется Smart FAQ. Если найдено одно чёткое "
+        "совпадение — отправляется этот ответ. Иначе работает AI-помощник (если включён) или обычный автоответ.\n\n"
+        "Бот осторожен: сообщение с отрицанием (например «нет», «не»), несколько одинаково подходящих ответов или "
+        "неясное совпадение — ответ из FAQ не отправляется.",
+    ),
     "ai_info_empty": _("kiritilmagan", "not set", "не указано"),
     "btn_ai_roles": _("\U0001F3AD Rolni tanlash", "\U0001F3AD Choose role", "\U0001F3AD Выбрать роль"),
     "btn_ai_info": _("\U0001F4DD Ma'lumot va uslub", "\U0001F4DD Info and style", "\U0001F4DD Информация и стиль"),
