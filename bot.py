@@ -71,7 +71,7 @@ from logic import (
     zone_button_label,
     zone_label,
     FAQ_MAX_ANSWER,
-    FAQ_MAX_ENTRIES,
+    FAQ_PLAN_LIMITS,
     FAQ_MAX_KEYWORD_LENGTH,
     FAQ_MAX_KEYWORDS,
     FAQ_MAX_QUESTION,
@@ -547,11 +547,12 @@ DEFAULT_FEATURE_PLANS = {
     "ai": ("ultra",),                   # AI-Yordamchi
     "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
     "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
+    "faq": ("plus", "pro", "ultra"),    # Smart FAQ (savollar soni tarifga qarab: FAQ_PLAN_LIMITS)
 }
 FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
 FEATURE_NAME_KEYS = {
     "bio": "feature_bio", "custom_text": "feature_text", "ai": "feature_ai", "name_clock_fonts": "feature_fonts",
-    "name_clock_zones": "feature_zones",
+    "name_clock_zones": "feature_zones", "faq": "feature_faq",
 }
 
 
@@ -630,6 +631,16 @@ def has_feature(user_id: int, feature: str) -> bool:
     return plan_allows(user_id, plan_of(user_id), feature)
 
 
+def faq_limit_for(user_id: int, plan: str | None = None) -> int:
+    """Smart FAQ'da nechta savol saqlash mumkin (0 — Smart FAQ ochiq emas). Admin — eng yuqori limit."""
+    plan = plan if plan is not None else plan_of(user_id)
+    if not plan_allows(user_id, plan, "faq"):
+        return 0
+    if ADMIN_ID and user_id == ADMIN_ID:
+        return max(FAQ_PLAN_LIMITS.values())
+    return FAQ_PLAN_LIMITS.get(plan, min(FAQ_PLAN_LIMITS.values()))
+
+
 def locked_text(lang: str, feature: str) -> str:
     plans = FEATURE_PLANS.get(feature, ())
     name = t(lang, FEATURE_NAME_KEYS[feature])
@@ -655,6 +666,8 @@ def locked_feature_for(data: str) -> str | None:
         return "custom_text"
     if data == "ai_menu" or data.startswith("ai_"):
         return "ai"
+    if data.startswith("faq_"):
+        return "faq"
     return None
 
 
@@ -708,6 +721,10 @@ def plan_features_text(lang: str, plan: str) -> str:
     included, excluded = [], []
     for feature, key, kw in items:
         (included if feature is None or plan in FEATURE_PLANS.get(feature, ()) else excluded).append(t(lang, key, **kw))
+    if plan in FEATURE_PLANS.get("faq", ()):
+        included.append(t(lang, "pf_faq", n=FAQ_PLAN_LIMITS.get(plan, min(FAQ_PLAN_LIMITS.values()))))
+    else:
+        excluded.append(t(lang, "pf_faq_locked", limits=" / ".join(f"{p.capitalize()} — {n}" for p, n in FAQ_PLAN_LIMITS.items() if p in FEATURE_PLANS.get("faq", ()))))
     included.append(t(lang, "pf_ads_off" if plan in AD_FREE_PLANS else "pf_ads_on"))
     parts = [t(lang, "plan_includes")] + [f"• {line}" for line in included]
     if excluded:
@@ -1492,7 +1509,7 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton(lock_label(t(lang, "btn_bio"), plan_allows(owner_id, plan, "bio")), callback_data="bio_menu")],
         [InlineKeyboardButton(t(lang, "btn_sleep"), callback_data="sleep_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_ai"), plan_allows(owner_id, plan, "ai")), callback_data="ai_menu")],
-        [InlineKeyboardButton(t(lang, "btn_faq"), callback_data="faq_menu")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_faq"), plan_allows(owner_id, plan, "faq")), callback_data="faq_menu")],
     ]
     if name_clock_allowed(owner_id):
         keyboard.append([InlineKeyboardButton(t(lang, "btn_name_clock"), callback_data="nc_menu")])
@@ -1525,7 +1542,7 @@ def build_faq_menu(owner_id: int, notice: str | None = None):
     enabled = s.get("faq_enabled", True)
     text = t(
         lang, "faq_menu",
-        count=db.count_faq_entries(owner_id), max=FAQ_MAX_ENTRIES,
+        count=db.count_faq_entries(owner_id), max=faq_limit_for(owner_id),
         status=t(lang, "status_on" if enabled else "status_off"),
         notice=f"\n\n{notice}" if notice else "",
     )
@@ -1555,7 +1572,7 @@ def build_faq_list(owner_id: int):
     if not entries:
         text = t(lang, "faq_list_empty")
     else:
-        text = t(lang, "faq_list_title", count=len(entries), max=FAQ_MAX_ENTRIES)
+        text = t(lang, "faq_list_title", count=len(entries), max=faq_limit_for(owner_id))
     keyboard = [
         [InlineKeyboardButton(("" if e["is_enabled"] else "\u23F8 ") + _faq_short(e["question"]), callback_data=f"faq_view:{e['id']}")]
         for e in entries
@@ -1586,7 +1603,12 @@ def build_faq_entry(owner_id: int, entry_id: int):
 def find_faq_answer(owner_id: int, text: str) -> str | None:
     """Mijoz xabariga mos FAQ javobi (ishonchli bo'lsagina), aks holda None. Xatolik oqimni buzmaydi."""
     try:
-        entry = match_faq(text, db.get_enabled_faq_entries(owner_id))
+        limit = faq_limit_for(owner_id)
+        if limit <= 0:
+            return None  # tarifda Smart FAQ yo'q (masalan Bepulga tushgan)
+        # Tarif pasaygan bo'lsa, faqat limitga sig'adigan birinchi savollar ishlaydi
+        entries = db.get_enabled_faq_entries(owner_id)[:limit]
+        entry = match_faq(text, entries)
     except Exception:
         logger.exception("Smart FAQ qidiruvida xato (owner=%s)", owner_id)
         return None
@@ -1981,8 +2003,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "faq_add":
-        if db.count_faq_entries(owner_id) >= FAQ_MAX_ENTRIES:
-            text, markup = build_faq_menu(owner_id, t(lang, "faq_limit", max=FAQ_MAX_ENTRIES))
+        limit = faq_limit_for(owner_id)
+        if db.count_faq_entries(owner_id) >= limit:
+            text, markup = build_faq_menu(owner_id, t(lang, "faq_limit", max=limit))
             await query.edit_message_text(text, reply_markup=markup)
             return
         _faq_drafts[owner_id] = {"ts": time.time()}
@@ -2001,8 +2024,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _faq_drafts.pop(owner_id, None)
         if d is None or not all(k in d for k in ("q", "kw", "ans")):
             text, markup = build_faq_menu(owner_id, t(lang, "faq_draft_lost"))
-        elif db.add_faq_entry(owner_id, d["q"], d["kw"], d["ans"], FAQ_MAX_ENTRIES) is None:
-            text, markup = build_faq_menu(owner_id, t(lang, "faq_limit", max=FAQ_MAX_ENTRIES))
+        elif db.add_faq_entry(owner_id, d["q"], d["kw"], d["ans"], faq_limit_for(owner_id)) is None:
+            text, markup = build_faq_menu(owner_id, t(lang, "faq_limit", max=faq_limit_for(owner_id)))
         else:
             text, markup = build_faq_menu(owner_id, t(lang, "faq_saved"))
         await query.edit_message_text(text, reply_markup=markup)
@@ -2087,7 +2110,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = update.message.text.strip()
     lang = get_lang(owner_id)
 
-    gated = {"text": "custom_text", "sleep_text": "custom_text", "birthday_date": "bio", "ai_info": "ai"}.get(action)
+    gated = {"text": "custom_text", "sleep_text": "custom_text", "birthday_date": "bio", "ai_info": "ai",
+             "faq_q": "faq", "faq_kw": "faq", "faq_ans": "faq", "faq_confirm": "faq"}.get(action)
     if gated and not has_feature(owner_id, gated):
         clear_pending_action(owner_id)
         text, markup = build_locked_view(owner_id, gated)
