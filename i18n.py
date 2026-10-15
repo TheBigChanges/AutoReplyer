@@ -566,6 +566,25 @@ T: dict[str, dict] = {
         "❓ Question: {q}\n\U0001F511 Keywords: {kw}\n\U0001F4AC Answer: {a}\n\nStatus: {status}",
         "❓ Вопрос: {q}\n\U0001F511 Ключевые слова: {kw}\n\U0001F4AC Ответ: {a}\n\nСтатус: {status}",
     ),
+    "btn_faq_edit_q": _("✏️ Savol matnini o'zgartirish", "✏️ Edit question", "✏️ Изменить вопрос"),
+    "btn_faq_edit_kw": _("\U0001F511 Kalit so'zlarni o'zgartirish", "\U0001F511 Edit keywords", "\U0001F511 Изменить ключевые слова"),
+    "btn_faq_edit_ans": _("\U0001F4AC Javob matnini o'zgartirish", "\U0001F4AC Edit answer", "\U0001F4AC Изменить ответ"),
+    "faq_edit_q_prompt": _(
+        "✏️ Savolning yangi matnini yuboring (eng ko'pi {max} belgi).\n\nHozirgi: {cur}\n\nBekor qilish: /cancel",
+        "✏️ Send the new question text (up to {max} characters).\n\nCurrent: {cur}\n\nCancel: /cancel",
+        "✏️ Отправьте новый текст вопроса (до {max} символов).\n\nСейчас: {cur}\n\nОтмена: /cancel",
+    ),
+    "faq_edit_kw_prompt": _(
+        "\U0001F511 Yangi kalit so'zlarni vergul bilan yuboring (ko'pi bilan 10 ta; eskilari almashtiriladi).\n\nHozirgi: {cur}\n\nBekor qilish: /cancel",
+        "\U0001F511 Send the new keywords separated by commas (up to 10; the old ones are replaced).\n\nCurrent: {cur}\n\nCancel: /cancel",
+        "\U0001F511 Отправьте новые ключевые слова через запятую (до 10; старые будут заменены).\n\nСейчас: {cur}\n\nОтмена: /cancel",
+    ),
+    "faq_edit_ans_prompt": _(
+        "\U0001F4AC Javobning yangi matnini yuboring (eng ko'pi {max} belgi).\n\nHozirgi: {cur}\n\nBekor qilish: /cancel",
+        "\U0001F4AC Send the new answer text (up to {max} characters).\n\nCurrent: {cur}\n\nCancel: /cancel",
+        "\U0001F4AC Отправьте новый текст ответа (до {max} символов).\n\nСейчас: {cur}\n\nОтмена: /cancel",
+    ),
+    "faq_updated": _("✅ Savol yangilandi.", "✅ Question updated.", "✅ Вопрос обновлён."),
     "faq_entry_gone": _("Bu savol topilmadi.", "This question was not found.", "Этот вопрос не найден."),
     "faq_deleted": _("\U0001F5D1 Savol o'chirildi.", "\U0001F5D1 Question deleted.", "\U0001F5D1 Вопрос удалён."),
     "faq_settings": _(
