@@ -436,7 +436,8 @@ def add_plan_duration(start_ts: float, n: int, kind: str, tz) -> float:
 # ---------------------------------------------------------------------------
 # Smart FAQ: mijoz xabariga mos tayyor javobni topish (Gemini'siz, qoidalar asosida)
 # ---------------------------------------------------------------------------
-FAQ_MAX_ENTRIES = 20
+# Tarif bo'yicha Smart FAQ savollari soni (Bepul tarifda Smart FAQ yo'q)
+FAQ_PLAN_LIMITS = {"plus": 15, "pro": 30, "ultra": 65}
 FAQ_MAX_QUESTION = 200
 FAQ_MAX_KEYWORDS = 10
 FAQ_MAX_KEYWORD_LENGTH = 40
