@@ -30,6 +30,7 @@ It also supports a clock in your Telegram profile name, BIO countdowns, user pla
 ## 📑 Contents
 
 - [Features](#-features)
+- [Smart FAQ guide](#-smart-faq-guide)
 - [Plans & pricing](#-plans--pricing)
 - [Getting started as a user](#-getting-started-as-a-user)
 - [Run your own instance](#-run-your-own-instance)
@@ -46,6 +47,7 @@ It also supports a clock in your Telegram profile name, BIO countdowns, user pla
 
 | Feature | Description |
 |---|---|
+| 📚 **Smart FAQ** | Keyword-based answers for frequently asked Business-chat questions, without a Gemini API call; owner-managed entries and plan-based limits. |
 | 📨 **Offline replies** | Automatically reply to incoming private Business messages when offline mode is enabled. |
 | 🌙 **Sleep Mode** | Send a separate reply during configured sleeping hours, including overnight schedules. |
 | ⏳ **Cooldown** | Avoid repeatedly responding to the same chat; persistent, atomic reply claims help with concurrency. |
@@ -57,6 +59,34 @@ It also supports a clock in your Telegram profile name, BIO countdowns, user pla
 | 💎 **Subscription plans** | Free, Plus, Pro, and Ultra tiers with feature access restrictions and expiry handling. |
 | 📢 **Admin broadcasts** | Persistent broadcast jobs, progress tracking, retry of failed deliveries, and resume after restart. |
 | 🛡️ **Moderation & support** | Admin user controls, feedback, appeals, and optional required-channel subscription checks. |
+
+### 📚 Smart FAQ guide
+
+Smart FAQ is a **rule-based, non-AI** answer system for incoming Telegram Business messages. Account owners can configure questions, comma-separated keywords or phrases, and the exact reply text. This can help answer recurring questions such as delivery availability or opening hours without consuming Gemini API requests.
+
+**Manage FAQs in the bot:** open `/start` → **Smart FAQ**. From the FAQ panel you can add and list entries, enable or disable the feature, and manage individual entries. Each entry supports **Edit Question**, **Edit Keywords**, **Edit Answer**, enable/disable, and delete. New entries are created through a step-by-step form and saved after confirmation. Editing is available in **Uzbek, English, and Russian**.
+
+**Example**
+
+```text
+Question: Do you offer delivery?
+Keywords: delivery, shipping, dostavka
+Answer: Yes, we offer delivery within our supported area.
+```
+
+When a Business-chat message clearly matches a configured question or keyword phrase, the bot sends the stored answer. The matching logic normalizes text, matches whole words/phrases, rejects certain ambiguous negations and very long messages, and declines to choose when multiple entries tie. **It is not semantic search and does not guarantee that every paraphrase will match.** Unmatched messages follow the existing fallback path.
+
+**Important behavior:**
+
+- FAQ responses are evaluated **only when Offline mode is active and Sleep Mode is not currently taking precedence**.
+- A confident FAQ match takes priority over Gemini AI; unmatched messages can continue to AI (when enabled and available) or the normal static reply.
+- In ordinary static-reply mode, FAQ uses the configured per-chat cooldown. When AI mode is available, FAQ follows the AI-style reply path rather than the static cooldown.
+- FAQ answers are stored in PostgreSQL under the account owner's ID; owner-scoped lookups and updates prevent cross-account editing via the application.
+- There is a **global FAQ on/off switch** and a separate enable/disable switch for each entry.
+- Entries per plan: **Free: unavailable; Plus: 15; Pro: 30; Ultra: 65**. If a plan is downgraded, only entries within its current allowance are considered for replies; upgrading restores access subject to the plan limit.
+- The maximum size of an entry is **200 characters for the question, 10 keywords/phrases (40 characters each), and 1,000 characters for the answer**. Incoming messages exceeding 60 normalized tokens are not matched as FAQ.
+
+**Privacy note:** FAQ answers are configured by the account owner and are sent automatically to relevant Business contacts. Avoid placing secrets or sensitive personal information in FAQ entries. Always review business-critical statements such as prices and availability.
 
 ### AI assistant roles
 
@@ -85,6 +115,7 @@ Prices below are **the currently configured public bot prices for one month**, i
 | Ad-free experience | — | ✅ | ✅ | ✅ |
 | Custom auto-reply and sleep text | — | ✅ | ✅ | ✅ |
 | BIO countdown | — | — | ✅ | ✅ |
+| Smart FAQ entries | — | **15** | **30** | **65** |
 | Gemini AI assistant | — | — | — | ✅ |
 | Extra clock fonts | — | — | — | ✅ |
 | Extra time zones | — | — | ✅ | ✅ |
@@ -99,7 +130,7 @@ Prices below are **the currently configured public bot prices for one month**, i
 2. Select your preferred language and review the control panel.
 3. In Telegram, open **Settings → Telegram Business → Chatbots** (menu labels may vary by client).
 4. Connect **@autoreplyer_dbot**, choose the chats it may access, and grant the permissions needed for the features you want (for example, replying to messages).
-5. Enable **offline auto-replies**, configure **Sleep Mode**, or choose the **profile clock** from the bot's panel.
+5. Enable **offline auto-replies**, configure **Sleep Mode**, set up **Smart FAQ** (Plus/Pro/Ultra), or choose the **profile clock** from the bot's panel.
 6. Visit **Plans** to see available upgrades and feature restrictions.
 
 For feature announcements, visit **[@AutoReplyer_News](https://t.me/AutoReplyer_News)**.
@@ -266,10 +297,10 @@ Telegram users / Business messages
 
 | File | Responsibility |
 |---|---|
-| [`bot.py`](bot.py) | Telegram handlers, Business updates, interface, plans, scheduling, broadcasts, name clock, and health server |
-| [`db.py`](db.py) | PostgreSQL access, schema initialization, stored settings, plans, and job persistence |
+| [`bot.py`](bot.py) | Telegram handlers, Business updates, Smart FAQ UI/editing and reply routing, plans, scheduling, broadcasts, name clock, and health server |
+| [`db.py`](db.py) | PostgreSQL access, schema initialization, owner-scoped FAQ CRUD, stored settings, plans, and job persistence |
 | [`ai.py`](ai.py) | Gemini requests, AI prompts, role presets, and response extraction |
-| [`logic.py`](logic.py) | Cooldown parsing, time/date handling, countdowns, and name formatting |
+| [`logic.py`](logic.py) | Cooldown parsing, time/date handling, countdowns, name formatting, FAQ keyword parsing and matching |
 | [`i18n.py`](i18n.py) | User-facing strings in three languages |
 | [`tests/`](tests/) | Unit and behavior tests for key features |
 | [`requirements.txt`](requirements.txt) | Python runtime dependencies |
@@ -310,7 +341,7 @@ This assigns a time-limited plan to the specified user ID; use the bot's help te
 
 ## 🧪 Testing
 
-The repository includes tests for AI, cooldown and reply flows, admin broadcasting, Business-account state, the profile clock, BIO countdowns, permissions, and related utilities.
+The repository includes tests for AI, cooldown and reply flows, admin broadcasting, Business-account state, the profile clock, BIO countdowns, permissions, **Smart FAQ matching, management, editing, plan limits, database isolation and message routing**, multilingual text, and related utilities.
 
 ```bash
 python -m pip install pytest
@@ -329,7 +360,7 @@ Some tests use mocks; any database integration testing should use a **separate t
 
 - **Official permissions only:** use the Telegram Business connection flow. The bot should never request Telegram passwords or authentication codes.
 - **AI message processing:** incoming text and relevant chat context may be sent to Google's Gemini API when AI replies are enabled. Ensure users understand this data flow.
-- **Stored data:** PostgreSQL stores settings, Business connections, history for applicable AI features, referral and broadcast data, and related metadata. Check retention and deletion behavior in [`db.py`](db.py) before deployment.
+- **Stored data:** PostgreSQL stores settings, Business connections, **Smart FAQ questions, keywords and answers**, history for applicable AI features, referral and broadcast data, and related metadata. Check retention and deletion behavior in [`db.py`](db.py) before deployment.
 - **Secrets:** never commit `.env`, API keys, database URLs, Telegram tokens, or customer information. Rotate any exposed secrets immediately.
 - **AI limitations:** the model may be inaccurate, unavailable, or rate-limited. Static reply fallback is available, but delivery is not guaranteed under every failure mode.
 - **Telegram restrictions:** Business rights, flood limits, profile editing privileges, and availability of features are controlled by Telegram.
