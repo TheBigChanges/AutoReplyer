@@ -274,6 +274,29 @@ class ButtonTests(OnboardingBase):
         datas = [b.callback_data for r in q.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard for b in r]
         self.assertIn("open_panel", datas)
 
+    def test_ok_with_auto_reply_off_goes_back_to_configure(self):
+        self.connect()
+        db.update_settings(self.u, offline=True)
+        bot.onboarding_start_view(self.u)  # verify
+        db.update_settings(self.u, offline=False)  # keyin o'chirib qo'yilgan
+        q = self.press("ob_ok")
+        self.assertTrue(self.alerted(q))
+        self.assertEqual(q.answer.call_args.args[0], i18n.t("uz", "ob_not_enabled"))
+        self.assertEqual(self.step(), "configure")
+        self.assertIn("2/3", q.edit_message_text.call_args.args[0])
+        self.assertEqual(q.answer.call_count, 1)
+
+    def test_configure_shows_localized_default_when_text_empty(self):
+        self.connect()
+        db.update_settings(self.u, auto_reply_text="")
+        for lang in i18n.LANGS:
+            bot.set_lang(self.u, lang)
+            text, _ = bot.build_onboarding_view(self.u, "configure")
+            self.assertIn("«" + i18n.t(lang, "default_auto_reply") + "»", text)
+        db.update_settings(self.u, auto_reply_text="Mening matnim")
+        text, _ = bot.build_onboarding_view(self.u, "configure")
+        self.assertIn("«Mening matnim»", text)
+
     def test_fail_shows_diagnosis_and_keeps_verify(self):
         self.connect()
         db.update_settings(self.u, offline=True, sleep_mode_enabled=True, cooldown_hours=2.0)
