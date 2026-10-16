@@ -548,7 +548,7 @@ def build_onboarding_view(owner_id: int, step: str, welcome: bool = False):
     elif step == "configure":
         st = _ob_state(owner_id)
         plan_note = t(lang, "ob_plan_paid" if has_feature(owner_id, "custom_text") else "ob_plan_free")
-        text = t(lang, "ob_configure", text=st["settings"].get("auto_reply_text") or "", plan_note=plan_note)
+        text = t(lang, "ob_configure", text=auto_reply_text_for(st["settings"], lang), plan_note=plan_note)
         rows = [[InlineKeyboardButton(t(lang, "btn_ob_enable"), callback_data="ob_enable")], _ob_skip_row(lang)]
     else:  # verify
         text = t(lang, "ob_verify", checks=_ob_checks_text(lang, _ob_state(owner_id)))
@@ -669,6 +669,13 @@ async def handle_onboarding_callback(query, owner_id: int, data: str):
         return
     if action == "ok":
         if await need_connection():
+            return
+        if not _ob_state(owner_id)["offline"]:
+            # Auto-Reply o'chirilgan bo'lsa tugatib bo'lmaydi — 2/3 bosqichga qaytaramiz
+            await query.answer(t(lang, "ob_not_enabled"), show_alert=True)
+            db.set_onboarding_step(owner_id, "configure", only_from=("verify",))
+            text, markup = build_onboarding_view(owner_id, "configure")
+            await _ob_edit(query, text, markup)
             return
         db.set_onboarding_step(owner_id, "completed", only_from=("verify",))
         await query.answer()
