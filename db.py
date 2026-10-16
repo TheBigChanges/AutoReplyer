@@ -393,6 +393,15 @@ def init_db():
         ):
             cur.execute(query)
 
+        # Smart Onboarding: bu ustun BIRINCHI marta qo'shilganda barcha mavjud
+        # foydalanuvchilar 'legacy' bo'ladi (ularga onboarding ko'rsatilmaydi).
+        # Shundan keyin default 'welcome' ga almashtiriladi — yangi qatorlar shundan boshlaydi.
+        # (Tartib muhim: backfill'dan KEYIN, shunda orqaga qarab qo'shilganlar ham legacy.)
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_step TEXT DEFAULT 'legacy'")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_started_at DOUBLE PRECISION")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed_at DOUBLE PRECISION")
+        cur.execute("ALTER TABLE users ALTER COLUMN onboarding_step SET DEFAULT 'welcome'")
+
 
 # --------------------------------------------------------------------------
 # Business connections
@@ -708,6 +717,72 @@ def expire_plans(now: float | None = None):
             (now,),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
+
+
+# --------------------------------------------------------------------------
+# Smart Onboarding (yangi foydalanuvchini ulash va sozlashga yo'naltirish)
+# --------------------------------------------------------------------------
+ONBOARDING_STEPS = ("legacy", "welcome", "connect", "configure", "verify", "completed", "skipped")
+ONBOARDING_ACTIVE_STEPS = ("connect", "configure", "verify")
+
+
+def get_onboarding_step(user_id: int) -> str:
+    """Foydalanuvchining onboarding holati. Qator yo'q yoki noma'lum qiymat bo'lsa — 'legacy'
+    (ya'ni onboarding ko'rsatilmaydi)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT onboarding_step FROM users WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+    step = row[0] if row else None
+    return step if step in ONBOARDING_STEPS else "legacy"
+
+
+def set_onboarding_step(user_id: int, step: str, only_from=None) -> bool:
+    """Holatni o'zgartiradi. `only_from` (ro'yxat) berilsa — faqat hozirgi holat shulardan
+    biri bo'lsagina (masalan, 'legacy' foydalanuvchi tasodifan onboarding'ga tushib qolmasin).
+    O'zgargan bo'lsa True. Boshlanish/tugash vaqti avtomatik yoziladi."""
+    if step not in ONBOARDING_STEPS:
+        raise ValueError(f"Noma'lum onboarding holati: {step!r}")
+    now = time.time()
+    sql = (
+        "UPDATE users SET onboarding_step = %s, "
+        "onboarding_started_at = CASE WHEN onboarding_started_at IS NULL AND %s <> 'welcome' "
+        "THEN %s ELSE onboarding_started_at END, "
+        "onboarding_completed_at = CASE WHEN %s = 'completed' THEN %s ELSE onboarding_completed_at END "
+        "WHERE user_id = %s"
+    )
+    params = [step, step, now, step, now, user_id]
+    if only_from is not None:
+        sql += " AND onboarding_step = ANY(%s)"
+        params.append(list(only_from))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.rowcount > 0
+
+
+def onboarding_stats() -> dict:
+    """Admin uchun: onboarding'ni boshlaganlar, ulaganlar, Auto-Reply yoqqanlar, tugatganlar."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE u.onboarding_started_at IS NOT NULL),
+              COUNT(*) FILTER (WHERE u.onboarding_started_at IS NOT NULL
+                               AND EXISTS (SELECT 1 FROM connections c
+                                           WHERE c.owner_user_id = u.user_id AND c.is_enabled)),
+              COUNT(*) FILTER (WHERE u.onboarding_started_at IS NOT NULL
+                               AND EXISTS (SELECT 1 FROM settings s
+                                           WHERE s.owner_user_id = u.user_id AND s.offline)),
+              COUNT(*) FILTER (WHERE u.onboarding_step = 'completed'),
+              COUNT(*) FILTER (WHERE u.onboarding_step = 'skipped'),
+              COUNT(*) FILTER (WHERE u.onboarding_step IN ('connect', 'configure', 'verify'))
+            FROM users u
+            """
+        )
+        r = cur.fetchone()
+    return {
+        "started": r[0], "connected": r[1], "auto_reply_on": r[2],
+        "completed": r[3], "skipped": r[4], "in_progress": r[5],
+    }
 
 
 def set_user_lang(user_id: int, lang: str) -> None:
@@ -1395,7 +1470,7 @@ def retry_on_disconnect(fn):
 for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info",
-    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_enabled_faq_entries", "list_faq_entries", "get_faq_entry", "count_faq_entries",
+    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "get_faq_entry", "count_faq_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
