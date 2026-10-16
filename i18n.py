@@ -50,42 +50,48 @@ T: dict[str, dict] = {
     "cancel_hint": _("Bekor qilish: /cancel", "To cancel: /cancel", "Отмена: /cancel"),
     # ---------------- ulash / start ----------------
     "how_connect": _(
-        "\U0001F517 Akkountni ulash — qadamma-qadam:\n\n"
-        "1️⃣ Telegram ilovangizda: Sozlamalar (Settings)\n"
-        "2️⃣ \"Telegram Business\" bo'limini toping va uni oching\n"
-        "3️⃣ \"Chatbots\" (yoki \"Chat Automation\") ni tanlang\n"
-        "4️⃣ Kiritish maydoniga botning username'ini yozing: @{bot}\n"
-        "   Ro'yxatda chiqqach, ustiga bosib tanlang\n"
-        "5️⃣ \"Access to chats\" (qaysi chatlarga ruxsat) so'ralganda:\n"
-        "   • \"All 1-to-1 Chats\" ni tanlang — bu barcha shaxsiy xabarlarga ruxsat beradi\n"
-        "   • (\"Only Selected Chats\"ni tansangiz, faqat o'zingiz qo'shgan odamlarga javob beriladi)\n"
-        "6️⃣ \"Reply to messages\" (xabarlarga javob berish) ruxsatini albatta yoqing —\n"
-        "   shu yoqilmasa, bot xabarlarni ko'radi lekin javob bera olmaydi\n\n"
-        "Ulangach, shu yerga qaytib /start yozing — panel avtomatik ochiladi.",
-        "\U0001F517 Connecting your account — step by step:\n\n"
-        "1️⃣ In Telegram, open Settings\n"
-        "2️⃣ Find and open the \"Telegram Business\" section\n"
-        "3️⃣ Choose \"Chatbots\" (or \"Chat Automation\")\n"
-        "4️⃣ In the input field type the bot's username: @{bot}\n"
-        "   When it appears in the list, tap it to select\n"
-        "5️⃣ When asked for \"Access to chats\":\n"
-        "   • Choose \"All 1-to-1 Chats\" — this allows replies to all private messages\n"
-        "   • (With \"Only Selected Chats\" the bot only replies to the people you add)\n"
-        "6️⃣ Be sure to enable the \"Reply to messages\" permission —\n"
-        "   without it the bot can see messages but cannot reply\n\n"
-        "Once connected, come back here and send /start — the panel will open automatically.",
-        "\U0001F517 Подключение аккаунта — шаг за шагом:\n\n"
-        "1️⃣ В Telegram откройте Настройки (Settings)\n"
-        "2️⃣ Найдите и откройте раздел \"Telegram Business\"\n"
-        "3️⃣ Выберите \"Чат-боты\" (\"Chatbots\" / \"Chat Automation\")\n"
-        "4️⃣ В поле ввода напишите username бота: @{bot}\n"
-        "   Когда он появится в списке, нажмите на него\n"
-        "5️⃣ Когда спросят \"Access to chats\" (доступ к чатам):\n"
-        "   • Выберите \"All 1-to-1 Chats\" — так бот сможет отвечать на все личные сообщения\n"
-        "   • (При \"Only Selected Chats\" бот отвечает только тем, кого вы добавите)\n"
-        "6️⃣ Обязательно включите разрешение \"Reply to messages\" (отвечать на сообщения) —\n"
-        "   без него бот видит сообщения, но не может отвечать\n\n"
-        "После подключения вернитесь сюда и отправьте /start — панель откроется автоматически.",
+        "\U0001F517 Akkountni ulash — qadamma-qadam\n\n"
+        "1️⃣ Telegram ilovasida Sozlamalar (Settings) bo'limini oching.\n\n"
+        "2️⃣ Profilingiz — \"My Profile\" (Mening profilim) bo'limiga kiring.\n\n"
+        "3️⃣ \"Chat Automations\" (Chat avtomatlashtirish) ni tanlang.\n\n"
+        "4️⃣ Bot username'ini kiriting: @{bot}\n"
+        "   Ro'yxatda chiqqach, ustiga bosib tanlang.\n\n"
+        "5️⃣ Chatlarga ruxsat so'ralganda:\n"
+        "   • \"All 1-to-1 Chats\" — barcha shaxsiy yozishmalarga javob beradi (tavsiya etiladi)\n"
+        "   • \"Only Selected Chats\" — faqat o'zingiz tanlagan suhbatlarga\n\n"
+        "6️⃣ \"Reply to messages\" (xabarlarga javob berish) ruxsatini albatta yoqing.\n"
+        "   Busiz bot xabarlarni ko'radi, lekin javob yubora olmaydi.\n\n"
+        "7️⃣ Tasdiqlang (Add / Save).\n\n"
+        "✅ Ulangach, bot sizga xabar yuboradi. Shu yerga qaytib /start yozing — keyingi qadam ochiladi.\n\n"
+        "ℹ️ Menyu nomlari Telegram versiyasiga qarab biroz farq qilishi mumkin.",
+        "\U0001F517 Connecting your account — step by step\n\n"
+        "1️⃣ Open Settings in the Telegram app.\n\n"
+        "2️⃣ Go to your profile — \"My Profile\".\n\n"
+        "3️⃣ Choose \"Chat Automations\".\n\n"
+        "4️⃣ Enter the bot's username: @{bot}\n"
+        "   When it appears in the list, tap it to select.\n\n"
+        "5️⃣ When asked which chats to allow:\n"
+        "   • \"All 1-to-1 Chats\" — replies in all private chats (recommended)\n"
+        "   • \"Only Selected Chats\" — only the chats you pick\n\n"
+        "6️⃣ Be sure to enable the \"Reply to messages\" permission.\n"
+        "   Without it the bot can see messages but cannot reply.\n\n"
+        "7️⃣ Confirm (Add / Save).\n\n"
+        "✅ Once connected, the bot will message you. Come back here and send /start — the next step will open.\n\n"
+        "ℹ️ Menu names may differ slightly depending on your Telegram version.",
+        "\U0001F517 Подключение аккаунта — шаг за шагом\n\n"
+        "1️⃣ Откройте Настройки (Settings) в приложении Telegram.\n\n"
+        "2️⃣ Зайдите в свой профиль — \"My Profile\" (Мой профиль).\n\n"
+        "3️⃣ Выберите \"Chat Automations\" (Автоматизация чатов).\n\n"
+        "4️⃣ Введите username бота: @{bot}\n"
+        "   Когда он появится в списке, нажмите на него.\n\n"
+        "5️⃣ Когда спросят, каким чатам разрешить доступ:\n"
+        "   • \"All 1-to-1 Chats\" — отвечает во всех личных чатах (рекомендуется)\n"
+        "   • \"Only Selected Chats\" — только в выбранных вами чатах\n\n"
+        "6️⃣ Обязательно включите разрешение \"Reply to messages\" (отвечать на сообщения).\n"
+        "   Без него бот видит сообщения, но не может отвечать.\n\n"
+        "7️⃣ Подтвердите (Add / Save).\n\n"
+        "✅ После подключения бот напишет вам. Вернитесь сюда и отправьте /start — откроется следующий шаг.\n\n"
+        "ℹ️ Названия пунктов меню могут немного отличаться в зависимости от версии Telegram.",
     ),
     "gate_text": _(
         "\U0001F512 Botdan foydalanish uchun avval kanalimizga obuna bo'ling.\n\n"
@@ -372,15 +378,15 @@ T: dict[str, dict] = {
     "bio_no_perm": _(
         "\U0001F382 BIO hisoblagich\n\n"
         "Bu funksiya uchun \"Edit bio\" (BIO'ni tahrirlash) ruxsati kerak.\n\n"
-        "Telegram: Sozlamalar → Telegram Business → Chatbots → botni bosing → "
+        "Telegram: Sozlamalar → My Profile → Chat Automations → botni bosing → "
         "\"Edit bio\" ruxsatini yoqing. Keyin shu tugmani qayta bosing.",
         "\U0001F382 BIO countdown\n\n"
         "This feature needs the \"Edit bio\" permission.\n\n"
-        "Telegram: Settings → Telegram Business → Chatbots → tap the bot → "
+        "Telegram: Settings → My Profile → Chat Automations → tap the bot → "
         "enable the \"Edit bio\" permission. Then press this button again.",
         "\U0001F382 BIO-счётчик\n\n"
         "Для этой функции нужно разрешение \"Edit bio\" (изменение BIO).\n\n"
-        "Telegram: Настройки → Telegram Business → Чат-боты → нажмите на бота → "
+        "Telegram: Настройки → My Profile → Chat Automations → нажмите на бота → "
         "включите разрешение \"Edit bio\". Затем снова нажмите эту кнопку.",
     ),
     "bio_menu": _(
@@ -1009,24 +1015,21 @@ T: dict[str, dict] = {
         "3. Chat Automations ni tanlang.\n"
         "4. @{bot} ni ulang.\n"
         "5. Kerakli chatlarni tanlang va Reply to messages ruxsatini yoqing.\n\n"
-        "Menyu nomlari Telegram versiyasiga qarab biroz farq qilishi mumkin "
-        "(masalan, \"Telegram Business\" → \"Chatbots\").",
+        "Menyu nomlari Telegram versiyasiga qarab biroz farq qilishi mumkin.",
         "\U0001F517 1/3 — Connect Telegram\n\n"
         "1. Open Settings in Telegram.\n"
         "2. Go to My Profile.\n"
         "3. Choose Chat Automations.\n"
         "4. Connect @{bot}.\n"
         "5. Pick the chats and enable the Reply to messages permission.\n\n"
-        "Menu names may differ slightly depending on your Telegram version "
-        "(for example, \"Telegram Business\" → \"Chatbots\").",
+        "Menu names may differ slightly depending on your Telegram version.",
         "\U0001F517 1/3 — Подключите Telegram\n\n"
         "1. Откройте Settings в Telegram.\n"
         "2. Зайдите в My Profile.\n"
         "3. Выберите Chat Automations.\n"
         "4. Подключите @{bot}.\n"
         "5. Выберите чаты и включите разрешение Reply to messages.\n\n"
-        "Названия пунктов меню могут немного отличаться в зависимости от версии Telegram "
-        "(например, \"Telegram Business\" → \"Chatbots\").",
+        "Названия пунктов меню могут немного отличаться в зависимости от версии Telegram.",
     ),
     "ob_not_connected": _(
         "Hali ulanmagan. Yuqoridagi qadamlarni bajaring va yana bosing.",
