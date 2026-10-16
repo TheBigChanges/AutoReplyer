@@ -1000,6 +1000,117 @@ T: dict[str, dict] = {
     "zone_london": _("London", "London", "Лондон"),
     "zone_berlin": _("Berlin", "Berlin", "Берлин"),
     "zone_newyork": _("Nyu-York", "New York", "Нью-Йорк"),
+    # ---------------- Smart Onboarding ----------------
+    "ob_welcome": _("\U0001F44B Xush kelibsiz!\n\n", "\U0001F44B Welcome!\n\n", "\U0001F44B Добро пожаловать!\n\n"),
+    "ob_connect": _(
+        "\U0001F517 1/3 — Telegram'ni ulang\n\n"
+        "1. Telegram'da Settings ni oching.\n"
+        "2. My Profile bo'limiga kiring.\n"
+        "3. Chat Automations ni tanlang.\n"
+        "4. @{bot} ni ulang.\n"
+        "5. Kerakli chatlarni tanlang va Reply to messages ruxsatini yoqing.\n\n"
+        "Menyu nomlari Telegram versiyasiga qarab biroz farq qilishi mumkin "
+        "(masalan, \"Telegram Business\" → \"Chatbots\").",
+        "\U0001F517 1/3 — Connect Telegram\n\n"
+        "1. Open Settings in Telegram.\n"
+        "2. Go to My Profile.\n"
+        "3. Choose Chat Automations.\n"
+        "4. Connect @{bot}.\n"
+        "5. Pick the chats and enable the Reply to messages permission.\n\n"
+        "Menu names may differ slightly depending on your Telegram version "
+        "(for example, \"Telegram Business\" → \"Chatbots\").",
+        "\U0001F517 1/3 — Подключите Telegram\n\n"
+        "1. Откройте Settings в Telegram.\n"
+        "2. Зайдите в My Profile.\n"
+        "3. Выберите Chat Automations.\n"
+        "4. Подключите @{bot}.\n"
+        "5. Выберите чаты и включите разрешение Reply to messages.\n\n"
+        "Названия пунктов меню могут немного отличаться в зависимости от версии Telegram "
+        "(например, \"Telegram Business\" → \"Chatbots\").",
+    ),
+    "ob_not_connected": _(
+        "Hali ulanmagan. Yuqoridagi qadamlarni bajaring va yana bosing.",
+        "Not connected yet. Follow the steps above and tap again.",
+        "Пока не подключено. Выполните шаги выше и нажмите снова.",
+    ),
+    "ob_no_reply_perm": _(
+        "Ulangan, lekin \"Reply to messages\" ruxsati yoqilmagan. Uni yoqing va qayta tekshiring.",
+        "Connected, but the \"Reply to messages\" permission is off. Enable it and check again.",
+        "Подключено, но разрешение \"Reply to messages\" выключено. Включите его и проверьте снова.",
+    ),
+    "ob_configure": _(
+        "✅ Telegram ulangan!\n\n"
+        "\U0001F4AC 2/3 — Avtomatik javob\n\n"
+        "Siz band yoki offline bo'lganingizda AutoReplyer xabarlarga javob beradi.\n\n"
+        "\U0001F4DD Javob matni:\n«{text}»\n\n{plan_note}",
+        "✅ Telegram is connected!\n\n"
+        "\U0001F4AC 2/3 — Auto-reply\n\n"
+        "When you are busy or offline, AutoReplyer answers messages for you.\n\n"
+        "\U0001F4DD Reply text:\n«{text}»\n\n{plan_note}",
+        "✅ Telegram подключён!\n\n"
+        "\U0001F4AC 2/3 — Автоответ\n\n"
+        "Когда вы заняты или офлайн, AutoReplyer отвечает на сообщения за вас.\n\n"
+        "\U0001F4DD Текст ответа:\n«{text}»\n\n{plan_note}",
+    ),
+    "ob_plan_free": _(
+        "Bepul tarifda standart javob ishlatiladi. O'z matningizni yozish pullik tariflarda mavjud.",
+        "The Free plan uses the standard reply. Writing your own text is available on paid plans.",
+        "На бесплатном тарифе используется стандартный ответ. Свой текст доступен на платных тарифах.",
+    ),
+    "ob_plan_paid": _(
+        "Javob matnini keyinroq boshqaruv panelida o'zgartirishingiz mumkin.",
+        "You can change the reply text later in the control panel.",
+        "Текст ответа можно изменить позже в панели управления.",
+    ),
+    "ob_verify": _(
+        "\U0001F9EA 3/3 — Botni sinab ko'ring\n\n{checks}\n\n"
+        "Boshqa Telegram akkauntidan o'zingizga xabar yuboring.",
+        "\U0001F9EA 3/3 — Try the bot\n\n{checks}\n\n"
+        "Send yourself a message from another Telegram account.",
+        "\U0001F9EA 3/3 — Проверьте бота\n\n{checks}\n\n"
+        "Отправьте себе сообщение с другого аккаунта Telegram.",
+    ),
+    "ob_chk_connected": _("Telegram ulangan", "Telegram is connected", "Telegram подключён"),
+    "ob_chk_reply": _("Javob berish ruxsati mavjud", "Reply permission is granted", "Разрешение на ответы есть"),
+    "ob_chk_enabled": _("Auto-Reply yoqilgan", "Auto-Reply is on", "Автоответ включён"),
+    "ob_fail": _(
+        "\U0001F50E Javob kelmadi — tekshirib ko'ramiz:\n\n{checks}\n\n"
+        "Yana bir nechta sabab:\n"
+        "• Xabarni BOSHQA akkauntdan yuboring — o'zingizga yozsangiz ishlamaydi.\n"
+        "• Bitta suhbatga {hours} soatda bir marta javob beriladi (cooldown).\n"
+        "• Chat Automations'da shu suhbatga ruxsat berilganini tekshiring.{sleep}",
+        "\U0001F50E No reply came — let's check:\n\n{checks}\n\n"
+        "A few more possible reasons:\n"
+        "• Send the message from ANOTHER account — writing to yourself does not work.\n"
+        "• Each chat gets one reply per {hours} hours (cooldown).\n"
+        "• Check that this chat is allowed in Chat Automations.{sleep}",
+        "\U0001F50E Ответ не пришёл — проверим:\n\n{checks}\n\n"
+        "Ещё несколько возможных причин:\n"
+        "• Пишите с ДРУГОГО аккаунта — сообщение самому себе не сработает.\n"
+        "• В один чат отвечаем раз в {hours} ч (кулдаун).\n"
+        "• Проверьте, что этот чат разрешён в Chat Automations.{sleep}",
+    ),
+    "ob_fail_sleep": _(
+        "\n• Sleep Mode yoqilgan — uyqu vaqtida u o'z matnini yuboradi.",
+        "\n• Sleep Mode is on — during sleep hours it sends its own text.",
+        "\n• Включён Sleep Mode — в часы сна он отправляет свой текст.",
+    ),
+    "ob_done": _(
+        "\U0001F389 Tayyor! Auto-Reply ishlayapti. Mana boshqaruv paneli:",
+        "\U0001F389 All set! Auto-Reply is working. Here is your control panel:",
+        "\U0001F389 Готово! Автоответ работает. Вот ваша панель управления:",
+    ),
+    "ob_skipped": _(
+        "Sozlash o'tkazib yuborildi. Istalgan payt \"\U0001F680 Sozlashni davom ettirish\" tugmasi orqali qaytishingiz mumkin.",
+        "Setup skipped. You can come back any time with the \"\U0001F680 Continue setup\" button.",
+        "Настройка пропущена. Вернуться можно в любой момент кнопкой \"\U0001F680 Продолжить настройку\".",
+    ),
+    "btn_ob_check": _("✅ Ulanishni tekshirish", "✅ Check connection", "✅ Проверить подключение"),
+    "btn_ob_enable": _("✅ Auto-Reply'ni yoqish", "✅ Turn on Auto-Reply", "✅ Включить автоответ"),
+    "btn_ob_ok": _("✅ Javob keldi", "✅ Reply arrived", "✅ Ответ пришёл"),
+    "btn_ob_fail": _("❌ Javob kelmadi", "❌ No reply", "❌ Ответа нет"),
+    "btn_ob_skip": _("⏭ O'tkazib yuborish", "⏭ Skip", "⏭ Пропустить"),
+    "btn_ob_resume": _("\U0001F680 Sozlashni davom ettirish", "\U0001F680 Continue setup", "\U0001F680 Продолжить настройку"),
 }
 
 
