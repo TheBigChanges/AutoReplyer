@@ -1,6 +1,6 @@
 """
-Foydalanuvchi o'z akkountini Telegramning o'z "Chat Automation" (Telegram
-Business -> Chatbots) funksiyasi orqali shu botga ulaydi. Hech qanday
+Foydalanuvchi o'z akkountini Telegramning o'z "Chat Automation" (Settings ->
+My Profile -> Chat Automations) funksiyasi orqali shu botga ulaydi. Hech qanday
 telefon raqam, kod yoki parol so'rash shart emas — bularning barchasi
 Telegramning o'zi tomonidan, o'zining rasmiy oqimida amalga oshiriladi.
 
@@ -1875,6 +1875,12 @@ async def run_start_flow(bot, owner_id: int, inviter_id: int | None, send):
         # Referal obuna bo'lgandan KEYIN hisoblanadi (tugma orqali olib o'tiladi)
         await send(t(lang, "gate_text"), build_subscribe_gate_markup(inviter_id, lang))
         return
+    await finish_start_flow(bot, owner_id, inviter_id, send)
+
+
+async def finish_start_flow(bot, owner_id: int, inviter_id: int | None, send):
+    """Obunadan o'tgandan keyingi qism: referal -> Smart Onboarding (kerak bo'lsa) -> bosh menyu.
+    Obuna "✅ Tekshirish" tugmasi bilan tasdiqlanganda ham SHU funksiya ishlaydi (onboarding o'tib ketmasin)."""
     await process_referral(bot, owner_id, inviter_id)
     ob_view = onboarding_start_view(owner_id)
     if ob_view is not None:
@@ -1973,9 +1979,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     inviter_id = int(data.split(":", 1)[1])
                 except ValueError:
                     inviter_id = None
-            await process_referral(context.bot, owner_id, inviter_id)
-            greeting, markup = build_start_view(owner_id)
-            await query.edit_message_text(greeting, reply_markup=markup)
+
+            async def send(text, markup):
+                await query.edit_message_text(text, reply_markup=markup)
+
+            await finish_start_flow(context.bot, owner_id, inviter_id, send)
         else:
             await query.answer(t(lang, "gate_fail"), show_alert=True)
         return
