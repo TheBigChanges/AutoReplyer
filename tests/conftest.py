@@ -21,6 +21,8 @@ def _language_already_chosen(monkeypatch):
     everyone = ("free", "plus", "pro", "ultra")
     monkeypatch.setattr(bot, "FEATURE_PLANS", {k: everyone for k in bot.DEFAULT_FEATURE_PLANS})
     monkeypatch.setattr(bot, "find_faq_answer", lambda owner_id, text: None)  # FAQ testlari o'zi yoqadi
+    monkeypatch.setattr(bot, "onboarding_start_view", lambda owner_id: None)  # onboarding testlari o'zi yoqadi
+    monkeypatch.setattr(bot, "onboarding_view_on_connection", lambda owner_id: None)
     monkeypatch.setattr(bot, "shows_ads", lambda *a, **k: False)  # reklama testlari o'zi yoqadi
     monkeypatch.setattr(bot, "NAME_CLOCK_RATE_PER_SEC", 100000.0)  # testlarda sekinlashtirmaslik
     yield
