@@ -1041,6 +1041,11 @@ T: dict[str, dict] = {
         "Connected, but the \"Reply to messages\" permission is off. Enable it and check again.",
         "Подключено, но разрешение \"Reply to messages\" выключено. Включите его и проверьте снова.",
     ),
+    "ob_not_enabled": _(
+        "Auto-Reply hali yoqilmagan. Avval uni yoqing.",
+        "Auto-Reply is not turned on yet. Turn it on first.",
+        "Автоответ ещё не включён. Сначала включите его.",
+    ),
     "ob_configure": _(
         "✅ Telegram ulangan!\n\n"
         "\U0001F4AC 2/3 — Avtomatik javob\n\n"
