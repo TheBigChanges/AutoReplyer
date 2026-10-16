@@ -1338,7 +1338,11 @@ def get_ai_usage(owner_user_id: int, day: str) -> int:
         return row[0] if row else 0
 
 
-def get_ai_history(owner_user_id: int, chat_id: int, limit: int = 10, max_age_seconds: float = 7 * 86400):
+# AI yozishmalar tarixi shuncha vaqtdan keyin unutiladi (ham javobda, ham bazadan tozalashda)
+AI_HISTORY_MAX_AGE_SECONDS = 2 * 86400  # 2 kun
+
+
+def get_ai_history(owner_user_id: int, chat_id: int, limit: int = 10, max_age_seconds: float = AI_HISTORY_MAX_AGE_SECONDS):
     """Oxirgi `limit` ta xabar, eskidan yangiga: [{'role','text'}]. Juda eskilari hisobga olinmaydi."""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
@@ -1381,7 +1385,7 @@ def delete_ai_data(owner_user_id: int):
         cur.execute("DELETE FROM ai_chat_pause WHERE owner_user_id = %s", (owner_user_id,))
 
 
-def purge_old_ai_data(max_age_seconds: float = 7 * 86400):
+def purge_old_ai_data(max_age_seconds: float = AI_HISTORY_MAX_AGE_SECONDS):
     cutoff = time.time() - max_age_seconds
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM ai_chat_history WHERE created_at < %s", (cutoff,))
