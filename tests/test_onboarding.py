@@ -186,6 +186,36 @@ class StartViewTests(OnboardingBase):
         self.assertEqual(sent, [i18n.t("uz", "gate_text")])
         self.assertEqual(self.step(), "welcome")  # hali boshlanmagan
 
+    def test_subscription_check_button_leads_to_onboarding(self):
+        """Obuna "✅ Tekshirish" bilan tasdiqlansa — asosiy menyu emas, onboarding chiqadi."""
+        q = MagicMock()
+        q.data = "check_subscription"
+        q.from_user.id = self.u
+        q.answer = AsyncMock()
+        q.edit_message_text = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = q
+        with patch.object(bot, "track_user"), patch.object(bot, "is_subscribed", AsyncMock(return_value=True)), \
+                patch.object(bot, "process_referral", AsyncMock()) as ref:
+            run(bot.on_button(upd, MagicMock()))
+        self.assertIn("1/3", q.edit_message_text.call_args.args[0])
+        self.assertEqual(self.step(), "connect")
+        ref.assert_awaited_once()
+
+    def test_subscription_check_button_legacy_user_gets_normal_menu(self):
+        db.set_onboarding_step(self.u, "legacy")
+        q = MagicMock()
+        q.data = "check_subscription"
+        q.from_user.id = self.u
+        q.answer = AsyncMock()
+        q.edit_message_text = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = q
+        with patch.object(bot, "track_user"), patch.object(bot, "is_subscribed", AsyncMock(return_value=True)), \
+                patch.object(bot, "process_referral", AsyncMock()):
+            run(bot.on_button(upd, MagicMock()))
+        self.assertEqual(q.edit_message_text.call_args.args[0], i18n.t("uz", "greeting_new"))
+
     def test_configure_plan_note_free_vs_paid(self):
         self.connect()
         with patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS)):
