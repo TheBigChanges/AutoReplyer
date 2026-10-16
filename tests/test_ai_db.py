@@ -2,8 +2,8 @@
 
 import os
 import random
-import sys
 import threading
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -101,6 +101,24 @@ class AiDbTests(unittest.TestCase):
         with _conn() as c, c.cursor() as cur:
             cur.execute("UPDATE ai_chat_history SET created_at = %s WHERE owner_user_id = %s",
                         (time.time() - 10 * 86400, self.owner))
+        self.assertEqual(db.get_ai_history(self.owner, self.chat), [])
+        db.purge_old_ai_data()
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM ai_chat_history WHERE owner_user_id = %s", (self.owner,))
+            self.assertEqual(cur.fetchone()[0], 0)
+
+    def test_history_forgotten_after_two_days(self):
+        self.assertEqual(db.AI_HISTORY_MAX_AGE_SECONDS, 2 * 86400)
+        db.add_ai_messages(self.owner, self.chat, [("user", "kecha")])
+        with _conn() as c, c.cursor() as cur:  # 1.5 kun oldin — hali eslanadi
+            cur.execute("UPDATE ai_chat_history SET created_at = %s WHERE owner_user_id = %s",
+                        (time.time() - 1.5 * 86400, self.owner))
+        self.assertEqual(len(db.get_ai_history(self.owner, self.chat)), 1)
+        db.purge_old_ai_data()
+        self.assertEqual(len(db.get_ai_history(self.owner, self.chat)), 1)
+        with _conn() as c, c.cursor() as cur:  # 2.5 kun oldin — unutiladi va o'chiriladi
+            cur.execute("UPDATE ai_chat_history SET created_at = %s WHERE owner_user_id = %s",
+                        (time.time() - 2.5 * 86400, self.owner))
         self.assertEqual(db.get_ai_history(self.owner, self.chat), [])
         db.purge_old_ai_data()
         with _conn() as c, c.cursor() as cur:
