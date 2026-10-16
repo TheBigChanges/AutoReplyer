@@ -496,6 +496,195 @@ async def process_referral(bot, owner_id: int, inviter_id: int | None):
 SUBSCRIBE_GATE_TEXT = t("uz", "gate_text")  # eski nom (o'zbekcha)
 
 
+# ---------------------------------------------------------------------------
+# Smart Onboarding: yangi foydalanuvchini ulash -> Auto-Reply -> sinov bosqichlariga yo'naltirish.
+# Majburiy emas: har bosqichda "O'tkazib yuborish" bor; eski foydalanuvchilar ('legacy') ko'rmaydi.
+# ---------------------------------------------------------------------------
+ONBOARDING_ACTIVE = db.ONBOARDING_ACTIVE_STEPS  # connect, configure, verify
+
+
+def _ob_state(owner_id: int) -> dict:
+    conn = db.get_connection(owner_id)
+    enabled = bool(conn and conn["is_enabled"])
+    can_reply = bool(enabled and conn["can_reply"])
+    settings = db.get_settings(owner_id)
+    return {
+        "enabled": enabled,
+        "can_reply": can_reply,
+        "offline": bool(settings.get("offline")),
+        "settings": settings,
+    }
+
+
+def _ob_target_step(owner_id: int) -> str:
+    """Haqiqiy holatga qarab qaysi bosqich ko'rsatilishi kerak (bazadagi holat emas — haqiqat)."""
+    st = _ob_state(owner_id)
+    if not st["can_reply"]:
+        return "connect"
+    if not st["offline"]:
+        return "configure"
+    return "verify"
+
+
+def _ob_checks_text(lang: str, st: dict) -> str:
+    rows = (
+        (st["enabled"], "ob_chk_connected"),
+        (st["can_reply"], "ob_chk_reply"),
+        (st["offline"], "ob_chk_enabled"),
+    )
+    return "\n".join(("✅ " if ok else "❌ ") + t(lang, key) for ok, key in rows)
+
+
+def _ob_skip_row(lang: str):
+    return [InlineKeyboardButton(t(lang, "btn_ob_skip"), callback_data="ob_skip")]
+
+
+def build_onboarding_view(owner_id: int, step: str, welcome: bool = False):
+    """Berilgan bosqich uchun (matn, tugmalar)."""
+    lang = get_lang(owner_id)
+    if step == "connect":
+        text = (t(lang, "ob_welcome") if welcome else "") + t(lang, "ob_connect", bot=BOT_USERNAME)
+        rows = [[InlineKeyboardButton(t(lang, "btn_ob_check"), callback_data="ob_check")], _ob_skip_row(lang)]
+    elif step == "configure":
+        st = _ob_state(owner_id)
+        plan_note = t(lang, "ob_plan_paid" if has_feature(owner_id, "custom_text") else "ob_plan_free")
+        text = t(lang, "ob_configure", text=st["settings"].get("auto_reply_text") or "", plan_note=plan_note)
+        rows = [[InlineKeyboardButton(t(lang, "btn_ob_enable"), callback_data="ob_enable")], _ob_skip_row(lang)]
+    else:  # verify
+        text = t(lang, "ob_verify", checks=_ob_checks_text(lang, _ob_state(owner_id)))
+        rows = [
+            [
+                InlineKeyboardButton(t(lang, "btn_ob_ok"), callback_data="ob_ok"),
+                InlineKeyboardButton(t(lang, "btn_ob_fail"), callback_data="ob_fail"),
+            ],
+            _ob_skip_row(lang),
+        ]
+    return text, InlineKeyboardMarkup(rows)
+
+
+def onboarding_start_view(owner_id: int):
+    """/start paytida: onboarding kerak bo'lsa (matn, tugmalar), kerak bo'lmasa None.
+    'welcome' -> birinchi marta; connect/configure/verify -> qolgan joyidan davom ettirish."""
+    step = db.get_onboarding_step(owner_id)
+    if step == "welcome":
+        target = _ob_target_step(owner_id)
+        db.set_onboarding_step(owner_id, target, only_from=("welcome",))
+        return build_onboarding_view(owner_id, target, welcome=True)
+    if step in ONBOARDING_ACTIVE:
+        target = _ob_target_step(owner_id)
+        if target != step:
+            db.set_onboarding_step(owner_id, target, only_from=ONBOARDING_ACTIVE)
+        return build_onboarding_view(owner_id, target)
+    return None
+
+
+def onboarding_view_on_connection(owner_id: int):
+    """Business ulanish hodisasi kelganda: onboarding'dagi foydalanuvchini keyingi bosqichga
+    o'tkazadi va yangi ekranni qaytaradi. Onboarding'da bo'lmasa yoki bosqich o'zgarmasa — None."""
+    step = db.get_onboarding_step(owner_id)
+    if step != "welcome" and step not in ONBOARDING_ACTIVE:
+        return None
+    target = _ob_target_step(owner_id)
+    if step != "welcome" and target == step:
+        return None
+    db.set_onboarding_step(owner_id, target, only_from=("welcome",) + tuple(ONBOARDING_ACTIVE))
+    return build_onboarding_view(owner_id, target)
+
+
+async def _ob_edit(query, text: str, markup):
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
+    except BadRequest as e:
+        if "not modified" not in str(e).lower():
+            raise
+
+
+async def handle_onboarding_callback(query, owner_id: int, data: str):
+    """ob_* tugmalari. Har bir shox query.answer() ni aynan BIR marta chaqiradi."""
+    lang = get_lang(owner_id)
+    action = data[3:]
+    step = db.get_onboarding_step(owner_id)
+
+    async def bad():
+        await query.answer(t(lang, "bad_button"), show_alert=True)
+
+    async def need_connection() -> bool:
+        """Ulanish yo'q/ruxsat yo'q bo'lsa alert ko'rsatadi va True qaytaradi."""
+        st = _ob_state(owner_id)
+        if not st["enabled"]:
+            await query.answer(t(lang, "ob_not_connected"), show_alert=True)
+            return True
+        if not st["can_reply"]:
+            await query.answer(t(lang, "ob_no_reply_perm"), show_alert=True)
+            return True
+        return False
+
+    if action == "resume":
+        if step != "skipped" and step not in ONBOARDING_ACTIVE:
+            await bad()
+            return
+        target = _ob_target_step(owner_id)
+        db.set_onboarding_step(owner_id, target, only_from=("skipped",) + tuple(ONBOARDING_ACTIVE))
+        await query.answer()
+        text, markup = build_onboarding_view(owner_id, target)
+        await _ob_edit(query, text, markup)
+        return
+
+    if step not in ONBOARDING_ACTIVE or action not in ("check", "enable", "ok", "fail", "skip"):
+        await bad()
+        return
+
+    if action == "skip":
+        db.set_onboarding_step(owner_id, "skipped", only_from=ONBOARDING_ACTIVE)
+        await query.answer()
+        await _ob_edit(query, t(lang, "ob_skipped"), main_menu_markup(owner_id))
+        return
+
+    if action == "check":
+        if await need_connection():
+            return
+        target = _ob_target_step(owner_id)
+        db.set_onboarding_step(owner_id, target, only_from=ONBOARDING_ACTIVE)
+        await query.answer()
+        text, markup = build_onboarding_view(owner_id, target)
+        await _ob_edit(query, text, markup)
+        return
+
+    if action == "enable":
+        if step == "connect":
+            await bad()
+            return
+        if await need_connection():
+            return
+        db.update_settings(owner_id, offline=True)
+        db.set_onboarding_step(owner_id, "verify", only_from=ONBOARDING_ACTIVE)
+        await query.answer()
+        text, markup = build_onboarding_view(owner_id, "verify")
+        await _ob_edit(query, text, markup)
+        return
+
+    # ok / fail faqat 'verify' bosqichida
+    if step != "verify":
+        await bad()
+        return
+    if action == "ok":
+        if await need_connection():
+            return
+        db.set_onboarding_step(owner_id, "completed", only_from=("verify",))
+        await query.answer()
+        await _ob_edit(query, t(lang, "ob_done"), main_menu_markup(owner_id))
+        return
+    # fail: sabablarni tekshirib ko'rsatamiz
+    st = _ob_state(owner_id)
+    sleep = t(lang, "ob_fail_sleep") if st["settings"].get("sleep_mode_enabled") else ""
+    hours = st["settings"].get("cooldown_hours")
+    hours = f"{hours:g}" if isinstance(hours, (int, float)) else str(hours)
+    text = t(lang, "ob_fail", checks=_ob_checks_text(lang, st), hours=hours, sleep=sleep)
+    _, markup = build_onboarding_view(owner_id, "verify")
+    await query.answer()
+    await _ob_edit(query, text, markup)
+
+
 def build_start_view(owner_id: int):
     """Bosh menyu matni va tugmalarini qaytaradi (obunadan o'tgan foydalanuvchi uchun)."""
     lang = get_lang(owner_id)
@@ -508,6 +697,8 @@ def main_menu_markup(owner_id: int):
     lang = get_lang(owner_id)
     conn = db.get_connection(owner_id)
     rows = []
+    if db.get_onboarding_step(owner_id) == "skipped":
+        rows.append([InlineKeyboardButton(t(lang, "btn_ob_resume"), callback_data="ob_resume")])
     if conn and conn["is_enabled"]:
         rows.append([InlineKeyboardButton(t(lang, "btn_open_panel"), callback_data="open_panel")])
     else:
@@ -1685,6 +1876,10 @@ async def run_start_flow(bot, owner_id: int, inviter_id: int | None, send):
         await send(t(lang, "gate_text"), build_subscribe_gate_markup(inviter_id, lang))
         return
     await process_referral(bot, owner_id, inviter_id)
+    ob_view = onboarding_start_view(owner_id)
+    if ob_view is not None:
+        await send(*ob_view)
+        return
     greeting, markup = build_start_view(owner_id)
     await send(greeting, markup)
 
@@ -1712,6 +1907,7 @@ HELP_TEXT = t("uz", "help")  # eski nom (o'zbekcha)
 ADMIN_HELP_TEXT = (
     "\n\n\U0001F510 Admin buyruqlari:\n"
     "/stats — foydalanuvchilar soni\n"
+    "/onboarding — yangi foydalanuvchilar onboarding statistikasi\n"
     "/users — botga start bosgan barcha foydalanuvchilar ro'yxati\n"
     "/bots — bazaga tushib qolgan botlarni topish va tozalash\n"
     "/block @username [sabab] — foydalanuvchini bloklash (yoki /block 123456789)\n"
@@ -1746,6 +1942,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # matnli/alert bilan javob beradigan shoxlar umumiy `query.answer()`
     # dan OLDIN, har biri o'zi bir marta javob berib, tugaydi. Qolgan hamma
     # tugmalar uchun pastdagi umumiy answer() chaqiriladi.
+    if data.startswith("ob_"):
+        await handle_onboarding_callback(query, owner_id, data)
+        return
+
     if data.startswith("lang:"):
         parts = data.split(":")
         code = parts[1] if len(parts) > 1 else ""
@@ -2316,6 +2516,21 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if blocked:
         text += f"\n\U0001F6AB Shundan bloklangan: {blocked}"
     await update.message.reply_text(text)
+
+
+async def cmd_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    st = db.onboarding_stats()
+    await update.message.reply_text(
+        "\U0001F4CA Onboarding Statistics\n\n"
+        f"\U0001F465 Boshlaganlar: {st['started']}\n"
+        f"\U0001F517 Telegram ulaganlar: {st['connected']}\n"
+        f"\U0001F4AC Auto-Reply yoqqanlar: {st['auto_reply_on']}\n"
+        f"✅ Tugatganlar: {st['completed']}\n"
+        f"⏭ O'tkazib yuborganlar: {st['skipped']}\n"
+        f"⏳ Jarayonda: {st['in_progress']}"
+    )
 
 
 def _get_running_broadcast_job():
@@ -3361,7 +3576,22 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 logger.exception("AI ma'lumotlarini o'chirishda xato (owner=%s)", conn.user.id)
         try:
+            ob_view = None
             if conn.is_enabled:
+                try:
+                    ob_view = onboarding_view_on_connection(conn.user.id)
+                except Exception:
+                    logger.exception("Onboarding: ulanish hodisasini qayta ishlashda xato (owner=%s)", conn.user.id)
+            else:
+                try:
+                    db.set_onboarding_step(conn.user.id, "connect", only_from=("configure", "verify"))
+                except Exception:
+                    logger.exception("Onboarding: uzilishni qayta ishlashda xato (owner=%s)", conn.user.id)
+            if ob_view is not None:
+                await context.bot.send_message(
+                    chat_id=conn.user_chat_id, text=ob_view[0], reply_markup=ob_view[1]
+                )
+            elif conn.is_enabled:
                 await context.bot.send_message(
                     chat_id=conn.user_chat_id,
                     text=t(get_lang(conn.user.id), "connected"),
@@ -3477,6 +3707,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start", cmd_start, filters=only_messages))
     app.add_handler(CommandHandler("help", cmd_help, filters=only_messages))
     app.add_handler(CommandHandler("stats", cmd_stats, filters=only_messages))
+    app.add_handler(CommandHandler("onboarding", cmd_onboarding, filters=only_messages))
     app.add_handler(CommandHandler("block", cmd_block, filters=only_messages))
     app.add_handler(CommandHandler("unblock", cmd_unblock, filters=only_messages))
     app.add_handler(CommandHandler("setplan", cmd_setplan, filters=only_messages))
