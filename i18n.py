@@ -1119,28 +1119,28 @@ T: dict[str, dict] = {
     "btn_ob_fail": _("❌ Javob kelmadi", "❌ No reply", "❌ Ответа нет"),
     "btn_ob_skip": _("⏭ O'tkazib yuborish", "⏭ Skip", "⏭ Пропустить"),
     "btn_ob_resume": _("\U0001F680 Sozlashni davom ettirish", "\U0001F680 Continue setup", "\U0001F680 Продолжить настройку"),
-    # ---------------- AI Knowledge Base ----------------
-    "btn_kb": _("\U0001F9E0 Bilimlar bazasi", "\U0001F9E0 Knowledge Base", "\U0001F9E0 База знаний"),
-    "feature_kb": _("AI Bilimlar bazasi", "AI Knowledge Base", "AI База знаний"),
+    # ---------------- AI Personal Knowledge (ichki nom: kb) ----------------
+    "btn_kb": _("\U0001F9E0 AI Personal Knowledge", "\U0001F9E0 AI Personal Knowledge", "\U0001F9E0 AI Personal Knowledge"),
+    "feature_kb": _("AI Personal Knowledge", "AI Personal Knowledge", "AI Personal Knowledge"),
     "pf_kb": _(
-        "AI Bilimlar bazasi — AI siz yozgan ma'lumotlarga tayanib javob beradi (ko'pi bilan {n} ta yozuv)",
-        "AI Knowledge Base — the AI answers based on the facts you wrote (up to {n} entries)",
-        "AI База знаний — AI отвечает на основе написанных вами сведений (до {n} записей)",
+        "AI Personal Knowledge — AI siz yozgan ma'lumotlarga tayanib javob beradi (ko'pi bilan {n} ta yozuv)",
+        "AI Personal Knowledge — the AI answers based on the facts you wrote (up to {n} entries)",
+        "AI Personal Knowledge — AI отвечает на основе написанных вами сведений (до {n} записей)",
     ),
     "kb_menu": _(
-        "\U0001F9E0 AI BILIMLAR BAZASI\n\n"
+        "\U0001F9E0 AI PERSONAL KNOWLEDGE\n\n"
         "\U0001F4DA Ma'lumotlar: {count}/{max}\n"
         "\U0001F7E2 Holat: {status}\n\n"
         "Bu yerga o'zingiz haqingizdagi yoki ishingizdagi ma'lumotlarni yozing. AI-Yordamchi mijozga javob berayotganda "
         "shulardan foydalanadi. Bazada yo'q narsani (narx, vaqt, manzil va h.k.) AI o'ylab topmaydi — "
         "o'zingiz keyin javob berishingizni aytadi. Faqat AI-Yordamchi yoqilgan bo'lsa ishlaydi.{notice}",
-        "\U0001F9E0 AI KNOWLEDGE BASE\n\n"
+        "\U0001F9E0 AI PERSONAL KNOWLEDGE\n\n"
         "\U0001F4DA Entries: {count}/{max}\n"
         "\U0001F7E2 Status: {status}\n\n"
         "Write facts about yourself or your work here. The AI Assistant uses them when replying to people. "
         "The AI will not invent anything that is not in the base (prices, times, addresses, etc.) — "
         "it will say you will answer personally. Works only while the AI Assistant is on.{notice}",
-        "\U0001F9E0 AI БАЗА ЗНАНИЙ\n\n"
+        "\U0001F9E0 AI PERSONAL KNOWLEDGE\n\n"
         "\U0001F4DA Записей: {count}/{max}\n"
         "\U0001F7E2 Статус: {status}\n\n"
         "Запишите сюда сведения о себе или о своей работе. AI-помощник использует их, отвечая людям. "
@@ -1259,15 +1259,15 @@ T: dict[str, dict] = {
     "kb_entry_gone": _("Bu ma'lumot topilmadi.", "This entry was not found.", "Эта запись не найдена."),
     "kb_deleted": _("\U0001F5D1 Ma'lumot o'chirildi.", "\U0001F5D1 Entry deleted.", "\U0001F5D1 Запись удалена."),
     "kb_settings": _(
-        "⚙️ Bilimlar bazasi sozlamalari\n\nHolat: {status}\n\n"
+        "⚙️ AI Personal Knowledge sozlamalari\n\nHolat: {status}\n\n"
         "Ishlash tartibi: AI-Yordamchi mijozga javob berishdan oldin bazadan mos ma'lumotlarni topadi va shularga tayanadi. "
         "Baza kichik bo'lsa, hammasi AI'ga beriladi; katta bo'lsa — kalit so'zlar va sarlavha bo'yicha eng mos 5 tasi. "
         "Bazada yo'q ma'lumotni AI to'qimaydi.\n\nO'chirib qo'ysangiz, ma'lumotlaringiz saqlanadi, lekin AI ulardan foydalanmaydi.",
-        "⚙️ Knowledge Base settings\n\nStatus: {status}\n\n"
+        "⚙️ AI Personal Knowledge settings\n\nStatus: {status}\n\n"
         "How it works: before replying, the AI Assistant finds the matching entries and relies on them. "
         "If the base is small, all of it is given to the AI; if large — the 5 best matches by keywords and title. "
         "The AI does not invent facts that are not in the base.\n\nIf you turn it off, your entries are kept but the AI does not use them.",
-        "⚙️ Настройки базы знаний\n\nСтатус: {status}\n\n"
+        "⚙️ Настройки AI Personal Knowledge\n\nСтатус: {status}\n\n"
         "Как работает: перед ответом AI-помощник находит подходящие записи и опирается на них. "
         "Если база маленькая, AI получает всё; если большая — 5 лучших совпадений по ключевым словам и заголовку. "
         "AI не выдумывает факты, которых нет в базе.\n\nЕсли выключить, записи сохранятся, но AI не будет их использовать.",
