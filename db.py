@@ -58,6 +58,7 @@ ALLOWED_SETTINGS_FIELDS = {
     "name_clock_applied",
     "clock_bio_ad",
     "faq_enabled",
+    "kb_enabled",
     "name_clock_style",
 }
 
@@ -214,6 +215,22 @@ def init_db():
             """
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_faq_owner ON faq_entries(owner_user_id)")
+        # AI Knowledge Base: har egasining ma'lumotlari alohida (hamma so'rov owner_user_id bilan cheklangan)
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS kb_enabled BOOLEAN NOT NULL DEFAULT TRUE")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id BIGSERIAL PRIMARY KEY,
+                owner_user_id BIGINT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                keywords TEXT[] NOT NULL DEFAULT '{}',
+                is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_kb_owner ON knowledge_entries(owner_user_id)")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_style TEXT")
         cur.execute(
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_month INTEGER"
@@ -1167,6 +1184,103 @@ def toggle_faq_entry(owner_user_id: int, entry_id: int) -> bool | None:
         return row[0] if row else None
 
 
+# --------------------------------------------------------------------------
+# AI Knowledge Base (har bir egasining ma'lumotlari alohida; hamma so'rov owner_user_id bilan cheklangan)
+# --------------------------------------------------------------------------
+_KB_COLS = "id, owner_user_id, title, content, keywords, is_enabled"
+
+
+def add_kb_entry(owner_user_id: int, title: str, content: str, keywords: list[str], max_entries: int) -> int | None:
+    """Yangi yozuv qo'shadi va id qaytaradi; limit to'lgan bo'lsa — None. Parallel so'rovlardan himoya:
+    bir egasi uchun yozishlar advisory lock bilan ketma-ket bajariladi (FAQ bilan bir xil usul)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("BEGIN")
+        try:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('knowledge_entries'), (%s %% 2147483647)::int)", (owner_user_id,))
+            cur.execute(
+                """
+                INSERT INTO knowledge_entries (owner_user_id, title, content, keywords)
+                SELECT %s, %s, %s, %s
+                WHERE (SELECT COUNT(*) FROM knowledge_entries WHERE owner_user_id = %s) < %s
+                RETURNING id
+                """,
+                (owner_user_id, title, content, keywords, owner_user_id, max_entries),
+            )
+            row = cur.fetchone()
+            cur.execute("COMMIT")
+        except BaseException:
+            try:
+                cur.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        return row[0] if row else None
+
+
+_KB_EDITABLE = ("title", "content", "keywords")
+
+
+def update_kb_entry(owner_user_id: int, entry_id: int, **fields) -> bool:
+    """Sarlavha/ma'lumot/kalit so'zlarni o'zgartiradi. Yozuv shu egasiga tegishli bo'lmasa yoki topilmasa — False."""
+    invalid = set(fields) - set(_KB_EDITABLE)
+    if invalid or not fields:
+        raise ValueError(f"Ruxsat etilmagan Knowledge Base maydoni: {invalid or 'bo`sh'}")
+    assignments = ", ".join(f"{k} = %s" for k in fields)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE knowledge_entries SET {assignments} WHERE owner_user_id = %s AND id = %s",
+            list(fields.values()) + [owner_user_id, entry_id],
+        )
+        return cur.rowcount > 0
+
+
+def list_kb_entries(owner_user_id: int) -> list[dict]:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"SELECT {_KB_COLS} FROM knowledge_entries WHERE owner_user_id = %s ORDER BY id", (owner_user_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_enabled_kb_entries(owner_user_id: int) -> list[dict]:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"SELECT {_KB_COLS} FROM knowledge_entries WHERE owner_user_id = %s AND is_enabled = TRUE ORDER BY id",
+            (owner_user_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_kb_entry(owner_user_id: int, entry_id: int) -> dict | None:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"SELECT {_KB_COLS} FROM knowledge_entries WHERE owner_user_id = %s AND id = %s", (owner_user_id, entry_id)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def count_kb_entries(owner_user_id: int) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM knowledge_entries WHERE owner_user_id = %s", (owner_user_id,))
+        return cur.fetchone()[0]
+
+
+def delete_kb_entry(owner_user_id: int, entry_id: int) -> bool:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM knowledge_entries WHERE owner_user_id = %s AND id = %s", (owner_user_id, entry_id))
+        return cur.rowcount > 0
+
+
+def toggle_kb_entry(owner_user_id: int, entry_id: int) -> bool | None:
+    """Yozuvni yoqadi/o'chiradi; yangi holatni qaytaradi (yozuv topilmasa — None)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE knowledge_entries SET is_enabled = NOT is_enabled WHERE owner_user_id = %s AND id = %s RETURNING is_enabled",
+            (owner_user_id, entry_id),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
 def get_bio_ad_candidates():
     """Ism soati yoqilgan YOKI BIO'ga reklama yozib qo'yilgan (olib tashlash kerak bo'lishi mumkin) egalar."""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1475,6 +1589,7 @@ for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info",
     "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "get_faq_entry", "count_faq_entries",
+    "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
