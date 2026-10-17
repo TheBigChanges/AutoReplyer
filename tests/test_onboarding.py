@@ -20,6 +20,7 @@ run = asyncio.run
 ADMIN = 777
 _REAL_START_VIEW = bot.onboarding_start_view  # conftest uni o'chiradi; shu yerda qaytariladi
 _REAL_ON_CONNECTION = bot.onboarding_view_on_connection
+_REAL_STEP_OF = bot.onboarding_step_of
 
 
 @unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL kerak")
@@ -31,7 +32,8 @@ class OnboardingBase(unittest.TestCase):
     def setUp(self):
         self.u = random.randint(10**14, 10**15)
         self.addCleanup(self._cleanup)
-        for name, real in (("onboarding_start_view", _REAL_START_VIEW), ("onboarding_view_on_connection", _REAL_ON_CONNECTION)):
+        for name, real in (("onboarding_start_view", _REAL_START_VIEW), ("onboarding_view_on_connection", _REAL_ON_CONNECTION),
+                           ("onboarding_step_of", _REAL_STEP_OF)):
             p = patch.object(bot, name, real)
             p.start()
             self.addCleanup(p.stop)
@@ -446,6 +448,15 @@ class ConnectionEventTests(OnboardingBase):
         run(bot.on_raw_update(upd, ctx))
         self.assertEqual(self.step(), "connect")
         self.assertEqual(ctx.bot.send_message.call_args.kwargs["text"], i18n.t("uz", "disconnected"))
+
+
+class MenuResilienceTests(OnboardingBase):
+    def test_db_error_does_not_break_main_menu(self):
+        with patch.object(db, "get_onboarding_step", side_effect=RuntimeError("baza yiqildi")):
+            self.assertEqual(bot.onboarding_step_of(self.u), "legacy")
+            markup = bot.main_menu_markup(self.u)
+        datas = [b.callback_data for r in markup.inline_keyboard for b in r]
+        self.assertNotIn("ob_resume", datas)
 
 
 class AdminCommandTests(OnboardingBase):
