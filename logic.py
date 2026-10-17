@@ -456,7 +456,6 @@ _NEGATIONS = frozenset({
 KB_LIMIT = 55  # Ultra: nechta yozuv saqlash mumkin
 KB_MAX_TITLE = 100
 KB_MAX_CONTENT = 1000
-KB_FULL_CONTEXT_CHARS = 3000  # bazaning hammasi shundan kichik bo'lsa — butunlay AI'ga beriladi
 KB_MAX_SELECTED = 5  # katta bazadan AI'ga eng ko'pi bilan shuncha yozuv beriladi
 KB_MAX_CONTEXT_CHARS = 4000
 
@@ -534,37 +533,70 @@ def match_faq(message: str | None, entries) -> dict | None:
     return scored[0][1]
 
 
+_KB_STOPWORDS = frozenset({
+    # uz
+    "qancha", "qachon", "qanday", "qaysi", "qayer", "qayerda", "bormi", "nima", "nimaga", "kerak", "yana", "bilan",
+    "uchun", "menga", "sizga", "sizda", "mening", "sizning", "haqida", "keyin", "hozir", "iltimos", "rahmat",
+    # en
+    "what", "when", "where", "which", "does", "have", "your", "this", "that", "with", "there", "about", "please",
+    "thanks", "would", "could", "will",
+    # ru
+    "что", "как", "где", "когда", "какой", "какая", "есть", "можно", "ваш", "ваша", "этот", "пожалуйста", "спасибо",
+})
+
+
+def _kb_stem(token: str) -> str:
+    """Qo'shimchalarga chidamli oddiy "o'zak": uzun so'zning birinchi 5 harfi ("vaqtim"/"vaqtingiz" -> "vaqti")."""
+    return token[:5] if len(token) >= 6 else token
+
+
+def _kb_stems(text: str | None) -> set[str]:
+    return {_kb_stem(tok) for tok in faq_tokens(text) if len(tok) >= 4 and tok not in _KB_STOPWORDS}
+
+
 def select_knowledge(messages, entries) -> list[dict]:
-    """AI'ga beriladigan Knowledge Base yozuvlarini tanlaydi.
+    """AI'ga beriladigan Knowledge Base yozuvlarini tanlaydi — FAQAT mijoz xabariga mos kelganlarini
+    (maxfiylik: ortiqcha yozuvlar Gemini'ga yuborilmaydi; hech narsa mos kelmasa — bo'sh ro'yxat).
 
     `messages` — mijozning oxirgi xabar(lar)i (matn yoki matnlar ro'yxati; oldingi xabarlar "qancha turadi?"
-    kabi davomli savollarni tushunish uchun). Faqat yoqilgan yozuvlar. Baza kichik bo'lsa (KB_FULL_CONTEXT_CHARS)
-    — hammasi; katta bo'lsa — kalit so'z/sarlavha mosligi bo'yicha eng mos KB_MAX_SELECTED tasi
-    (KB_MAX_CONTEXT_CHARS dan oshmaydi). Hech narsa mos kelmasa — bo'sh ro'yxat."""
+    kabi davomli savollarni tushunish uchun). Faqat yoqilgan yozuvlar. Ball: kalit ibora mosligi (eng kuchli),
+    sarlavhadagi so'z o'zaklari mosligi, yozuv matnidagi so'z o'zaklari mosligi. Ko'p yozuvlarda uchraydigan
+    umumiy so'zlar (bazaning yarmidan ko'pida) va savol so'zlari (qancha, qachon, what...) hisobga olinmaydi.
+    Eng yuqori ballli KB_MAX_SELECTED tasi olinadi (jami KB_MAX_CONTEXT_CHARS dan oshmaydi)."""
     enabled = [e for e in entries if e.get("is_enabled") is not False]
     if not enabled:
+        return []
+    if isinstance(messages, str):
+        messages = [messages]
+    tokens = faq_tokens(" ".join(m for m in (messages or []) if m))
+    msg_stems = {_kb_stem(tok) for tok in tokens if len(tok) >= 4 and tok not in _KB_STOPWORDS}
+    if not tokens:
         return []
 
     def size(e):
         return len(e.get("title") or "") + len(e.get("content") or "")
 
-    if sum(size(e) for e in enabled) <= KB_FULL_CONTEXT_CHARS:
-        return enabled
-    if isinstance(messages, str):
-        messages = [messages]
-    tokens = faq_tokens(" ".join(m for m in (messages or []) if m))
-    if not tokens:
-        return []
-    token_set = set(tokens)
+    title_stems = [_kb_stems(e.get("title")) for e in enabled]
+    content_stems = [_kb_stems(e.get("content")) for e in enabled]
+    # Umumiy so'zlarni (ko'p yozuvda uchraydigan) tashlab yuboramiz — faqat yozuvlar soni yetarli bo'lganda
+    common: set[str] = set()
+    if len(enabled) >= 4:
+        df: dict[str, int] = {}
+        for ts, cs in zip(title_stems, content_stems):
+            for st in ts | cs:
+                df[st] = df.get(st, 0) + 1
+        common = {st for st, n in df.items() if n > len(enabled) / 2}
+    live_stems = msg_stems - common
+
     scored: list[tuple[int, int, dict]] = []
     for idx, e in enumerate(enabled):
         score = 0
         for kw in e.get("keywords") or []:
             kt = faq_tokens(kw)
             if kt and _contains_phrase(tokens, kt):
-                score += 2 * len(kt)
-        title_tokens = {tok for tok in faq_tokens(e.get("title")) if len(tok) >= 3}
-        score += len(title_tokens & token_set)
+                score += 3 * len(kt)
+        score += 2 * len(title_stems[idx] & live_stems)
+        score += len(content_stems[idx] & live_stems)
         if score > 0:
             scored.append((score, idx, e))
     scored.sort(key=lambda x: (-x[0], x[1]))
