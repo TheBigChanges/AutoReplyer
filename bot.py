@@ -43,6 +43,7 @@ from telegram.ext import (
 )
 
 import ai
+import analytics
 import db
 from i18n import DEFAULT_LANG, LANG_NAMES, LANGS, all_defaults, is_lang, t
 from logic import (
@@ -761,11 +762,17 @@ DEFAULT_FEATURE_PLANS = {
     "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
     "faq": ("plus", "pro", "ultra"),    # Smart FAQ (savollar soni tarifga qarab: FAQ_PLAN_LIMITS)
     "kb": ("ultra",),                   # AI Bilimlar bazasi (AI bilan birga ishlaydi; KB_LIMIT ta yozuv)
+    "analytics_7": ("plus", "pro", "ultra"),   # Statistika: 7 kunlik davr
+    "analytics_30": ("pro", "ultra"),          # Statistika: 30 kunlik davr
+    "analytics_charts": ("plus", "pro", "ultra"),  # Statistika grafiklari (turlari tarifga qarab)
+    "analytics_full": ("ultra",),              # Batafsil statistika + barcha grafiklar
 }
 FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
 FEATURE_NAME_KEYS = {
     "bio": "feature_bio", "custom_text": "feature_text", "ai": "feature_ai", "name_clock_fonts": "feature_fonts",
     "name_clock_zones": "feature_zones", "faq": "feature_faq", "kb": "feature_kb",
+    "analytics_7": "feature_an7", "analytics_30": "feature_an30", "analytics_charts": "feature_anch",
+    "analytics_full": "feature_anfull",
 }
 
 
@@ -889,6 +896,14 @@ def locked_feature_for(data: str) -> str | None:
         return "faq"
     if data.startswith("kb_"):
         return "kb"
+    if data == "an:7":
+        return "analytics_7"
+    if data == "an:30":
+        return "analytics_30"
+    if data.startswith("an_ch:"):
+        return "analytics_charts"
+    if data.startswith("an_detail"):
+        return "analytics_full"
     return None
 
 
@@ -947,6 +962,7 @@ def plan_features_text(lang: str, plan: str) -> str:
     else:
         excluded.append(t(lang, "pf_faq_locked", limits=" / ".join(f"{p.capitalize()} — {n}" for p, n in FAQ_PLAN_LIMITS.items() if p in FEATURE_PLANS.get("faq", ()))))
     (included if plan in FEATURE_PLANS.get("kb", ()) else excluded).append(t(lang, "pf_kb", n=KB_LIMIT))
+    included.append(t(lang, "pf_an_" + (plan if plan in ("plus", "pro", "ultra") else "free")))
     included.append(t(lang, "pf_ads_off" if plan in AD_FREE_PLANS else "pf_ads_on"))
     parts = [t(lang, "plan_includes")] + [f"• {line}" for line in included]
     if excluded:
@@ -1611,7 +1627,7 @@ def build_ai_roles_menu(owner_id: int):
     return t(lang, "ai_roles_menu"), InlineKeyboardMarkup(rows)
 
 
-async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str, cooldown_hours: float, label: str):
+async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str, cooldown_hours: float, label: str, kind: str | None = None):
     """Oddiy (matnli) avtojavob: cooldown huquqini atomik band qilib, yuboradi."""
     # Cooldown huquqini YUBORISHDAN OLDIN atomik band qilamiz (bitta SQL).
     # Oldingi "tekshir -> yubor -> belgila" ketma-ketligida ikkita xabar
@@ -1619,6 +1635,7 @@ async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str,
     # deb ko'rib, ikki marta javob yuborishi mumkin edi.
     claimed_at = db.try_claim_reply(owner_id, chat_id, cooldown_hours)
     if claimed_at is None:
+        track_analytics(owner_id, "skipped")
         return  # cooldown hali tugamagan
 
     try:
@@ -1636,6 +1653,8 @@ async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str,
             return
         raise
     _remember_sent(chat_id, sent)
+    # Statistika: javob FAQAT muvaffaqiyatli yuborilgandan keyin sanaladi
+    track_analytics(owner_id, kind or ("sleep" if "sleeping=True" in label else "static"))
     logger.info("auto reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
 
 
@@ -1643,7 +1662,7 @@ async def send_faq_reply(bot, bm, owner_id: int, chat_id: int, answer: str, cool
     """FAQ javobini yuboradi. Oddiy rejimda — cooldown bilan (avtojavob kabi); AI yoqilgan egada cooldown
     ishlatilmaydi (AI javoblari kabi), shunda mijozning keyingi savoliga ham javob ketadi."""
     if not ai_mode:
-        await send_auto_reply(bot, bm, owner_id, chat_id, answer, cooldown_hours, label)
+        await send_auto_reply(bot, bm, owner_id, chat_id, answer, cooldown_hours, label, kind="faq")
         return
     try:
         sent = await bot.send_message(
@@ -1653,6 +1672,7 @@ async def send_faq_reply(bot, bm, owner_id: int, chat_id: int, answer: str, cool
         logger.warning("FAQ javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
         return
     _remember_sent(chat_id, sent)
+    track_analytics(owner_id, "faq")
     logger.info("faq reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
 
 
@@ -1695,6 +1715,7 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 logger.warning("AI javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
                 return
             _remember_sent(chat_id, sent)
+            track_analytics(owner_id, "ai")
             db.add_ai_messages(owner_id, chat_id, [("user", text), ("model", answer)], keep=AI_HISTORY_MESSAGES)
             logger.info("ai reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
     except Exception:
@@ -1706,6 +1727,10 @@ async def ai_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
         db.purge_old_ai_data()
     except Exception:
         logger.exception("AI ma'lumotlarini tozalashda xato")
+    try:
+        db.purge_old_analytics()  # statistika: eng ko'pi bilan 90 kunlik soatlik hisoblagichlar
+    except Exception:
+        logger.exception("Statistikani tozalashda xato")
 
 
 def build_panel(owner_id: int):
@@ -1737,10 +1762,152 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton(lock_label(t(lang, "btn_faq"), plan_allows(owner_id, plan, "faq")), callback_data="faq_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_kb"), plan_allows(owner_id, plan, "kb")), callback_data="kb_menu")],
     ]
+    keyboard.append([InlineKeyboardButton(t(lang, "btn_analytics"), callback_data="an_menu")])
     if name_clock_allowed(owner_id):
         keyboard.append([InlineKeyboardButton(t(lang, "btn_name_clock"), callback_data="nc_menu")])
     keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="back")])
     return text, InlineKeyboardMarkup(keyboard)
+
+
+# ---------------------------------------------------------------------------
+# AutoReply Analytics
+# Faqat soatlik hisoblagichlar saqlanadi (vaqt + tur + son): xabar matni va chat ID yozilmaydi.
+# ---------------------------------------------------------------------------
+def _record_analytics_safe(owner_id: int, kind: str):
+    """Hisoblagichni yozadi; xato bo'lsa faqat log — javob yuborish oqimi hech qachon buzilmaydi."""
+    try:
+        db.record_analytics(owner_id, kind)
+    except Exception:
+        logger.warning("Analytics yozilmadi (owner=%s, kind=%s)", owner_id, kind, exc_info=True)
+
+
+def track_analytics(owner_id: int, kind: str):
+    """Orqa fonda (event loop'ni bloklamasdan) hisoblagichni oshiradi."""
+    try:
+        spawn_background(asyncio.to_thread(_record_analytics_safe, owner_id, kind))
+    except RuntimeError:  # ishlayotgan event loop yo'q
+        _record_analytics_safe(owner_id, kind)
+
+
+def analytics_tz(owner_id: int):
+    """"Eng faol soat" uchun vaqt zonasi: ism soati zonasi (agar tanlangan bo'lsa), aks holda Toshkent."""
+    try:
+        name = db.get_settings(owner_id).get("name_clock_tz")
+        if name and is_known_zone(name):
+            return ZoneInfo(name)
+    except Exception:
+        logger.warning("Analytics: vaqt zonasini o'qib bo'lmadi (owner=%s)", owner_id, exc_info=True)
+    return TASHKENT_TZ
+
+
+def analytics_allowed_days(owner_id: int) -> int:
+    if has_feature(owner_id, "analytics_30"):
+        return 30
+    if has_feature(owner_id, "analytics_7"):
+        return 7
+    return 1
+
+
+def analytics_summary(owner_id: int, days: int) -> dict:
+    tz = analytics_tz(owner_id)
+    start = analytics.period_start(days, tz)
+    rows = db.get_analytics_rows(owner_id, start.timestamp())
+    return analytics.summarize(rows, days, tz)
+
+
+def _an_period_name(lang: str, days: int) -> str:
+    return t(lang, "an_period_" + str(days if days in (7, 30) else 1))
+
+
+def _an_peak_text(lang: str, peak) -> str:
+    return f"{peak[0]:02d}:00\u2013{peak[1]:02d}:00" if peak else t(lang, "an_peak_none")
+
+
+def build_analytics_menu(owner_id: int, days: int = 1):
+    lang = get_lang(owner_id)
+    days = days if days in (1, 7, 30) and days <= analytics_allowed_days(owner_id) else 1
+    summary = analytics_summary(owner_id, days)
+    if analytics.is_empty(summary):
+        text = t(lang, "an_menu", period=_an_period_name(lang, days), incoming=0, sent=0, faq=0, ai=0, static=0, sleep=0,
+                 peak=t(lang, "an_peak_none")) + "\n\n" + t(lang, "an_empty")
+    else:
+        k = summary["kinds"]
+        text = t(lang, "an_menu", period=_an_period_name(lang, days), incoming=summary["incoming"], sent=summary["sent"],
+                 faq=k["faq"], ai=k["ai"], static=k["static"], sleep=k["sleep"], peak=_an_peak_text(lang, summary["peak"]))
+        text += "\n\n" + t(lang, "an_note")
+    text += "\n\n" + t(lang, "an_privacy")
+    ok = lambda f: has_feature(owner_id, f)  # noqa: E731
+    keyboard = [
+        [InlineKeyboardButton(lock_label(t(lang, "btn_an_charts"), ok("analytics_charts")), callback_data=f"an_ch:{days}")],
+        [
+            InlineKeyboardButton(t(lang, "btn_an_today"), callback_data="an:1"),
+            InlineKeyboardButton(lock_label(t(lang, "btn_an_7"), ok("analytics_7")), callback_data="an:7"),
+            InlineKeyboardButton(lock_label(t(lang, "btn_an_30"), ok("analytics_30")), callback_data="an:30"),
+        ],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_an_detail"), ok("analytics_full")), callback_data=f"an_detail:{days}")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_analytics_detail(owner_id: int, days: int = 7):
+    lang = get_lang(owner_id)
+    days = days if days in (7, 30) else 7
+    summary = analytics_summary(owner_id, days)
+    back = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"an:{days}")]])
+    if analytics.is_empty(summary):
+        return t(lang, "an_empty"), back
+    blocks = [sum(summary["hourly"][h:h + 4]) for h in range(0, 24, 4)]
+    top = max(blocks) or 1
+    hour_lines = [
+        f"{h:02d}-{h + 4:02d}  {chr(0x2588) * round(10 * blk / top)} {blk}" for h, blk in zip(range(0, 24, 4), blocks)
+    ]
+    day_lines = [f"{d.strftime('%d.%m')}: {i} / {s}" for d, i, s in summary["daily"]]
+    bd = summary["busiest_day"]
+    text = t(
+        lang, "an_detail",
+        period=_an_period_name(lang, days), incoming=summary["incoming"], sent=summary["sent"],
+        rate=summary["reply_rate"], skipped=summary["skipped"], avg=summary["daily_avg"],
+        best_day=f"{bd[0].strftime('%d.%m')} ({bd[1]})" if bd else t(lang, "an_peak_none"),
+        peak=_an_peak_text(lang, summary["peak"]), hours="\n".join(hour_lines), days="\n".join(day_lines),
+    )
+    return text, back
+
+
+def analytics_chart_kinds(owner_id: int) -> list[str]:
+    """Tarifga mos grafiklar: Plus — chiziqli; Pro — chiziqli + doira; Ultra — hammasi (+ ustunli)."""
+    kinds = []
+    if has_feature(owner_id, "analytics_charts"):
+        kinds.append("line")
+    if has_feature(owner_id, "analytics_30"):
+        kinds.append("pie")
+    if has_feature(owner_id, "analytics_full"):
+        kinds.append("bar")
+    return kinds
+
+
+def analytics_chart_labels(lang: str, kind: str) -> dict:
+    return {
+        "title": t(lang, "an_chart_" + kind), "incoming": t(lang, "an_lbl_incoming"), "sent": t(lang, "an_lbl_sent"),
+        "faq": t(lang, "an_lbl_faq"), "ai": t(lang, "an_lbl_ai"), "static": t(lang, "an_lbl_static"),
+        "sleep": t(lang, "an_lbl_sleep"), "none": t(lang, "an_lbl_none"), "hour": t(lang, "an_lbl_hour"),
+    }
+
+
+async def send_analytics_charts(bot, owner_id: int, chat_id: int, days: int) -> bool:
+    """Tarifga mos grafiklarni rasm sifatida yuboradi. Grafik uchun kamida 7 kunlik davr olinadi."""
+    lang = get_lang(owner_id)
+    chart_days = 30 if days == 30 else 7
+    summary = analytics_summary(owner_id, chart_days)
+    if analytics.is_empty(summary):
+        await bot.send_message(chat_id=chat_id, text=t(lang, "an_empty"))
+        return True
+    for kind in analytics_chart_kinds(owner_id):
+        labels = analytics_chart_labels(lang, kind)
+        png = await analytics.render_chart(kind, owner_id, summary, labels)
+        caption = t(lang, "an_charts_caption", name=labels["title"], period=_an_period_name(lang, chart_days))
+        await bot.send_photo(chat_id=chat_id, photo=png, caption=caption)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -2395,6 +2562,32 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, markup = build_faq_menu(owner_id, t(lang, "faq_limit", max=faq_limit_for(owner_id)))
         else:
             text, markup = build_faq_menu(owner_id, t(lang, "faq_saved"))
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data in ("an_menu", "an:1", "an:7", "an:30"):
+        text, markup = build_analytics_menu(owner_id, int(data.split(":")[1]) if ":" in data else 1)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith("an_ch:"):
+        try:
+            days = int(data.split(":")[1])
+        except ValueError:
+            days = 1
+        try:
+            await send_analytics_charts(context.bot, owner_id, query.message.chat_id, days)
+        except Exception:
+            logger.exception("Analytics grafigini yuborishda xato (owner=%s)", owner_id)
+            await context.bot.send_message(chat_id=query.message.chat_id, text=t(lang, "an_charts_failed"))
+        return
+
+    if data.startswith("an_detail:"):
+        try:
+            days = int(data.split(":")[1])
+        except ValueError:
+            days = 7
+        text, markup = build_analytics_detail(owner_id, days)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
@@ -3963,6 +4156,11 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     logger.exception("AI pauzasini yozishda xato (owner=%s)", owner_id)
             return
+
+        # Statistika: akkauntga kelgan HAMMA mijoz xabari sanaladi (egasi onlayn bo'lsa yoki cooldown
+        # sabab javob ketmasa ham) — shunda "kelgan" va "yuborilgan" farqi tushuntirib beriladi.
+        if not (bm.from_user and bm.from_user.is_bot):
+            track_analytics(owner_id, "incoming")
 
         settings = db.get_settings(owner_id)
 
