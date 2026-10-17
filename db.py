@@ -231,6 +231,19 @@ def init_db():
             """
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_kb_owner ON knowledge_entries(owner_user_id)")
+        # Analytics: faqat soatlik hisoblagichlar (xabar matni, chat ID, mijoz ma'lumoti SAQLANMAYDI)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analytics_hourly (
+                owner_user_id BIGINT NOT NULL,
+                bucket BIGINT NOT NULL,
+                kind TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (owner_user_id, bucket, kind)
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_analytics_bucket ON analytics_hourly(bucket)")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_style TEXT")
         cur.execute(
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_month INTEGER"
@@ -1508,6 +1521,45 @@ def purge_old_ai_data(max_age_seconds: float = AI_HISTORY_MAX_AGE_SECONDS):
 
 
 # --------------------------------------------------------------------------
+# Analytics (soatlik hisoblagichlar)
+# --------------------------------------------------------------------------
+ANALYTICS_KINDS = ("incoming", "faq", "ai", "static", "sleep", "skipped")
+ANALYTICS_RETENTION_DAYS = 90
+
+
+def record_analytics(owner_user_id: int, kind: str, ts: float | None = None, n: int = 1):
+    """Bir hodisani soatlik hisoblagichga qo'shadi (UPSERT). Hech qanday matn/chat ID yozilmaydi."""
+    if kind not in ANALYTICS_KINDS:
+        raise ValueError(f"unknown analytics kind: {kind}")
+    bucket = int((ts if ts is not None else time.time()) // 3600) * 3600
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO analytics_hourly (owner_user_id, bucket, kind, count) VALUES (%s, %s, %s, %s)
+            ON CONFLICT (owner_user_id, bucket, kind) DO UPDATE SET count = analytics_hourly.count + EXCLUDED.count
+            """,
+            (owner_user_id, bucket, kind, n),
+        )
+
+
+def get_analytics_rows(owner_user_id: int, since_ts: float):
+    """[(bucket, kind, count), ...] — faqat shu egasining, since_ts'dan keyingilar."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT bucket, kind, count FROM analytics_hourly WHERE owner_user_id = %s AND bucket >= %s ORDER BY bucket",
+            (owner_user_id, int(since_ts // 3600) * 3600),
+        )
+        return [(int(b), k, int(c)) for b, k, c in cur.fetchall()]
+
+
+def purge_old_analytics(max_age_days: int = ANALYTICS_RETENTION_DAYS):
+    cutoff = int(time.time() - max_age_days * 86400)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM analytics_hourly WHERE bucket < %s", (cutoff,))
+        return cur.rowcount
+
+
+# --------------------------------------------------------------------------
 # Ism soati
 # --------------------------------------------------------------------------
 def get_name_clock_targets():
@@ -1589,7 +1641,7 @@ for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info",
     "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "get_faq_entry", "count_faq_entries",
-    "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
+    "get_analytics_rows", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
