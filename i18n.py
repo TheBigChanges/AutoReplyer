@@ -1119,6 +1119,159 @@ T: dict[str, dict] = {
     "btn_ob_fail": _("❌ Javob kelmadi", "❌ No reply", "❌ Ответа нет"),
     "btn_ob_skip": _("⏭ O'tkazib yuborish", "⏭ Skip", "⏭ Пропустить"),
     "btn_ob_resume": _("\U0001F680 Sozlashni davom ettirish", "\U0001F680 Continue setup", "\U0001F680 Продолжить настройку"),
+    # ---------------- AI Knowledge Base ----------------
+    "btn_kb": _("\U0001F9E0 Bilimlar bazasi", "\U0001F9E0 Knowledge Base", "\U0001F9E0 База знаний"),
+    "feature_kb": _("AI Bilimlar bazasi", "AI Knowledge Base", "AI База знаний"),
+    "pf_kb": _(
+        "AI Bilimlar bazasi — AI siz yozgan ma'lumotlarga tayanib javob beradi (ko'pi bilan {n} ta yozuv)",
+        "AI Knowledge Base — the AI answers based on the facts you wrote (up to {n} entries)",
+        "AI База знаний — AI отвечает на основе написанных вами сведений (до {n} записей)",
+    ),
+    "kb_menu": _(
+        "\U0001F9E0 AI BILIMLAR BAZASI\n\n"
+        "\U0001F4DA Ma'lumotlar: {count}/{max}\n"
+        "\U0001F7E2 Holat: {status}\n\n"
+        "Bu yerga o'zingiz haqingizdagi yoki ishingizdagi ma'lumotlarni yozing. AI-Yordamchi mijozga javob berayotganda "
+        "shulardan foydalanadi. Bazada yo'q narsani (narx, vaqt, manzil va h.k.) AI o'ylab topmaydi — "
+        "o'zingiz keyin javob berishingizni aytadi. Faqat AI-Yordamchi yoqilgan bo'lsa ishlaydi.{notice}",
+        "\U0001F9E0 AI KNOWLEDGE BASE\n\n"
+        "\U0001F4DA Entries: {count}/{max}\n"
+        "\U0001F7E2 Status: {status}\n\n"
+        "Write facts about yourself or your work here. The AI Assistant uses them when replying to people. "
+        "The AI will not invent anything that is not in the base (prices, times, addresses, etc.) — "
+        "it will say you will answer personally. Works only while the AI Assistant is on.{notice}",
+        "\U0001F9E0 AI БАЗА ЗНАНИЙ\n\n"
+        "\U0001F4DA Записей: {count}/{max}\n"
+        "\U0001F7E2 Статус: {status}\n\n"
+        "Запишите сюда сведения о себе или о своей работе. AI-помощник использует их, отвечая людям. "
+        "Чего нет в базе (цены, время, адрес и т. д.), AI не выдумывает — "
+        "он скажет, что вы ответите лично. Работает только при включённом AI-помощнике.{notice}",
+    ),
+    "btn_kb_add": _("➕ Ma'lumot qo'shish", "➕ Add Entry", "➕ Добавить запись"),
+    "btn_kb_list": _("\U0001F4CB Ma'lumotlarim", "\U0001F4CB My Entries", "\U0001F4CB Мои записи"),
+    "btn_kb_settings": _("⚙️ Sozlamalar", "⚙️ Settings", "⚙️ Настройки"),
+    "btn_kb_save": _("✅ Saqlash", "✅ Save", "✅ Сохранить"),
+    "btn_kb_cancel": _("❌ Bekor qilish", "❌ Cancel", "❌ Отмена"),
+    "btn_kb_delete": _("\U0001F5D1 O'chirish", "\U0001F5D1 Delete", "\U0001F5D1 Удалить"),
+    "btn_kb_entry_off": _("⏸ Vaqtincha o'chirish", "⏸ Pause", "⏸ Приостановить"),
+    "btn_kb_entry_on": _("▶️ Yoqish", "▶️ Resume", "▶️ Включить"),
+    "btn_kb_edit_t": _("✏️ Sarlavhani o'zgartirish", "✏️ Edit title", "✏️ Изменить заголовок"),
+    "btn_kb_edit_c": _("\U0001F4DD Ma'lumotni o'zgartirish", "\U0001F4DD Edit text", "\U0001F4DD Изменить текст"),
+    "btn_kb_edit_kw": _("\U0001F511 Kalit so'zlarni o'zgartirish", "\U0001F511 Edit keywords", "\U0001F511 Изменить ключевые слова"),
+    "kb_title_prompt": _(
+        "1/3. Ma'lumot sarlavhasini yozing (masalan: Ish vaqtim, Qaysi tillarda gaplashaman, Hobbilarim).\n"
+        "Eng ko'pi {max} belgi.\nBekor qilish: /cancel",
+        "1/3. Write a title for the entry (e.g. My working hours, Languages I speak, My hobbies).\n"
+        "Up to {max} characters.\nCancel: /cancel",
+        "1/3. Напишите заголовок записи (например: Мои рабочие часы, Языки, на которых я говорю, Мои хобби).\n"
+        "До {max} символов.\nОтмена: /cancel",
+    ),
+    "kb_content_prompt": _(
+        "2/3. Ma'lumot matnini yozing — AI mijozga shunga tayanib javob beradi (eng ko'pi {max} belgi).\n"
+        "Bekor qilish: /cancel",
+        "2/3. Write the text — the AI will answer people based on it (up to {max} characters).\n"
+        "Cancel: /cancel",
+        "2/3. Напишите текст — AI будет отвечать людям на его основе (до {max} символов).\n"
+        "Отмена: /cancel",
+    ),
+    "kb_kw_prompt": _(
+        "3/3. Kalit so'zlarni vergul bilan yozing (ixtiyoriy, masalan: vaqt, soat, jadval). "
+        "Baza katta bo'lganda AI aynan shu ma'lumotni topishi uchun kerak.\n"
+        "Kerak bo'lmasa — «-» yuboring.\nBekor qilish: /cancel",
+        "3/3. Write keywords separated by commas (optional, e.g. time, hours, schedule). "
+        "When the base is large they help the AI find exactly this entry.\n"
+        "If you don't need them, send «-».\nCancel: /cancel",
+        "3/3. Напишите ключевые слова через запятую (необязательно, например: время, часы, график). "
+        "Когда база большая, они помогают AI найти именно эту запись.\n"
+        "Если не нужны — отправьте «-».\nОтмена: /cancel",
+    ),
+    "kb_confirm": _(
+        "Saqlashdan oldin tekshiring:\n\n\U0001F4CC Sarlavha: {title}\n\U0001F4DD Ma'lumot: {content}\n\U0001F511 Kalit so'zlar: {kw}",
+        "Please check before saving:\n\n\U0001F4CC Title: {title}\n\U0001F4DD Text: {content}\n\U0001F511 Keywords: {kw}",
+        "Проверьте перед сохранением:\n\n\U0001F4CC Заголовок: {title}\n\U0001F4DD Текст: {content}\n\U0001F511 Ключевые слова: {kw}",
+    ),
+    "kb_confirm_hint": _(
+        "Pastdagi tugmalardan birini bosing: Saqlash yoki Bekor qilish.",
+        "Please press one of the buttons below: Save or Cancel.",
+        "Нажмите одну из кнопок ниже: Сохранить или Отмена.",
+    ),
+    "kb_too_long": _(
+        "Matn juda uzun ({n} belgi, eng ko'pi {max}). Qisqartirib qayta yuboring.",
+        "The text is too long ({n} characters, max {max}). Shorten it and send again.",
+        "Текст слишком длинный ({n} симв., максимум {max}). Сократите и отправьте снова.",
+    ),
+    "kb_empty_text": _("Matn bo'sh bo'lmasligi kerak.", "The text can't be empty.", "Текст не должен быть пустым."),
+    "kb_kw_bad": _(
+        "Kalit so'zlar noto'g'ri: ko'pi bilan {max} ta so'z/ibora (har biri {len} belgigacha). "
+        "Vergul bilan ajratib qayta yuboring yoki «-» yuboring.",
+        "Invalid keywords: up to {max} words/phrases (each up to {len} characters). "
+        "Separate them with commas and send again, or send «-».",
+        "Неверные ключевые слова: до {max} слов/фраз (каждое до {len} символов). "
+        "Разделите запятыми и отправьте снова или отправьте «-».",
+    ),
+    "kb_no_keywords": _("yo'q", "none", "нет"),
+    "kb_saved": _("✅ Ma'lumot saqlandi.", "✅ Entry saved.", "✅ Запись сохранена."),
+    "kb_limit": _(
+        "Ma'lumotlar limiti to'lgan ({max} ta). Yangisini qo'shish uchun eskisini o'chiring.",
+        "Entry limit reached ({max}). Delete an old one to add a new one.",
+        "Лимит записей исчерпан ({max}). Удалите старую, чтобы добавить новую.",
+    ),
+    "kb_cancelled": _("Bekor qilindi.", "Cancelled.", "Отменено."),
+    "kb_draft_lost": _(
+        "Qoralama yo'qolgan (vaqt o'tdi). Iltimos, boshidan boshlang.",
+        "The draft was lost (timed out). Please start again.",
+        "Черновик потерян (истекло время). Начните сначала.",
+    ),
+    "kb_list_empty": _(
+        "Hali ma'lumot qo'shilmagan. \"➕ Ma'lumot qo'shish\" tugmasini bosing.",
+        "No entries yet. Press \"➕ Add Entry\".",
+        "Записей пока нет. Нажмите «➕ Добавить запись».",
+    ),
+    "kb_list_title": _(
+        "\U0001F4CB Ma'lumotlarim ({count}/{max}). Ko'rish uchun tanlang:",
+        "\U0001F4CB My Entries ({count}/{max}). Pick one to view:",
+        "\U0001F4CB Мои записи ({count}/{max}). Выберите для просмотра:",
+    ),
+    "kb_entry_view": _(
+        "\U0001F4CC Sarlavha: {title}\n\U0001F4DD Ma'lumot: {content}\n\U0001F511 Kalit so'zlar: {kw}\n\nHolat: {status}",
+        "\U0001F4CC Title: {title}\n\U0001F4DD Text: {content}\n\U0001F511 Keywords: {kw}\n\nStatus: {status}",
+        "\U0001F4CC Заголовок: {title}\n\U0001F4DD Текст: {content}\n\U0001F511 Ключевые слова: {kw}\n\nСтатус: {status}",
+    ),
+    "kb_edit_t_prompt": _(
+        "✏️ Yangi sarlavhani yuboring (eng ko'pi {max} belgi).\n\nHozirgi: {cur}\n\nBekor qilish: /cancel",
+        "✏️ Send the new title (up to {max} characters).\n\nCurrent: {cur}\n\nCancel: /cancel",
+        "✏️ Отправьте новый заголовок (до {max} символов).\n\nСейчас: {cur}\n\nОтмена: /cancel",
+    ),
+    "kb_edit_c_prompt": _(
+        "\U0001F4DD Yangi ma'lumot matnini yuboring (eng ko'pi {max} belgi).\n\nHozirgi: {cur}\n\nBekor qilish: /cancel",
+        "\U0001F4DD Send the new text (up to {max} characters).\n\nCurrent: {cur}\n\nCancel: /cancel",
+        "\U0001F4DD Отправьте новый текст (до {max} символов).\n\nСейчас: {cur}\n\nОтмена: /cancel",
+    ),
+    "kb_edit_kw_prompt": _(
+        "\U0001F511 Yangi kalit so'zlarni vergul bilan yuboring (ko'pi bilan 10 ta; eskilari almashtiriladi). "
+        "Olib tashlash uchun «-» yuboring.\n\nHozirgi: {cur}\n\nBekor qilish: /cancel",
+        "\U0001F511 Send the new keywords separated by commas (up to 10; the old ones are replaced). "
+        "Send «-» to remove them.\n\nCurrent: {cur}\n\nCancel: /cancel",
+        "\U0001F511 Отправьте новые ключевые слова через запятую (до 10; старые будут заменены). "
+        "Чтобы убрать их, отправьте «-».\n\nСейчас: {cur}\n\nОтмена: /cancel",
+    ),
+    "kb_updated": _("✅ Ma'lumot yangilandi.", "✅ Entry updated.", "✅ Запись обновлена."),
+    "kb_entry_gone": _("Bu ma'lumot topilmadi.", "This entry was not found.", "Эта запись не найдена."),
+    "kb_deleted": _("\U0001F5D1 Ma'lumot o'chirildi.", "\U0001F5D1 Entry deleted.", "\U0001F5D1 Запись удалена."),
+    "kb_settings": _(
+        "⚙️ Bilimlar bazasi sozlamalari\n\nHolat: {status}\n\n"
+        "Ishlash tartibi: AI-Yordamchi mijozga javob berishdan oldin bazadan mos ma'lumotlarni topadi va shularga tayanadi. "
+        "Baza kichik bo'lsa, hammasi AI'ga beriladi; katta bo'lsa — kalit so'zlar va sarlavha bo'yicha eng mos 5 tasi. "
+        "Bazada yo'q ma'lumotni AI to'qimaydi.\n\nO'chirib qo'ysangiz, ma'lumotlaringiz saqlanadi, lekin AI ulardan foydalanmaydi.",
+        "⚙️ Knowledge Base settings\n\nStatus: {status}\n\n"
+        "How it works: before replying, the AI Assistant finds the matching entries and relies on them. "
+        "If the base is small, all of it is given to the AI; if large — the 5 best matches by keywords and title. "
+        "The AI does not invent facts that are not in the base.\n\nIf you turn it off, your entries are kept but the AI does not use them.",
+        "⚙️ Настройки базы знаний\n\nСтатус: {status}\n\n"
+        "Как работает: перед ответом AI-помощник находит подходящие записи и опирается на них. "
+        "Если база маленькая, AI получает всё; если большая — 5 лучших совпадений по ключевым словам и заголовку. "
+        "AI не выдумывает факты, которых нет в базе.\n\nЕсли выключить, записи сохранятся, но AI не будет их использовать.",
+    ),
 }
 
 
