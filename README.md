@@ -2,7 +2,7 @@
 
 # 🤖 AutoReplyer
 
-### Your Telegram Business assistant — replies, automation, and a live profile clock.
+### Thoughtful auto-replies for Telegram Business — powered by rules, AI and your own knowledge.
 
 **Built with Python · Telegram Business · PostgreSQL · Google Gemini**
 
@@ -23,7 +23,9 @@
 
 **AutoReplyer** is a Telegram Business automation bot that helps account owners stay responsive when they are away. Connect it through Telegram's official Business bot interface, configure replies and schedules, and optionally enable Gemini-powered AI responses.
 
-It includes **Smart Onboarding** for first-time setup, **Smart FAQ** for recurring questions, a clock in your Telegram profile name, BIO countdowns, subscription plans, and tools for the bot administrator.
+It includes **Smart Onboarding**, **Smart FAQ**, and **AI Personal Knowledge**: an owner-managed collection of facts that Gemini can use to answer relevant questions. Profile name clocks, BIO countdowns, subscription plans, and administrator tools round out the experience.
+
+**The goal is an auto-reply assistant, not an online shop or order-management system.** You can store information about yourself, your work, availability, services, or even prices as ordinary notes — no product catalogue is required.
 
 > **Important:** This project uses Telegram's **official Business bot connection**. It is **not** a userbot and does **not** require your Telegram password, login code, or session file. Telegram Business access and available permissions depend on Telegram's current account/client requirements.
 
@@ -32,8 +34,11 @@ It includes **Smart Onboarding** for first-time setup, **Smart FAQ** for recurri
 - [Features](#-features)
 - [Smart Onboarding (first-time setup)](#-smart-onboarding-first-time-setup)
 - [Smart FAQ guide](#-smart-faq-guide)
+- [AI Personal Knowledge guide](#-ai-personal-knowledge-guide)
+- [How automatic replies are chosen](#-how-automatic-replies-are-chosen)
 - [Plans & pricing](#-plans--pricing)
 - [Getting started as a user](#-getting-started-as-a-user)
+- [O‘zbekcha qisqa yo‘riqnoma](#-ozbekcha-qisqa-yoriqnoma)
 - [Run your own instance](#-run-your-own-instance)
 - [Environment configuration](#-environment-configuration)
 - [Deployment on Render](#-deployment-on-render)
@@ -50,6 +55,7 @@ It includes **Smart Onboarding** for first-time setup, **Smart FAQ** for recurri
 |---|---|
 | 🧭 **Smart Onboarding** | Optional three-step first-time setup: connect Telegram, enable auto-reply, and test it, with resumable progress. |
 | 📚 **Smart FAQ** | Keyword-based answers for frequently asked Business-chat questions, without a Gemini API call; owner-managed entries and plan-based limits. |
+| 🧠 **AI Personal Knowledge** | Owner-written facts, keywords and notes help Gemini reply with more relevant information; individual notes can be edited, paused, or deleted. **Ultra only**. |
 | 📨 **Offline replies** | Automatically reply to incoming private Business messages when offline mode is enabled. |
 | 🌙 **Sleep Mode** | Send a separate reply during configured sleeping hours, including overnight schedules. |
 | ⏳ **Cooldown** | Avoid repeatedly responding to the same chat; persistent, atomic reply claims help with concurrency. |
@@ -112,6 +118,70 @@ When a Business-chat message clearly matches a configured question or keyword ph
 
 **Privacy note:** FAQ answers are configured by the account owner and are sent automatically to relevant Business contacts. Avoid placing secrets or sensitive personal information in FAQ entries. Always review business-critical statements such as prices and availability.
 
+### 🧠 AI Personal Knowledge guide
+
+**AI Personal Knowledge** (called `kb` in the source) gives your AI auto-reply assistant a small, structured collection of **your own notes**. It is for personal and professional context, **not a separate sales bot**, inventory database, or order-taking feature.
+
+**Availability:** **Ultra** plan; up to **55 entries per owner**. The bot's **Gemini AI Assistant must also be enabled** and have a working Gemini API key. Users outside Ultra see the feature as locked in the control panel; the administrator has access under the configured admin exception.
+
+**Open it:** `/start` → **Control panel** → **AI Shaxsiy Bilimlar / AI Personal Knowledge / AI Личные знания**. The interface is translated into Uzbek, English, and Russian.
+
+| Action | Available behavior |
+|---|---|
+| **Add entry** | Write a **title** (up to 100 characters), **text** (up to 1,000 characters), and optionally **keywords**; review the draft and explicitly save it. |
+| **View and edit** | List entries; change their title, text, or keywords. |
+| **Pause / resume** | Disable a single entry without deleting it. |
+| **Delete** | See a confirmation screen before permanently deleting an entry. |
+| **Settings** | Turn the entire knowledge base on or off; stored entries are retained while disabled. |
+
+Keywords are optional (`-` skips them). You can enter up to **10 keywords/phrases, each up to 40 characters**. They are used with title/text matching to find relevant entries.
+
+**Example — personal auto-reply context:**
+
+```text
+Title: When I'm usually available
+Text: I usually reply personally after 18:00 on weekdays.
+Keywords: available, free time, evening, bo'sh vaqt, kechqurun
+```
+
+If a contact asks when you can respond, Gemini may use this note to generate a natural answer. Notes can equally describe hobbies, ongoing projects, office hours, services, or business information. **You do not need to create product categories or a price list.**
+
+**How retrieval works:** the bot looks at up to three recent incoming messages in that chat and ranks enabled notes using keyword phrases, title words and words in the note text. It ignores common question words, uses simple word-prefix matching, and sends at most **five relevant entries**, with approximately **4,000 characters of selected title/text** in total, to Gemini. **No match → no knowledge-base entries are attached.** This is heuristic keyword/text retrieval, **not semantic search**; it may miss paraphrases or match imperfectly. Entries are queried by the account owner's ID and aren't intentionally shared across owners.
+
+**Safety and accuracy:** write only facts you are comfortable sharing with the people who message you. Do **not** store passwords, bank-card numbers, passport/ID data, private third-party details, or other secrets. **Relevant selected notes and the incoming chat context are sent to Google Gemini** when AI replies are generated. The model is instructed not to invent missing facts or reveal secrets, but AI responses and selection are **not guaranteed** to be correct or private in every case; review what you enter.
+
+> Turning off AI or the knowledge-base toggle stops Knowledge Base content being used for new AI responses; it does **not** delete the stored notes. Deleting an entry is permanent. Plan downgrades restrict access without automatically deleting the owner's existing entries.
+
+### 🔀 How automatic replies are chosen
+
+When Telegram allows the bot to respond to a Business message, the code checks the account's connection rights, channel-membership rules (if enabled), Offline/Sleep settings, and other applicable restrictions.
+
+```text
+Incoming Telegram Business message
+               │
+               ▼
+       Sleep Mode active? ── yes ──► Sleep reply path
+               │ no
+               ▼
+      Offline replies enabled?
+               │ yes
+               ▼
+   Smart FAQ confident match? ── yes ──► Saved FAQ answer
+               │ no
+               ▼
+  Gemini AI available + enabled
+          for this plan?
+       │ yes             │ no
+       ▼                 ▼
+Relevant Personal      Standard
+Knowledge notes        auto-reply
+       │
+       ▼
+ Gemini-generated reply ──► Static fallback if generation fails
+```
+
+The diagram is a simplified overview: **cooldown/claim rules, manual-owner takeover pauses, account permissions and chat scope still apply**. Smart FAQ takes priority over AI on a confident match. When AI is enabled, **Personal Knowledge provides context to Gemini — it doesn't autonomously send a second message**. AI replies remain subject to the configured daily quota and external provider availability.
+
 ### AI assistant roles
 
 The Gemini assistant can be configured as a **personal assistant**, **sales representative**, **customer-support assistant**, **friendly responder**, **developer representative**, or **formal business assistant**. It uses limited conversation history for context and pauses after the account owner intervenes in a chat.
@@ -121,7 +191,7 @@ AI-generated replies can be wrong. Never rely on them to commit to prices, appoi
 ### Business automation details
 
 - Static replies and Sleep Mode work without a Gemini API key.
-- AI is an **Ultra** feature in the current plan configuration.
+- Gemini AI and AI Personal Knowledge are **Ultra** features in the current plan configuration. Ultra's AI reply quota is **50 per day** for a regular user; the configured administrator is exempt.
 - Ordinary static replies support per-chat cooldowns; AI replies use a separate reply flow.
 - The name clock updates periodically, subject to Telegram Business permissions and API rate limits.
 - Free-tier accounts may see a promotional footer in auto-replies and a promotional BIO message when using the profile clock. Paid plans are configured as ad-free.
@@ -141,9 +211,12 @@ Prices below are **the currently configured public bot prices for one month**, i
 | Custom auto-reply and sleep text | — | ✅ | ✅ | ✅ |
 | BIO countdown | — | — | ✅ | ✅ |
 | Smart FAQ entries | — | **15** | **30** | **65** |
-| Gemini AI assistant | — | — | — | ✅ |
+| Gemini AI assistant (50 replies/day*) | — | — | — | ✅ |
+| AI Personal Knowledge (55 entries) | — | — | — | ✅ |
 | Extra clock fonts | — | — | — | ✅ |
 | Extra time zones | — | — | ✅ | ✅ |
+
+*The administrator has a configured exception to the AI daily reply quota; Telegram and Gemini limits still apply.*
 
 **Payment flow:** The bot displays payment details configured by the operator. Users submit proof of payment to the administrator, who activates the selected plan. Plan durations and expiration are handled by the bot; this is **manual verification**, not an automated payment gateway. Payment options for international users may vary.
 
@@ -158,13 +231,26 @@ Prices below are **the currently configured public bot prices for one month**, i
 5. Return to AutoReplyer and tap **Check connection**. If Telegram already sent a connection update, the wizard may have advanced automatically.
 6. Review the auto-reply text and tap **Turn on Auto-Reply** to enable it with your consent.
 7. Send a test message **from another Telegram account** in a chat you authorized; select **Reply arrived** only if you actually receive a reply, or **No reply** for troubleshooting.
-8. Use the control panel for **Sleep Mode**, **Smart FAQ** (Plus/Pro/Ultra), the **profile clock**, **BIO countdown**, and other plan-specific features.
+8. Use the control panel for **Sleep Mode**, **Smart FAQ** (Plus/Pro/Ultra), **AI Personal Knowledge** (Ultra), the **profile clock**, **BIO countdown**, and other plan-specific features.
 
 **Want to set it up later?** Use **Skip** at any step. A **Continue setup** button appears in the main menu for users who skipped. Existing accounts are not forced into a new setup wizard.
 
 **Safety:** do not provide your Telegram password, login code, or session file. Use only Telegram's own bot-connection controls and grant only the access you intend.
 
 For feature announcements, visit **[@AutoReplyer_News](https://t.me/AutoReplyer_News)**.
+
+### 🇺🇿 O‘zbekcha qisqa yo‘riqnoma
+
+**AutoReplyer — avtomatik javob beruvchi Telegram bot**, savdo yoki buyurtma botiga aylantirilmagan. Ishni boshlash uchun:
+
+1. [@autoreplyer_dbot](https://t.me/autoreplyer_dbot) ga `/start` yuboring va **O‘zbekcha**ni tanlang.
+2. Zarur bo‘lsa, kanalga obuna bo‘ling. Telegram'da **Settings → My Profile → Chat Automations** orqali botni ulang va **Reply to messages** ruxsatini yoqing.
+3. Onboarding’da **Auto-Reply**ni yoqing va boshqa akkauntdan sinov xabari yuboring.
+4. **Smart FAQ** — kalit so‘zga mos tayyor javob; **AI Shaxsiy Bilimlar** (Ultra) — Gemini javob berayotganda foydalanadigan siz kiritgan ma’lumotlar.
+5. AI Shaxsiy Bilimlar bo‘limiga **sarlavha + ma’lumot + ixtiyoriy kalit so‘zlar** qo‘shing. Mahsulot va narxlar uchun alohida savdo tizimi **shart emas**.
+6. **Parol, karta yoki pasport ma’lumotlarini kiritmang.** AI javoblari xato qilishi mumkin.
+
+Ilova menyulari Telegram versiyasiga qarab farq qilishi mumkin. Batafsil ma’lumot: [Smart Onboarding](#-smart-onboarding-first-time-setup) · [Smart FAQ](#-smart-faq-guide) · [AI Shaxsiy Bilimlar](#-ai-personal-knowledge-guide).
 
 ## 🛠️ Run your own instance
 
@@ -245,7 +331,7 @@ PORT=10000
 - `ADMIN_ID` should be a numeric Telegram user ID, not a username. Without a correctly set admin ID, privileged commands will not work as intended.
 - Use a valid Supabase PostgreSQL connection string if you use Supabase. Follow your provider's SSL and pooling guidance; do not publish the URL.
 - Set **both** required-channel variables to turn on the membership gate. Your bot needs suitable channel permissions to check membership.
-- Do **not** publish payment card details in your repository. Set them in the hosting environment. Payment activation is handled by the bot operator.
+- Do **not** publish payment card details in your repository. Set them in the hosting environment. **Set `PAYMENT_CARD_HOLDER` explicitly when configuring `PAYMENT_CARD_NUMBER`**: the current code contains an operator-specific fallback name that may be inappropriate for a separate installation. Payment activation is handled by the bot operator.
 - This repository is configured for the public **@autoreplyer_dbot** instance. If you run an independent fork, review hard-coded support links/usernames in `bot.py` and substitute your own.
 
 ### 5. Start the bot
@@ -271,7 +357,7 @@ On startup, the bot initializes PostgreSQL tables, starts polling, schedules rec
 | `REQUIRED_CHANNEL_ID` | Channel ID/username for membership gate | Optional, paired |
 | `REQUIRED_CHANNEL_LINK` | Public/invite link for membership gate | Optional, paired |
 | `PAYMENT_CARD_NUMBER` | Operator's manual payment card | Optional |
-| `PAYMENT_CARD_HOLDER` | Displayed payment recipient | Optional |
+| `PAYMENT_CARD_HOLDER` | Displayed payment recipient; **set explicitly if a card number is configured** | Recommended when card payments are shown |
 | `NAME_CLOCK_PUBLIC` | `0` restricts name clock to admin | Optional |
 | `PORT` | HTTP health server port, default `10000` | Host-dependent |
 
@@ -313,14 +399,15 @@ Telegram users / Business messages
        │                  │
        ▼                  ▼
     bot.py              ai.py ──► Google Gemini API
-  handlers/jobs      optional AI replies
+  handlers/jobs      optional AI replies + selected notes
        │
-       ├── logic.py  (pure business logic)
+       ├── logic.py  (FAQ rules and knowledge retrieval)
        ├── i18n.py   (Uzbek / English / Russian)
        │
        ▼
      db.py ───────────────► PostgreSQL / Supabase
        │                      settings, plans, connections,
+       │                      FAQ and knowledge_entries,
        │                      broadcasts, conversation history
        ▼
   Render / Python host
@@ -328,18 +415,18 @@ Telegram users / Business messages
 
 | File | Responsibility |
 |---|---|
-| [`bot.py`](bot.py) | Telegram handlers, Business updates, onboarding screens and callbacks, Smart FAQ UI/editing and reply routing, plans, scheduling, broadcasts, name clock, and health server |
-| [`db.py`](db.py) | PostgreSQL access and schema migrations, onboarding state/statistics, owner-scoped FAQ CRUD, settings, plans, and job persistence |
-| [`ai.py`](ai.py) | Gemini requests, AI prompts, role presets, and response extraction |
-| [`logic.py`](logic.py) | Cooldown parsing, time/date handling, countdowns, name formatting, FAQ keyword parsing and matching |
+| [`bot.py`](bot.py) | Telegram handlers, Business updates, onboarding, Smart FAQ and AI Personal Knowledge panels, AI reply routing, plans, scheduling, broadcasts, name clock, and health server |
+| [`db.py`](db.py) | PostgreSQL access and schema initialization, onboarding progress, owner-scoped FAQ and knowledge CRUD, settings, AI conversation history, plans, and job persistence |
+| [`ai.py`](ai.py) | Gemini requests, role presets, prompting with selected AI Personal Knowledge facts, and reply extraction |
+| [`logic.py`](logic.py) | Cooldown/time handling, countdowns, name formatting, FAQ matching, Personal Knowledge parsing and relevance ranking |
 | [`i18n.py`](i18n.py) | User-facing strings in three languages, including onboarding and Telegram connection instructions |
 | [`tests/`](tests/) | Unit and behavior tests for key features |
 | [`requirements.txt`](requirements.txt) | Python runtime dependencies |
 
 **Operational notes:**
 
-- PostgreSQL keeps account settings, onboarding progress, FAQ entries, and jobs across Render restarts.
-- `db.init_db()` adds onboarding columns on startup if needed. Existing users initially receive the `legacy` status; newly inserted rows default to `welcome`.
+- PostgreSQL keeps account settings, onboarding progress, FAQ entries, Personal Knowledge entries, and jobs across Render restarts.
+- On startup, `db.init_db()` adds missing onboarding columns and creates the `knowledge_entries` table and `kb_enabled` setting if needed. Existing users initially receive the `legacy` onboarding status; newly inserted users default to `welcome`.
 - Broadcasts persist progress, have a one-active-job database constraint, support recovery and retry, and handle Telegram rate limits.
 - Exactly-once broadcast delivery is **not guaranteed**: an interruption between Telegram accepting a message and database progress being saved can produce a duplicate.
 - Bot-level feature restrictions and subscription status are enforced in application logic; third-party services still enforce their own limits.
@@ -374,7 +461,7 @@ This assigns a time-limited plan to the specified user ID; use the bot's help te
 
 ## 🧪 Testing
 
-The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ (editing and plan limits), translations, and **Smart Onboarding**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
+The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ, translations, **Smart Onboarding**, **AI Personal Knowledge**, and **test database safety guards**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
 
 Install the development-only test runner and run the suite:
 
@@ -383,27 +470,29 @@ python -m pip install pytest
 python -m pytest -q
 ```
 
-**Onboarding database tests require `TEST_DATABASE_URL`.** Without it, the onboarding test class is skipped. Run against a **dedicated disposable PostgreSQL test database**, making sure neither URL points to production:
+**Onboarding and AI Personal Knowledge database tests require `TEST_DATABASE_URL`.** Without it, their database-backed classes are skipped (other unit tests can still run). **Run the suite with pytest**, which loads `tests/conftest.py` *before test modules are imported* and overrides `DATABASE_URL` with the provided test URL, or a fake URL when none is set. Use a **dedicated disposable PostgreSQL test database**; never production:
 
 ```bash
-# Use a dedicated TEST database, never the live Supabase database:
-export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/autoreplyer_test'
-export TEST_DATABASE_URL="$DATABASE_URL"
-python -m pytest tests/test_onboarding.py -v
+# Example: PostgreSQL running locally on your development machine.
+# Replace with YOUR disposable local test database:
+export TEST_DATABASE_URL='postgresql://TEST_USER:TEST_PASSWORD@localhost:5432/autoreplyer_test'
+python -m pytest tests/test_knowledge.py tests/test_onboarding.py tests/test_db_guard.py -v
 python -m pytest -q
 ```
 
-The onboarding suite calls `db.init_db()` and creates/updates/deletes test records; do not run it against real user data. **A skipped test is not a passed test.** Tests existing in this repository do not prove that the latest commit passed CI; review actual test output.
+Database integration suites call `db.init_db()` and create/update/delete records. Do not run them against real user data. The pytest guard accepts local hosts by default and **refuses remote test database hosts** unless `ALLOW_REMOTE_TEST_DB=1` is explicitly set. **That opt-in is not proof a remote database is safe**; use it only for a separately provisioned throwaway test database.
 
-**Recommended deployment workflow:** develop on a separate branch, use a distinct Telegram test bot token and PostgreSQL test database, manually test the full first-time setup and an existing account, then review and merge a pull request to `main`. Never run multiple polling processes with the production bot token.
+**Important limitation:** the database guard is implemented in `tests/conftest.py`, which **pytest** loads. Running test modules directly with `unittest` bypasses this protection; do not do so with any production credentials or `DATABASE_URL`. A skipped test is **not** a passed test. This README does not claim the latest commit passed CI — review real test results.
+
+**Recommended deployment workflow:** develop on a separate branch, use a distinct Telegram test bot token and PostgreSQL test database, manually test onboarding and Knowledge Base (including owner isolation, deletion confirmation, FAQ priority, and a second Telegram account), then review and merge a pull request to `main`. Never run multiple polling processes with the production bot token.
 
 ## 🔐 Privacy, security & limitations
 
 - **Official permissions only:** use the Telegram Business connection flow. The bot should never request Telegram passwords or authentication codes.
-- **AI message processing:** incoming text and relevant chat context may be sent to Google's Gemini API when AI replies are enabled. Ensure users understand this data flow.
-- **Stored data:** PostgreSQL stores settings, Business connections, **onboarding state and timestamps**, **Smart FAQ questions, keywords and answers**, history for applicable AI features, referral and broadcast data, and related metadata. Check retention and deletion behavior in [`db.py`](db.py) before deployment.
+- **AI message processing:** incoming text and relevant chat context may be sent to Google's Gemini API when AI replies are enabled. **Relevant owner-authored Personal Knowledge entries are also sent to Gemini** when retrieved. Don't store information you aren't willing to disclose to a chat contact and the AI provider.
+- **Stored data:** PostgreSQL stores settings, Business connections, **onboarding state/timestamps**, **Smart FAQ entries**, **AI Personal Knowledge titles, texts and keywords**, AI conversation history, referrals, broadcasts, and related metadata. AI history retrieval is limited to recent messages and a background cleanup job purges old history; verify retention and deletion behavior in [`db.py`](db.py) for your own deployment.
 - **Secrets:** never commit `.env`, API keys, database URLs, Telegram tokens, or customer information. Rotate any exposed secrets immediately.
-- **AI limitations:** the model may be inaccurate, unavailable, or rate-limited. Static reply fallback is available, but delivery is not guaranteed under every failure mode.
+- **AI limitations:** the model may be inaccurate, unavailable, or rate-limited. Knowledge Base retrieval is heuristic, and even an instruction to avoid invented or confidential details **cannot guarantee** a safe or correct generated response. Static reply fallback is available, but delivery is not guaranteed under every failure mode.
 - **Telegram restrictions:** Business rights, flood limits, profile editing privileges, and availability of features are controlled by Telegram.
 - **Commercial use:** payment verification in the current code is manual; the repository does not provide a full automated billing provider integration.
 - **Responsible broadcasting:** only message users who have opted to interact with the bot and comply with Telegram policies and local messaging rules.
