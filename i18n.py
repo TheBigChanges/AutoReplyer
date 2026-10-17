@@ -1261,17 +1261,31 @@ T: dict[str, dict] = {
     "kb_settings": _(
         "⚙️ AI Shaxsiy Bilimlar sozlamalari\n\nHolat: {status}\n\n"
         "Ishlash tartibi: AI-Yordamchi mijozga javob berishdan oldin bazadan mos ma'lumotlarni topadi va shularga tayanadi. "
-        "Baza kichik bo'lsa, hammasi AI'ga beriladi; katta bo'lsa — kalit so'zlar va sarlavha bo'yicha eng mos 5 tasi. "
+        "AI'ga faqat mijoz xabariga mos yozuvlar beriladi (eng ko'pi 5 ta; kalit so'zlar, sarlavha va matn bo'yicha topiladi); mos yozuv bo'lmasa, baza AI'ga umuman yuborilmaydi. "
         "Bazada yo'q ma'lumotni AI to'qimaydi.\n\nO'chirib qo'ysangiz, ma'lumotlaringiz saqlanadi, lekin AI ulardan foydalanmaydi.",
         "⚙️ AI Personal Knowledge settings\n\nStatus: {status}\n\n"
         "How it works: before replying, the AI Assistant finds the matching entries and relies on them. "
-        "If the base is small, all of it is given to the AI; if large — the 5 best matches by keywords and title. "
+        "Only the entries matching the customer's message are given to the AI (up to 5, found by keywords, title and text); if nothing matches, the base is not sent to the AI at all. "
         "The AI does not invent facts that are not in the base.\n\nIf you turn it off, your entries are kept but the AI does not use them.",
         "⚙️ Настройки AI Личные знания\n\nСтатус: {status}\n\n"
         "Как работает: перед ответом AI-помощник находит подходящие записи и опирается на них. "
-        "Если база маленькая, AI получает всё; если большая — 5 лучших совпадений по ключевым словам и заголовку. "
+        "AI получает только записи, подходящие к сообщению клиента (до 5; ищутся по ключевым словам, заголовку и тексту); если ничего не подошло, база AI не отправляется вовсе. "
         "AI не выдумывает факты, которых нет в базе.\n\nЕсли выключить, записи сохранятся, но AI не будет их использовать.",
     ),
+    "kb_privacy": _(
+        "⚠️ Parol, bank karta raqami, pasport va boshqa maxfiy ma'lumot yozmang. Yozganlaringiz AI (Google Gemini) ga "
+        "yuboriladi va mijozga aytilishi mumkin — faqat mijozga ochiq bo'lishi mumkin bo'lgan ma'lumotni kiriting.",
+        "⚠️ Do not write passwords, bank card numbers, passport data or other confidential information. What you write "
+        "is sent to the AI (Google Gemini) and may be told to customers — enter only information that is fine to share.",
+        "⚠️ Не пишите пароли, номера банковских карт, паспортные и другие конфиденциальные данные. Написанное "
+        "отправляется в AI (Google Gemini) и может быть сообщено клиенту — вводите только то, чем можно делиться.",
+    ),
+    "kb_del_confirm": _(
+        "\U0001F5D1 Ushbu ma'lumot o'chirilsinmi?\n\n\U0001F4CC {title}\n\nBu amalni qaytarib bo'lmaydi.",
+        "\U0001F5D1 Delete this entry?\n\n\U0001F4CC {title}\n\nThis cannot be undone.",
+        "\U0001F5D1 Удалить эту запись?\n\n\U0001F4CC {title}\n\nЭто действие нельзя отменить.",
+    ),
+    "btn_kb_del_yes": _("✅ Ha, o'chirish", "✅ Yes, delete", "✅ Да, удалить"),
 }
 
 
