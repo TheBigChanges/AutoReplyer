@@ -76,6 +76,11 @@ from logic import (
     FAQ_MAX_KEYWORDS,
     FAQ_MAX_QUESTION,
     match_faq,
+    KB_LIMIT,
+    KB_MAX_CONTENT,
+    KB_MAX_TITLE,
+    parse_kb_keywords,
+    select_knowledge,
     parse_faq_keywords,
 )
 
@@ -746,11 +751,12 @@ DEFAULT_FEATURE_PLANS = {
     "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
     "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
     "faq": ("plus", "pro", "ultra"),    # Smart FAQ (savollar soni tarifga qarab: FAQ_PLAN_LIMITS)
+    "kb": ("ultra",),                   # AI Bilimlar bazasi (AI bilan birga ishlaydi; KB_LIMIT ta yozuv)
 }
 FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
 FEATURE_NAME_KEYS = {
     "bio": "feature_bio", "custom_text": "feature_text", "ai": "feature_ai", "name_clock_fonts": "feature_fonts",
-    "name_clock_zones": "feature_zones", "faq": "feature_faq",
+    "name_clock_zones": "feature_zones", "faq": "feature_faq", "kb": "feature_kb",
 }
 
 
@@ -829,6 +835,12 @@ def has_feature(user_id: int, feature: str) -> bool:
     return plan_allows(user_id, plan_of(user_id), feature)
 
 
+def kb_limit_for(user_id: int, plan: str | None = None) -> int:
+    """Bilimlar bazasida nechta yozuv saqlash mumkin (0 — tarifda yo'q). Admin ham KB_LIMIT bilan cheklanadi."""
+    plan = plan if plan is not None else plan_of(user_id)
+    return KB_LIMIT if plan_allows(user_id, plan, "kb") else 0
+
+
 def faq_limit_for(user_id: int, plan: str | None = None) -> int:
     """Smart FAQ'da nechta savol saqlash mumkin (0 — Smart FAQ ochiq emas). Admin — eng yuqori limit."""
     plan = plan if plan is not None else plan_of(user_id)
@@ -866,6 +878,8 @@ def locked_feature_for(data: str) -> str | None:
         return "ai"
     if data.startswith("faq_"):
         return "faq"
+    if data.startswith("kb_"):
+        return "kb"
     return None
 
 
@@ -923,6 +937,7 @@ def plan_features_text(lang: str, plan: str) -> str:
         included.append(t(lang, "pf_faq", n=FAQ_PLAN_LIMITS.get(plan, min(FAQ_PLAN_LIMITS.values()))))
     else:
         excluded.append(t(lang, "pf_faq_locked", limits=" / ".join(f"{p.capitalize()} — {n}" for p, n in FAQ_PLAN_LIMITS.items() if p in FEATURE_PLANS.get("faq", ()))))
+    (included if plan in FEATURE_PLANS.get("kb", ()) else excluded).append(t(lang, "pf_kb", n=KB_LIMIT))
     included.append(t(lang, "pf_ads_off" if plan in AD_FREE_PLANS else "pf_ads_on"))
     parts = [t(lang, "plan_includes")] + [f"• {line}" for line in included]
     if excluded:
@@ -1649,9 +1664,12 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
             history = db.get_ai_history(owner_id, chat_id, AI_HISTORY_MESSAGES)
             history.append({"role": "user", "text": text})
             info = db.get_user(owner_id) or {}
+            # Bilimlar bazasi: mijozning oxirgi xabarlari bo'yicha mos yozuvlar (davomli savollar uchun 3 tagacha)
+            recent_user_texts = [h["text"] for h in history if h.get("role") == "user"][-3:]
+            kb_entries = find_kb_context(owner_id, recent_user_texts)
             answer = await ai.generate_reply(
                 history, info.get("full_name"), settings.get("ai_info"), settings.get("ai_role"),
-                lang=get_lang(owner_id),
+                lang=get_lang(owner_id), **({"knowledge": kb_entries} if kb_entries else {}),
             )
             if not answer:
                 if consumed:
@@ -1708,6 +1726,7 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton(t(lang, "btn_sleep"), callback_data="sleep_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_ai"), plan_allows(owner_id, plan, "ai")), callback_data="ai_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_faq"), plan_allows(owner_id, plan, "faq")), callback_data="faq_menu")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_kb"), plan_allows(owner_id, plan, "kb")), callback_data="kb_menu")],
     ]
     if name_clock_allowed(owner_id):
         keyboard.append([InlineKeyboardButton(t(lang, "btn_name_clock"), callback_data="nc_menu")])
@@ -1817,6 +1836,107 @@ def find_faq_answer(owner_id: int, text: str) -> str | None:
         logger.exception("Smart FAQ qidiruvida xato (owner=%s)", owner_id)
         return None
     return entry["answer"] if entry else None
+
+
+# ---------------------------------------------------------------------------
+# AI Bilimlar bazasi (Knowledge Base)
+# ---------------------------------------------------------------------------
+_kb_edit_target: dict[int, dict] = {}  # {owner_id: {"id", "ts"}} — qaysi yozuv tahrirlanmoqda
+_kb_drafts: dict[int, dict] = {}  # {owner_id: {"title","content","kw","ts"}} — saqlashdan oldingi qoralama (RAM)
+
+
+def _kb_draft(owner_id: int) -> dict | None:
+    d = _kb_drafts.get(owner_id)
+    if d is None or time.time() - d["ts"] > PENDING_ACTION_TTL_SECONDS:
+        _kb_drafts.pop(owner_id, None)
+        return None
+    return d
+
+
+def _kb_kw_text(lang: str, keywords) -> str:
+    return ", ".join(keywords) if keywords else t(lang, "kb_no_keywords")
+
+
+def build_kb_menu(owner_id: int, notice: str | None = None):
+    lang = get_lang(owner_id)
+    enabled = db.get_settings(owner_id).get("kb_enabled", True)
+    text = t(
+        lang, "kb_menu",
+        count=db.count_kb_entries(owner_id), max=kb_limit_for(owner_id),
+        status=t(lang, "status_on" if enabled else "status_off"),
+        notice=f"\n\n{notice}" if notice else "",
+    )
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_kb_add"), callback_data="kb_add")],
+        [InlineKeyboardButton(t(lang, "btn_kb_list"), callback_data="kb_list")],
+        [InlineKeyboardButton(t(lang, "btn_kb_settings"), callback_data="kb_settings")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_kb_settings(owner_id: int):
+    lang = get_lang(owner_id)
+    enabled = db.get_settings(owner_id).get("kb_enabled", True)
+    text = t(lang, "kb_settings", status=t(lang, "status_on" if enabled else "status_off"))
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="kb_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="kb_menu")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_kb_list(owner_id: int):
+    lang = get_lang(owner_id)
+    entries = db.list_kb_entries(owner_id)
+    if not entries:
+        text = t(lang, "kb_list_empty")
+    else:
+        text = t(lang, "kb_list_title", count=len(entries), max=kb_limit_for(owner_id))
+    keyboard = [
+        [InlineKeyboardButton(("" if e["is_enabled"] else "\u23F8 ") + _faq_short(e["title"]), callback_data=f"kb_view:{e['id']}")]
+        for e in entries
+    ]
+    keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="kb_menu")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_kb_entry(owner_id: int, entry_id: int, notice: str | None = None):
+    """(matn, tugmalar) yoki None — yozuv topilmasa (boshqa egasiniki ham 'topilmadi')."""
+    lang = get_lang(owner_id)
+    e = db.get_kb_entry(owner_id, entry_id)
+    if e is None:
+        return None
+    text = t(
+        lang, "kb_entry_view",
+        title=e["title"], content=e["content"], kw=_kb_kw_text(lang, e["keywords"]),
+        status=t(lang, "status_on" if e["is_enabled"] else "status_off"),
+    )
+    if notice:
+        text += f"\n\n{notice}"
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_kb_edit_t"), callback_data=f"kb_edit:t:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_kb_edit_c"), callback_data=f"kb_edit:c:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_kb_edit_kw"), callback_data=f"kb_edit:kw:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_kb_entry_off" if e["is_enabled"] else "btn_kb_entry_on"), callback_data=f"kb_entry_toggle:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_kb_delete"), callback_data=f"kb_del:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="kb_list")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def find_kb_context(owner_id: int, messages) -> list[dict]:
+    """AI'ga beriladigan Bilimlar bazasi yozuvlari. Tarifda yo'q / o'chirilgan / xato bo'lsa — [] (AI odatdagidek ishlaydi)."""
+    try:
+        limit = kb_limit_for(owner_id)
+        if limit <= 0 or not db.get_settings(owner_id).get("kb_enabled", True):
+            return []
+        # Tarif pasaygan bo'lsa, faqat limitga sig'adigan birinchi yozuvlar ishlaydi
+        entries = db.get_enabled_kb_entries(owner_id)[:limit]
+        return select_knowledge(messages, entries)
+    except Exception:
+        logger.exception("Bilimlar bazasi qidiruvida xato (owner=%s)", owner_id)
+        return []
 
 
 def build_sleep_menu(owner_id: int):
@@ -2269,6 +2389,95 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
+    if data == "kb_menu":
+        _kb_drafts.pop(owner_id, None)
+        text, markup = build_kb_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "kb_settings":
+        text, markup = build_kb_settings(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "kb_toggle":
+        enabled = db.get_settings(owner_id).get("kb_enabled", True)
+        db.update_settings(owner_id, kb_enabled=not enabled)
+        text, markup = build_kb_settings(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "kb_list":
+        text, markup = build_kb_list(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith(("kb_view:", "kb_del:", "kb_entry_toggle:")):
+        action, _, raw_id = data.partition(":")
+        entry_id = int(raw_id) if raw_id.isdigit() else -1
+        if action == "kb_del":
+            notice = t(lang, "kb_deleted") if db.delete_kb_entry(owner_id, entry_id) else t(lang, "kb_entry_gone")
+            text, markup = build_kb_list(owner_id)
+            await query.edit_message_text(f"{notice}\n\n{text}", reply_markup=markup)
+            return
+        if action == "kb_entry_toggle":
+            db.toggle_kb_entry(owner_id, entry_id)
+        view = build_kb_entry(owner_id, entry_id)
+        if view is None:
+            text, markup = build_kb_list(owner_id)
+            await query.edit_message_text(f"{t(lang, 'kb_entry_gone')}\n\n{text}", reply_markup=markup)
+            return
+        await query.edit_message_text(view[0], reply_markup=view[1])
+        return
+
+    if data.startswith("kb_edit:"):
+        _, _, rest = data.partition(":")
+        field, _, raw_id = rest.partition(":")
+        entry_id = int(raw_id) if raw_id.isdigit() else -1
+        entry = db.get_kb_entry(owner_id, entry_id) if field in ("t", "c", "kw") else None
+        if entry is None:
+            text, markup = build_kb_list(owner_id)
+            await query.edit_message_text(f"{t(lang, 'kb_entry_gone')}\n\n{text}", reply_markup=markup)
+            return
+        current = {"t": entry["title"], "c": entry["content"], "kw": _kb_kw_text(lang, entry["keywords"])}[field]
+        _kb_edit_target[owner_id] = {"id": entry_id, "ts": time.time()}
+        set_pending_action(owner_id, f"kb_edit_{field}")
+        await query.message.reply_text(
+            t(lang, f"kb_edit_{field}_prompt", cur=current, max=KB_MAX_CONTENT if field == "c" else KB_MAX_TITLE)
+        )
+        return
+
+    if data == "kb_add":
+        limit = kb_limit_for(owner_id)
+        if db.count_kb_entries(owner_id) >= limit:
+            text, markup = build_kb_menu(owner_id, t(lang, "kb_limit", max=limit))
+            await query.edit_message_text(text, reply_markup=markup)
+            return
+        _kb_drafts[owner_id] = {"ts": time.time()}
+        set_pending_action(owner_id, "kb_title")
+        await query.message.reply_text(t(lang, "kb_title_prompt", max=KB_MAX_TITLE))
+        return
+
+    if data == "kb_cancel":
+        _kb_drafts.pop(owner_id, None)
+        clear_pending_action(owner_id)
+        text, markup = build_kb_menu(owner_id, t(lang, "kb_cancelled"))
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "kb_save":
+        d = _kb_draft(owner_id)
+        _kb_drafts.pop(owner_id, None)
+        clear_pending_action(owner_id)
+        if d is None or not all(k in d for k in ("title", "content", "kw")):
+            text, markup = build_kb_menu(owner_id, t(lang, "kb_draft_lost"))
+        elif db.add_kb_entry(owner_id, d["title"], d["content"], d["kw"], kb_limit_for(owner_id)) is None:
+            text, markup = build_kb_menu(owner_id, t(lang, "kb_limit", max=kb_limit_for(owner_id)))
+        else:
+            text, markup = build_kb_menu(owner_id, t(lang, "kb_saved"))
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
     if data == "ai_menu":
         text, markup = build_ai_menu(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
@@ -2350,7 +2559,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     gated = {"text": "custom_text", "sleep_text": "custom_text", "birthday_date": "bio", "ai_info": "ai",
              "faq_q": "faq", "faq_kw": "faq", "faq_ans": "faq", "faq_confirm": "faq",
-             "faq_edit_q": "faq", "faq_edit_kw": "faq", "faq_edit_ans": "faq"}.get(action)
+             "faq_edit_q": "faq", "faq_edit_kw": "faq", "faq_edit_ans": "faq",
+             "kb_title": "kb", "kb_content": "kb", "kb_kw": "kb", "kb_confirm": "kb",
+             "kb_edit_t": "kb", "kb_edit_c": "kb", "kb_edit_kw": "kb"}.get(action)
     if gated and not has_feature(owner_id, gated):
         clear_pending_action(owner_id)
         text, markup = build_locked_view(owner_id, gated)
@@ -2463,6 +2674,83 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         await update.message.reply_text(
             t(lang, "faq_confirm", q=d["q"], kw=", ".join(d["kw"]), a=value), reply_markup=markup
+        )
+        return
+
+    if action in ("kb_edit_t", "kb_edit_c", "kb_edit_kw"):
+        target = _kb_edit_target.get(owner_id)
+        if target is None or time.time() - target["ts"] > PENDING_ACTION_TTL_SECONDS:
+            _kb_edit_target.pop(owner_id, None)
+            clear_pending_action(owner_id)
+            await update.message.reply_text(t(lang, "kb_draft_lost"))
+            return
+        if not value:
+            await update.message.reply_text(t(lang, "kb_empty_text"))
+            return
+        if action == "kb_edit_kw":
+            keywords = parse_kb_keywords(value)
+            if keywords is None:
+                await update.message.reply_text(t(lang, "kb_kw_bad", max=FAQ_MAX_KEYWORDS, len=FAQ_MAX_KEYWORD_LENGTH))
+                return
+            changes = {"keywords": keywords}
+        else:
+            limit_chars = KB_MAX_TITLE if action == "kb_edit_t" else KB_MAX_CONTENT
+            if len(value) > limit_chars:
+                await update.message.reply_text(t(lang, "kb_too_long", n=len(value), max=limit_chars))
+                return
+            changes = {"title" if action == "kb_edit_t" else "content": value}
+        _kb_edit_target.pop(owner_id, None)
+        clear_pending_action(owner_id)
+        if not db.update_kb_entry(owner_id, target["id"], **changes):
+            text, markup = build_kb_list(owner_id)
+            await update.message.reply_text(f"{t(lang, 'kb_entry_gone')}\n\n{text}", reply_markup=markup)
+            return
+        view = build_kb_entry(owner_id, target["id"], t(lang, "kb_updated"))
+        await update.message.reply_text(view[0], reply_markup=view[1])
+        return
+
+    if action in ("kb_title", "kb_content", "kb_kw", "kb_confirm"):
+        d = _kb_draft(owner_id)
+        if d is None:
+            clear_pending_action(owner_id)
+            await update.message.reply_text(t(lang, "kb_draft_lost"))
+            return
+        if action == "kb_confirm":
+            await update.message.reply_text(t(lang, "kb_confirm_hint"))
+            return  # amal saqlanadi
+        if not value:
+            await update.message.reply_text(t(lang, "kb_empty_text"))
+            return
+        if action == "kb_title":
+            if len(value) > KB_MAX_TITLE:
+                await update.message.reply_text(t(lang, "kb_too_long", n=len(value), max=KB_MAX_TITLE))
+                return
+            d["title"] = value
+            set_pending_action(owner_id, "kb_content")
+            await update.message.reply_text(t(lang, "kb_content_prompt", max=KB_MAX_CONTENT))
+            return
+        if action == "kb_content":
+            if len(value) > KB_MAX_CONTENT:
+                await update.message.reply_text(t(lang, "kb_too_long", n=len(value), max=KB_MAX_CONTENT))
+                return
+            d["content"] = value
+            set_pending_action(owner_id, "kb_kw")
+            await update.message.reply_text(t(lang, "kb_kw_prompt"))
+            return
+        keywords = parse_kb_keywords(value)
+        if keywords is None:
+            await update.message.reply_text(t(lang, "kb_kw_bad", max=FAQ_MAX_KEYWORDS, len=FAQ_MAX_KEYWORD_LENGTH))
+            return
+        d["kw"] = keywords
+        d["ts"] = time.time()
+        set_pending_action(owner_id, "kb_confirm")
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(t(lang, "btn_kb_save"), callback_data="kb_save"),
+            InlineKeyboardButton(t(lang, "btn_kb_cancel"), callback_data="kb_cancel"),
+        ]])
+        await update.message.reply_text(
+            t(lang, "kb_confirm", title=d["title"], content=d["content"], kw=_kb_kw_text(lang, keywords)),
+            reply_markup=markup,
         )
         return
 
