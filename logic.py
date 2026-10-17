@@ -452,6 +452,15 @@ _NEGATIONS = frozenset({
 })
 
 
+# ---------------- AI Knowledge Base (biznes/shaxsiy ma'lumotlar bazasi) ----------------
+KB_LIMIT = 55  # Ultra: nechta yozuv saqlash mumkin
+KB_MAX_TITLE = 100
+KB_MAX_CONTENT = 1000
+KB_FULL_CONTEXT_CHARS = 3000  # bazaning hammasi shundan kichik bo'lsa — butunlay AI'ga beriladi
+KB_MAX_SELECTED = 5  # katta bazadan AI'ga eng ko'pi bilan shuncha yozuv beriladi
+KB_MAX_CONTEXT_CHARS = 4000
+
+
 def faq_tokens(text: str | None) -> list[str]:
     """Kichik harf, apostrof/tinish belgilarsiz so'zlar ro'yxati ("O'zbekiston?" -> ["ozbekiston"])."""
     if not text:
@@ -523,3 +532,54 @@ def match_faq(message: str | None, entries) -> dict | None:
     if len(scored) > 1 and scored[1][0] == scored[0][0]:
         return None
     return scored[0][1]
+
+
+def select_knowledge(messages, entries) -> list[dict]:
+    """AI'ga beriladigan Knowledge Base yozuvlarini tanlaydi.
+
+    `messages` — mijozning oxirgi xabar(lar)i (matn yoki matnlar ro'yxati; oldingi xabarlar "qancha turadi?"
+    kabi davomli savollarni tushunish uchun). Faqat yoqilgan yozuvlar. Baza kichik bo'lsa (KB_FULL_CONTEXT_CHARS)
+    — hammasi; katta bo'lsa — kalit so'z/sarlavha mosligi bo'yicha eng mos KB_MAX_SELECTED tasi
+    (KB_MAX_CONTEXT_CHARS dan oshmaydi). Hech narsa mos kelmasa — bo'sh ro'yxat."""
+    enabled = [e for e in entries if e.get("is_enabled") is not False]
+    if not enabled:
+        return []
+
+    def size(e):
+        return len(e.get("title") or "") + len(e.get("content") or "")
+
+    if sum(size(e) for e in enabled) <= KB_FULL_CONTEXT_CHARS:
+        return enabled
+    if isinstance(messages, str):
+        messages = [messages]
+    tokens = faq_tokens(" ".join(m for m in (messages or []) if m))
+    if not tokens:
+        return []
+    token_set = set(tokens)
+    scored: list[tuple[int, int, dict]] = []
+    for idx, e in enumerate(enabled):
+        score = 0
+        for kw in e.get("keywords") or []:
+            kt = faq_tokens(kw)
+            if kt and _contains_phrase(tokens, kt):
+                score += 2 * len(kt)
+        title_tokens = {tok for tok in faq_tokens(e.get("title")) if len(tok) >= 3}
+        score += len(title_tokens & token_set)
+        if score > 0:
+            scored.append((score, idx, e))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    picked, total = [], 0
+    for _, _, e in scored:
+        if len(picked) >= KB_MAX_SELECTED or (picked and total + size(e) > KB_MAX_CONTEXT_CHARS):
+            break
+        picked.append(e)
+        total += size(e)
+    return picked
+
+
+def parse_kb_keywords(raw: str) -> list[str] | None:
+    """Knowledge Base kalit so'zlari — ixtiyoriy: "-" yoki bo'sh -> []. Noto'g'ri (juda ko'p/uzun) bo'lsa — None."""
+    raw = (raw or "").strip()
+    if raw in ("", "-"):
+        return []
+    return parse_faq_keywords(raw)
