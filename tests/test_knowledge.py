@@ -277,7 +277,7 @@ class PanelFlowTests(unittest.TestCase):
             self.assertEqual(bot.kb_limit_for(self.u), 55 if ok else 0, plan)
             q = self.press("kb_menu")
             text = q.edit_message_text.call_args.args[0]
-            self.assertEqual(text.startswith("\U0001F9E0 AI PERSONAL KNOWLEDGE"), ok, plan)
+            self.assertEqual(text.startswith("\U0001F9E0 AI SHAXSIY BILIMLAR"), ok, plan)
         self.assertEqual(bot.kb_limit_for(ADMIN), 55)
 
     def test_free_cannot_add_via_button_or_pending_text(self):
@@ -445,11 +445,25 @@ class PanelFlowTests(unittest.TestCase):
 
     def test_settings_toggle(self):
         q = self.press("kb_settings")
-        self.assertIn("AI Personal Knowledge sozlamalari", q.edit_message_text.call_args.args[0])
+        self.assertIn("AI Shaxsiy Bilimlar sozlamalari", q.edit_message_text.call_args.args[0])
         self.press("kb_toggle")
         self.assertFalse(db.get_settings(self.u)["kb_enabled"])
         self.press("kb_toggle")
         self.assertTrue(db.get_settings(self.u)["kb_enabled"])
+
+    def test_feature_name_translated_in_every_language(self):
+        expected = {"uz": "AI Shaxsiy Bilimlar", "en": "AI Personal Knowledge", "ru": "AI Личные знания"}
+        for lang, name in expected.items():
+            bot.set_lang(self.u, lang)
+            self.assertIn(name, i18n.t(lang, "btn_kb"))
+            self.assertEqual(i18n.t(lang, "feature_kb"), name)
+            self.assertIn(name, i18n.t(lang, "pf_kb", n=55))
+            q = self.press("kb_menu")
+            self.assertIn(name.upper(), q.edit_message_text.call_args.args[0])
+            q = self.press("kb_settings")
+            self.assertIn(name, q.edit_message_text.call_args.args[0])
+            text, markup = bot.build_panel(self.u)
+            self.assertIn(i18n.t(lang, "btn_kb"), [b.text for r in markup.inline_keyboard for b in r])
 
     def test_menu_in_all_languages_and_panel_button(self):
         for lang in i18n.LANGS:
