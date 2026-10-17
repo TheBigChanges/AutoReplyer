@@ -46,6 +46,7 @@ def _language_already_chosen(monkeypatch):
     monkeypatch.setattr(bot, "onboarding_start_view", lambda owner_id: None)  # onboarding testlari o'zi yoqadi
     monkeypatch.setattr(bot, "onboarding_view_on_connection", lambda owner_id: None)
     monkeypatch.setattr(bot, "shows_ads", lambda *a, **k: False)  # reklama testlari o'zi yoqadi
+    monkeypatch.setattr(bot, "track_analytics", lambda owner_id, kind: None)  # analytics testlari o'zi yoqadi
     monkeypatch.setattr(bot, "NAME_CLOCK_RATE_PER_SEC", 100000.0)  # testlarda sekinlashtirmaslik
     yield
     bot._lang_cache.clear()
