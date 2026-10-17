@@ -1119,6 +1119,115 @@ T: dict[str, dict] = {
     "btn_ob_fail": _("❌ Javob kelmadi", "❌ No reply", "❌ Ответа нет"),
     "btn_ob_skip": _("⏭ O'tkazib yuborish", "⏭ Skip", "⏭ Пропустить"),
     "btn_ob_resume": _("\U0001F680 Sozlashni davom ettirish", "\U0001F680 Continue setup", "\U0001F680 Продолжить настройку"),
+    # ---------------- AutoReply Analytics ----------------
+    "btn_analytics": _("\U0001F4CA Statistika", "\U0001F4CA Analytics", "\U0001F4CA Аналитика"),
+    "btn_an_today": _("\U0001F4C5 Bugun", "\U0001F4C5 Today", "\U0001F4C5 Сегодня"),
+    "btn_an_7": _("\U0001F4C6 7 kun", "\U0001F4C6 7 days", "\U0001F4C6 7 дней"),
+    "btn_an_30": _("\U0001F5D3 30 kun", "\U0001F5D3 30 days", "\U0001F5D3 30 дней"),
+    "btn_an_charts": _("\U0001F4CA Grafikni ko'rish", "\U0001F4CA View charts", "\U0001F4CA Показать графики"),
+    "btn_an_detail": _("\U0001F4CB Batafsil", "\U0001F4CB Details", "\U0001F4CB Подробно"),
+    "an_period_1": _("Bugun", "Today", "Сегодня"),
+    "an_period_7": _("Oxirgi 7 kun", "Last 7 days", "Последние 7 дней"),
+    "an_period_30": _("Oxirgi 30 kun", "Last 30 days", "Последние 30 дней"),
+    "an_menu": _(
+        "\U0001F4CA AUTOREPLY ANALYTICS\n\n"
+        "\U0001F4C5 Davr: {period}\n\n"
+        "\U0001F4E5 Kelgan xabarlar: {incoming}\n"
+        "\U0001F4E4 Yuborilgan javoblar: {sent}\n"
+        "  \u251C \U0001F4A1 Smart FAQ: {faq}\n"
+        "  \u251C \U0001F916 Gemini AI: {ai}\n"
+        "  \u251C \U0001F4DD Oddiy javoblar: {static}\n"
+        "  \u2514 \U0001F634 Sleep Mode: {sleep}\n\n"
+        "\u23F0 Eng faol vaqt: {peak}",
+        "\U0001F4CA AUTOREPLY ANALYTICS\n\n"
+        "\U0001F4C5 Period: {period}\n\n"
+        "\U0001F4E5 Incoming messages: {incoming}\n"
+        "\U0001F4E4 Replies sent: {sent}\n"
+        "  \u251C \U0001F4A1 Smart FAQ: {faq}\n"
+        "  \u251C \U0001F916 Gemini AI: {ai}\n"
+        "  \u251C \U0001F4DD Standard replies: {static}\n"
+        "  \u2514 \U0001F634 Sleep Mode: {sleep}\n\n"
+        "\u23F0 Busiest time: {peak}",
+        "\U0001F4CA AUTOREPLY ANALYTICS\n\n"
+        "\U0001F4C5 Период: {period}\n\n"
+        "\U0001F4E5 Входящие сообщения: {incoming}\n"
+        "\U0001F4E4 Отправлено ответов: {sent}\n"
+        "  \u251C \U0001F4A1 Smart FAQ: {faq}\n"
+        "  \u251C \U0001F916 Gemini AI: {ai}\n"
+        "  \u251C \U0001F4DD Обычные ответы: {static}\n"
+        "  \u2514 \U0001F634 Sleep Mode: {sleep}\n\n"
+        "\u23F0 Самое активное время: {peak}",
+    ),
+    "an_peak_none": _("ma'lumot yo'q", "no data", "нет данных"),
+    "an_empty": _(
+        "\u231B Ma'lumot yig'ilmoqda. Statistika yangi xabarlar kelgandan boshlab hisoblanadi — birozdan keyin qaytib ko'ring.",
+        "\u231B Collecting data. Statistics are counted from new messages onwards, so check back a little later.",
+        "\u231B Данные собираются. Статистика считается с новых сообщений — загляните чуть позже.",
+    ),
+    "an_note": _(
+        "\u2139\uFE0F Kelgan xabarlar javoblardan ko'p bo'lishi mumkin: siz Onlayn bo'lganingizda yoki cooldown davomida avtojavob yuborilmaydi.",
+        "\u2139\uFE0F Incoming can exceed replies: no auto-reply is sent while you are Online or during the cooldown.",
+        "\u2139\uFE0F Входящих может быть больше, чем ответов: пока вы Онлайн или идёт cooldown, автоответ не отправляется.",
+    ),
+    "an_privacy": _(
+        "\U0001F512 Xabar matnlari saqlanmaydi — faqat vaqt, javob turi va sonlar.",
+        "\U0001F512 Message texts are never stored - only time, reply type and counts.",
+        "\U0001F512 Тексты сообщений не хранятся — только время, тип ответа и счётчики.",
+    ),
+    "an_charts_caption": _("\U0001F4CA Statistika: {name} ({period})", "\U0001F4CA Analytics: {name} ({period})", "\U0001F4CA Аналитика: {name} ({period})"),
+    "an_charts_failed": _(
+        "Grafikni yaratib bo'lmadi. Birozdan keyin qayta urinib ko'ring.",
+        "Could not build the chart. Please try again in a moment.",
+        "Не удалось построить график. Попробуйте ещё раз чуть позже.",
+    ),
+    "an_chart_line": _("Kunlik xabarlar", "Daily messages", "Сообщения по дням"),
+    "an_chart_pie": _("Javob turlari ulushi", "Reply type share", "Доля типов ответов"),
+    "an_chart_bar": _("Eng faol soatlar", "Busiest hours", "Самые активные часы"),
+    "an_lbl_incoming": _("Kelgan", "Incoming", "Входящие"),
+    "an_lbl_sent": _("Yuborilgan", "Sent", "Отправлено"),
+    "an_lbl_faq": _("Smart FAQ javoblari", "Smart FAQ replies", "Ответы Smart FAQ"),
+    "an_lbl_ai": _("Gemini AI javoblari", "Gemini AI replies", "Ответы Gemini AI"),
+    "an_lbl_static": _("Oddiy javoblar", "Standard replies", "Обычные ответы"),
+    "an_lbl_sleep": _("Sleep Mode javoblari", "Sleep Mode replies", "Ответы Sleep Mode"),
+    "an_lbl_none": _("Ma'lumot yo'q", "No data", "Нет данных"),
+    "an_lbl_hour": _("Soat", "Hour", "Час"),
+    "an_detail": _(
+        "\U0001F4CB BATAFSIL STATISTIKA — {period}\n\n"
+        "\U0001F4E5 Kelgan: {incoming}   \U0001F4E4 Yuborilgan: {sent}\n"
+        "\u2705 Javob berish ulushi: {rate}%\n"
+        "\u23F3 Cooldown tufayli o'tkazib yuborilgan: {skipped}\n"
+        "\U0001F4C8 Kunlik o'rtacha: {avg}\n"
+        "\U0001F525 Eng faol kun: {best_day}\n"
+        "\u23F0 Eng faol vaqt: {peak}\n\n"
+        "\U0001F551 Soatlar bo'yicha (kelgan xabarlar):\n{hours}\n\n"
+        "\U0001F4C5 Kunlar bo'yicha (kelgan / yuborilgan):\n{days}",
+        "\U0001F4CB DETAILED ANALYTICS - {period}\n\n"
+        "\U0001F4E5 Incoming: {incoming}   \U0001F4E4 Sent: {sent}\n"
+        "\u2705 Reply rate: {rate}%\n"
+        "\u23F3 Skipped due to cooldown: {skipped}\n"
+        "\U0001F4C8 Daily average: {avg}\n"
+        "\U0001F525 Busiest day: {best_day}\n"
+        "\u23F0 Busiest time: {peak}\n\n"
+        "\U0001F551 By hour (incoming messages):\n{hours}\n\n"
+        "\U0001F4C5 By day (incoming / sent):\n{days}",
+        "\U0001F4CB ПОДРОБНАЯ СТАТИСТИКА — {period}\n\n"
+        "\U0001F4E5 Входящие: {incoming}   \U0001F4E4 Отправлено: {sent}\n"
+        "\u2705 Доля ответов: {rate}%\n"
+        "\u23F3 Пропущено из-за cooldown: {skipped}\n"
+        "\U0001F4C8 В среднем за день: {avg}\n"
+        "\U0001F525 Самый активный день: {best_day}\n"
+        "\u23F0 Самое активное время: {peak}\n\n"
+        "\U0001F551 По часам (входящие):\n{hours}\n\n"
+        "\U0001F4C5 По дням (входящие / отправлено):\n{days}",
+    ),
+    "feature_an7": _("7 kunlik statistika", "7-day analytics", "Аналитика за 7 дней"),
+    "feature_an30": _("30 kunlik statistika", "30-day analytics", "Аналитика за 30 дней"),
+    "feature_anfull": _("Batafsil statistika va barcha grafiklar", "Detailed analytics and all charts", "Подробная аналитика и все графики"),
+    "feature_anch": _("Statistika grafiklari", "Analytics charts", "Графики аналитики"),
+    "pf_an_free": _("Statistika — faqat bugungi kun", "Analytics - today only", "Аналитика — только за сегодня"),
+    "pf_an_plus": _("Statistika — 7 kun + chiziqli grafik", "Analytics - 7 days + line chart", "Аналитика — 7 дней + линейный график"),
+    "pf_an_pro": _("Statistika — 30 kun + chiziqli va doira grafik", "Analytics - 30 days + line and pie charts", "Аналитика — 30 дней + линейный и круговой графики"),
+    "pf_an_ultra": _("Statistika — batafsil hisobot va barcha grafiklar", "Analytics - detailed report and all charts", "Аналитика — подробный отчёт и все графики"),
     # ---------------- AI Personal Knowledge (ichki nom: kb) ----------------
     "btn_kb": _("\U0001F9E0 AI Shaxsiy Bilimlar", "\U0001F9E0 AI Personal Knowledge", "\U0001F9E0 AI Личные знания"),
     "feature_kb": _("AI Shaxsiy Bilimlar", "AI Personal Knowledge", "AI Личные знания"),
