@@ -29,14 +29,45 @@ def E(title, content, kws=(), enabled=True, id_=1):
 
 
 def big(n=40, size=120):
-    """Hajmi KB_FULL_CONTEXT_CHARS dan katta baza."""
+    """Ko'p yozuvli baza (umumiy so'zlar o'zak darajasida bir xil)."""
     return [E(f"Mavzu{i}", "x" * size, [f"kalit{i}"], id_=i) for i in range(n)]
 
 
 class SelectTests(unittest.TestCase):
-    def test_small_base_goes_fully_but_disabled_are_skipped(self):
-        entries = [E("A", "a"), E("B", "b", enabled=False), E("C", "c")]
-        self.assertEqual([e["title"] for e in logic.select_knowledge("salom", entries)], ["A", "C"])
+    def test_only_relevant_entries_even_in_tiny_base(self):
+        """Maxfiylik: kichik bazada ham hamma yozuv Gemini'ga yuborilmaydi — faqat savolga mosi."""
+        entries = [
+            E("Ish vaqtim", "Dushanba-juma 9:00-18:00", ["ish vaqti"], id_=1),
+            E("Shaxsiy eslatma", "Do'stimning telefoni bor", [], id_=2),
+            E("Hobbilarim", "Futbol va shaxmat", [], id_=3),
+        ]
+        got = logic.select_knowledge("ish vaqti qanday?", entries)
+        self.assertEqual([e["id"] for e in got], [1])
+        self.assertEqual(logic.select_knowledge("salom", entries), [])
+        self.assertEqual(logic.select_knowledge("rahmat, yaxshi qoling", entries), [])
+
+    def test_disabled_entries_never_selected(self):
+        entries = [E("Ish vaqtim", "9-18", ["ish vaqti"], enabled=False)]
+        self.assertEqual(logic.select_knowledge("ish vaqti", entries), [])
+
+    def test_match_inside_text_without_keywords_or_title(self):
+        entries = big() + [E("Hobbilarim", "Men futbol va shaxmat o'ynashni yaxshi ko'raman", [], id_=99)]
+        got = logic.select_knowledge("futbol o'ynaysizmi?", entries)
+        self.assertEqual([e["id"] for e in got], [99])
+
+    def test_word_forms_match_via_stems(self):
+        entries = [E("Ish vaqtim", "Dushanba-juma", [], id_=1), E("Manzil", "Toshkent", [], id_=2)]
+        self.assertEqual([e["id"] for e in logic.select_knowledge("vaqtingiz qachon bo'sh?", entries)], [1])
+
+    def test_question_words_and_common_words_do_not_match(self):
+        entries = [
+            E("A", "qancha qachon qanday nima", [], id_=1),
+            E("B", "bu yerda ham qancha va qachon", [], id_=2),
+        ]
+        self.assertEqual(logic.select_knowledge("qancha? qachon? qanday?", entries), [])
+        # ko'p yozuvda uchraydigan so'z (bazaning yarmidan ko'pi) hisobga olinmaydi
+        many = [E(f"X{i}", "umumiy so'zlar mavjud", [], id_=i) for i in range(6)]
+        self.assertEqual(logic.select_knowledge("so'zlar mavjudmi", many), [])
 
     def test_empty_base(self):
         self.assertEqual(logic.select_knowledge("salom", []), [])
@@ -90,6 +121,16 @@ class SelectTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
+    def test_sharing_rules_are_explicit_and_consistent(self):
+        p = ai.build_system_prompt("Ali", None, None, "uz", [E("Telefon", "+998 90 123 45 67")])
+        self.assertIn("State a fact only if the other person's message actually asks for it", p)
+        self.assertIn("never mention that you have one", p)
+        self.assertIn("does not apply; it still applies to everything else", p)
+        self.assertIn("password, bank card number, ID or passport", p)
+        self.assertIn("only the entries relevant", p)
+        # umumiy qoida istisnosiz qolmaydi: bazaviy qoida ham, istisno ham bor
+        self.assertIn("never share private or contact details", p)
+
     def test_without_knowledge_no_section(self):
         p = ai.build_system_prompt("Ali", None)
         self.assertNotIn("Knowledge base", p)
@@ -390,6 +431,52 @@ class PanelFlowTests(unittest.TestCase):
         self.assertEqual(db.count_kb_entries(self.u), 55)
 
     # ---- ro'yxat, ko'rish, tahrirlash ----
+    def test_delete_needs_confirmation(self):
+        self.add("O'chiriladigan", "matn")
+        (e,) = self.entries()
+        q = self.press(f"kb_del:{e['id']}")
+        self.assertEqual(len(self.entries()), 1)  # hali o'chmagan
+        self.assertIn(i18n.t("uz", "kb_del_confirm", title="O'chiriladigan"), q.edit_message_text.call_args.args[0])
+        rows = q.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard
+        datas = [b.callback_data for r in rows for b in r]
+        self.assertEqual(datas, [f"kb_del_yes:{e['id']}", f"kb_view:{e['id']}"])
+        q = self.press(f"kb_view:{e['id']}")  # "Bekor qilish" -> yozuv ko'rinishiga qaytadi
+        self.assertIn("O'chiriladigan", q.edit_message_text.call_args.args[0])
+        self.assertEqual(len(self.entries()), 1)
+        q = self.press(f"kb_del_yes:{e['id']}")
+        self.assertEqual(self.entries(), [])
+        self.assertIn(i18n.t("uz", "kb_deleted"), q.edit_message_text.call_args.args[0])
+        q = self.press(f"kb_del_yes:{e['id']}")  # ikkinchi marta bosilsa — yiqilmaydi
+        self.assertIn(i18n.t("uz", "kb_entry_gone"), q.edit_message_text.call_args.args[0])
+        q = self.press(f"kb_del:{e['id']}")  # yo'q yozuv uchun tasdiq so'ralmaydi
+        self.assertIn(i18n.t("uz", "kb_entry_gone"), q.edit_message_text.call_args.args[0])
+
+    def test_delete_confirmation_translated(self):
+        self.add("Sarlavha", "matn")
+        (e,) = self.entries()
+        for lang in i18n.LANGS:
+            bot.set_lang(self.u, lang)
+            q = self.press(f"kb_del:{e['id']}")
+            self.assertIn(i18n.t(lang, "kb_del_confirm", title="Sarlavha"), q.edit_message_text.call_args.args[0])
+            btn = q.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
+            self.assertEqual(btn.text, i18n.t(lang, "btn_kb_del_yes"))
+
+    def test_privacy_warning_in_menu_and_content_prompt_in_all_languages(self):
+        for lang in i18n.LANGS:
+            bot.set_lang(self.u, lang)
+            q = self.press("kb_menu")
+            self.assertIn(i18n.t(lang, "kb_privacy"), q.edit_message_text.call_args.args[0])
+            self.press("kb_add")
+            self.say("Sarlavha")
+            self.assertEqual(bot.get_pending_action(self.u), "kb_content")
+            bot.clear_pending_action(self.u)
+            bot._kb_drafts.clear()
+
+    def test_privacy_warning_shown_when_asking_for_content(self):
+        self.press("kb_add")
+        reply = self.say("Sarlavha")
+        self.assertIn(i18n.t("uz", "kb_privacy"), reply.call_args.args[0])
+
     def test_list_view_toggle_delete(self):
         self.add("Birinchi", "matn1")
         (e,) = self.entries()
@@ -400,7 +487,8 @@ class PanelFlowTests(unittest.TestCase):
         self.assertIn("Birinchi", q.edit_message_text.call_args.args[0])
         self.press(f"kb_entry_toggle:{e['id']}")
         self.assertFalse(self.entries()[0]["is_enabled"])
-        q = self.press(f"kb_del:{e['id']}")
+        self.press(f"kb_del:{e['id']}")
+        q = self.press(f"kb_del_yes:{e['id']}")
         self.assertEqual(self.entries(), [])
         self.assertIn(i18n.t("uz", "kb_deleted"), q.edit_message_text.call_args.args[0])
 
@@ -410,7 +498,7 @@ class PanelFlowTests(unittest.TestCase):
         other = self.u + 1
         self.addCleanup(lambda: bot._lang_cache.pop(other, None))
         with patch.object(db, "get_user_plan", return_value="ultra"):
-            for data in (f"kb_view:{e['id']}", f"kb_edit:t:{e['id']}", f"kb_del:{e['id']}", f"kb_entry_toggle:{e['id']}"):
+            for data in (f"kb_view:{e['id']}", f"kb_edit:t:{e['id']}", f"kb_del:{e['id']}", f"kb_del_yes:{e['id']}", f"kb_entry_toggle:{e['id']}"):
                 q = self.press(data, user=other)
                 self.assertIn(i18n.t("uz", "kb_entry_gone"), q.edit_message_text.call_args.args[0] if q.edit_message_text.called else "", data)
         self.assertEqual(len(self.entries()), 1)
@@ -478,23 +566,25 @@ class PanelFlowTests(unittest.TestCase):
 
     # ---- AI bilan ulanish ----
     def test_find_kb_context_respects_plan_and_switch(self):
-        self.add("Ish vaqtim", "9-18")
+        self.add("Ish vaqtim", "9-18", "ish vaqti")
+        ask = ["ish vaqti qanday?"]
         with patch.object(bot, "find_kb_context", _REAL_FIND_KB):
-            self.assertEqual([e["title"] for e in bot.find_kb_context(self.u, ["salom"])], ["Ish vaqtim"])
+            self.assertEqual([e["title"] for e in bot.find_kb_context(self.u, ask)], ["Ish vaqtim"])
+            self.assertEqual(bot.find_kb_context(self.u, ["salom"]), [])  # savolga aloqasi yo'q — AI'ga yuborilmaydi
             db.update_settings(self.u, kb_enabled=False)
-            self.assertEqual(bot.find_kb_context(self.u, ["salom"]), [])
+            self.assertEqual(bot.find_kb_context(self.u, ask), [])
             db.update_settings(self.u, kb_enabled=True)
             self.plan_name = "free"  # tarif pasaygan — yozuvlar saqlanadi, lekin ishlamaydi
-            self.assertEqual(bot.find_kb_context(self.u, ["salom"]), [])
+            self.assertEqual(bot.find_kb_context(self.u, ask), [])
             self.assertEqual(len(self.entries()), 1)
 
     def test_find_kb_context_never_leaks_other_owner(self):
         other = self.u + 1
-        db.add_kb_entry(other, "Boshqaning sirri", "parol 123", [], 55)
+        db.add_kb_entry(other, "Boshqaning sirri", "parol 123", ["parol"], 55)
         try:
-            self.add("Mening", "o'zimniki")
+            self.add("Mening", "o'zimniki parol", "parol")
             with patch.object(bot, "find_kb_context", _REAL_FIND_KB):
-                got = bot.find_kb_context(self.u, ["salom"])
+                got = bot.find_kb_context(self.u, ["parol nima?"])
             self.assertEqual([e["title"] for e in got], ["Mening"])
         finally:
             with db.get_conn() as c, c.cursor() as cur:
