@@ -705,11 +705,20 @@ def build_start_view(owner_id: int):
     return greeting, main_menu_markup(owner_id)
 
 
+def onboarding_step_of(owner_id: int) -> str:
+    """Onboarding holati; baza xatosi menyuni buzmasin — shunda 'legacy' (hech narsa ko'rsatilmaydi)."""
+    try:
+        return db.get_onboarding_step(owner_id)
+    except Exception:
+        logger.exception("Onboarding holatini o'qishda xato (owner=%s)", owner_id)
+        return "legacy"
+
+
 def main_menu_markup(owner_id: int):
     lang = get_lang(owner_id)
     conn = db.get_connection(owner_id)
     rows = []
-    if db.get_onboarding_step(owner_id) == "skipped":
+    if onboarding_step_of(owner_id) == "skipped":
         rows.append([InlineKeyboardButton(t(lang, "btn_ob_resume"), callback_data="ob_resume")])
     if conn and conn["is_enabled"]:
         rows.append([InlineKeyboardButton(t(lang, "btn_open_panel"), callback_data="open_panel")])
@@ -1865,7 +1874,7 @@ def build_kb_menu(owner_id: int, notice: str | None = None):
         count=db.count_kb_entries(owner_id), max=kb_limit_for(owner_id),
         status=t(lang, "status_on" if enabled else "status_off"),
         notice=f"\n\n{notice}" if notice else "",
-    )
+    ) + "\n\n" + t(lang, "kb_privacy")
     keyboard = [
         [InlineKeyboardButton(t(lang, "btn_kb_add"), callback_data="kb_add")],
         [InlineKeyboardButton(t(lang, "btn_kb_list"), callback_data="kb_list")],
@@ -2412,10 +2421,23 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data.startswith(("kb_view:", "kb_del:", "kb_entry_toggle:")):
+    if data.startswith(("kb_view:", "kb_del:", "kb_del_yes:", "kb_entry_toggle:")):
         action, _, raw_id = data.partition(":")
         entry_id = int(raw_id) if raw_id.isdigit() else -1
         if action == "kb_del":
+            # Tasodifan bosib yuborishdan himoya: avval tasdiqlash so'raladi
+            entry = db.get_kb_entry(owner_id, entry_id)
+            if entry is None:
+                text, markup = build_kb_list(owner_id)
+                await query.edit_message_text(f"{t(lang, 'kb_entry_gone')}\n\n{text}", reply_markup=markup)
+                return
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton(t(lang, "btn_kb_del_yes"), callback_data=f"kb_del_yes:{entry_id}"),
+                InlineKeyboardButton(t(lang, "btn_kb_cancel"), callback_data=f"kb_view:{entry_id}"),
+            ]])
+            await query.edit_message_text(t(lang, "kb_del_confirm", title=_faq_short(entry["title"], 80)), reply_markup=markup)
+            return
+        if action == "kb_del_yes":
             notice = t(lang, "kb_deleted") if db.delete_kb_entry(owner_id, entry_id) else t(lang, "kb_entry_gone")
             text, markup = build_kb_list(owner_id)
             await query.edit_message_text(f"{notice}\n\n{text}", reply_markup=markup)
@@ -2727,7 +2749,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             d["title"] = value
             set_pending_action(owner_id, "kb_content")
-            await update.message.reply_text(t(lang, "kb_content_prompt", max=KB_MAX_CONTENT))
+            await update.message.reply_text(t(lang, "kb_content_prompt", max=KB_MAX_CONTENT) + "\n\n" + t(lang, "kb_privacy"))
             return
         if action == "kb_content":
             if len(value) > KB_MAX_CONTENT:
