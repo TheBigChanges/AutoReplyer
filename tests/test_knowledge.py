@@ -277,7 +277,7 @@ class PanelFlowTests(unittest.TestCase):
             self.assertEqual(bot.kb_limit_for(self.u), 55 if ok else 0, plan)
             q = self.press("kb_menu")
             text = q.edit_message_text.call_args.args[0]
-            self.assertEqual(text.startswith("\U0001F9E0 AI BILIMLAR BAZASI"), ok, plan)
+            self.assertEqual(text.startswith("\U0001F9E0 AI PERSONAL KNOWLEDGE"), ok, plan)
         self.assertEqual(bot.kb_limit_for(ADMIN), 55)
 
     def test_free_cannot_add_via_button_or_pending_text(self):
@@ -445,7 +445,7 @@ class PanelFlowTests(unittest.TestCase):
 
     def test_settings_toggle(self):
         q = self.press("kb_settings")
-        self.assertIn("Bilimlar bazasi sozlamalari", q.edit_message_text.call_args.args[0])
+        self.assertIn("AI Personal Knowledge sozlamalari", q.edit_message_text.call_args.args[0])
         self.press("kb_toggle")
         self.assertFalse(db.get_settings(self.u)["kb_enabled"])
         self.press("kb_toggle")
