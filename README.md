@@ -2,9 +2,9 @@
 
 # 🤖 AutoReplyer
 
-### Thoughtful auto-replies for Telegram Business — powered by rules, AI and your own knowledge.
+### Smart Telegram Business auto-replies, personal AI knowledge and clear analytics.
 
-**Built with Python · Telegram Business · PostgreSQL · Google Gemini**
+**Built with Python · Telegram Business · PostgreSQL · Google Gemini · Matplotlib**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Telegram](https://img.shields.io/badge/Telegram-Try%20the%20bot-26A5E4?logo=telegram&logoColor=white)](https://t.me/autoreplyer_dbot)
@@ -23,7 +23,7 @@
 
 **AutoReplyer** is a Telegram Business automation bot that helps account owners stay responsive when they are away. Connect it through Telegram's official Business bot interface, configure replies and schedules, and optionally enable Gemini-powered AI responses.
 
-It includes **Smart Onboarding**, **Smart FAQ**, and **AI Personal Knowledge**: an owner-managed collection of facts that Gemini can use to answer relevant questions. Profile name clocks, BIO countdowns, subscription plans, and administrator tools round out the experience.
+It includes **Smart Onboarding**, **Smart FAQ**, **AI Personal Knowledge**, and **AutoReply Analytics** — a built-in dashboard for incoming message counts, reply types and charts. Profile name clocks, BIO countdowns, subscription plans and administrator tools round out the experience.
 
 **The goal is an auto-reply assistant, not an online shop or order-management system.** You can store information about yourself, your work, availability, services, or even prices as ordinary notes — no product catalogue is required.
 
@@ -35,6 +35,7 @@ It includes **Smart Onboarding**, **Smart FAQ**, and **AI Personal Knowledge**: 
 - [Smart Onboarding (first-time setup)](#-smart-onboarding-first-time-setup)
 - [Smart FAQ guide](#-smart-faq-guide)
 - [AI Personal Knowledge guide](#-ai-personal-knowledge-guide)
+- [AutoReply Analytics guide](#-autoreply-analytics-guide)
 - [How automatic replies are chosen](#-how-automatic-replies-are-chosen)
 - [Plans & pricing](#-plans--pricing)
 - [Getting started as a user](#-getting-started-as-a-user)
@@ -56,6 +57,7 @@ It includes **Smart Onboarding**, **Smart FAQ**, and **AI Personal Knowledge**: 
 | 🧭 **Smart Onboarding** | Optional three-step first-time setup: connect Telegram, enable auto-reply, and test it, with resumable progress. |
 | 📚 **Smart FAQ** | Keyword-based answers for frequently asked Business-chat questions, without a Gemini API call; owner-managed entries and plan-based limits. |
 | 🧠 **AI Personal Knowledge** | Owner-written facts, keywords and notes help Gemini reply with more relevant information; individual notes can be edited, paused, or deleted. **Ultra only**. |
+| 📊 **AutoReply Analytics** | Per-owner counts of incoming Business messages and sent replies, time windows and activity charts; **today on Free**, richer views on paid plans. |
 | 📨 **Offline replies** | Automatically reply to incoming private Business messages when offline mode is enabled. |
 | 🌙 **Sleep Mode** | Send a separate reply during configured sleeping hours, including overnight schedules. |
 | ⏳ **Cooldown** | Avoid repeatedly responding to the same chat; persistent, atomic reply claims help with concurrency. |
@@ -152,6 +154,64 @@ If a contact asks when you can respond, Gemini may use this note to generate a n
 
 > Turning off AI or the knowledge-base toggle stops Knowledge Base content being used for new AI responses; it does **not** delete the stored notes. Deleting an entry is permanent. Plan downgrades restrict access without automatically deleting the owner's existing entries.
 
+### 📊 AutoReply Analytics guide
+
+**AutoReply Analytics** is an in-bot statistics dashboard for Telegram Business auto-replies. It helps account owners understand how often contacts write and which reply features actually send messages. **It is not a sales dashboard, visitor-tracking tool, or message-reading service.**
+
+**Open it:** send `/start` → open the **Control panel** → **📊 Statistika** (Uzbek) / **📊 Analytics** (English) / **📊 Аналитика** (Russian). Unlike Gemini AI and AI Personal Knowledge, the basic Analytics dashboard is available on **Free**.
+
+#### What the numbers mean
+
+| Metric | What is counted |
+|---|---|
+| **Incoming messages** | Eligible incoming Telegram Business messages observed by the bot, including messages received while the owner has set Auto-Reply to Online. This is **not** a count of unique people or chats. |
+| **Replies sent** | Successfully sent bot replies, separated into **Smart FAQ**, **Gemini AI**, **standard auto-replies**, and **Sleep Mode**. |
+| **Busiest time** | The consecutive **two-hour window** with the largest incoming-message total in the selected period. |
+| **Detailed report** | Incoming/sent totals, reply-to-incoming ratio, cooldown skips, daily average, busiest day, four-hour activity blocks, and per-day totals (**Ultra**). |
+| **Cooldown skips** | Attempts where the normal cooldown claim blocked an auto-reply. This is **not** an exhaustive count of all reasons a message went unanswered. |
+
+**Example (illustrative figures, not live bot data):**
+
+```text
+📊 AUTOREPLY ANALYTICS
+📅 Last 7 days
+
+📥 Incoming messages: 245
+📤 Replies sent:     198
+   Smart FAQ:          68
+   Gemini AI:          92
+   Standard replies:   25
+   Sleep Mode:         13
+
+⏰ Busiest time: 19:00–21:00
+```
+
+Incoming and sent counts are **different kinds of events**: not every incoming message results in a reply (for example, when Online, during cooldown, or when replies are unavailable). They should not be interpreted as a guaranteed one-to-one delivery or customer response rate. Counts start **when Analytics tracking is deployed and processing messages**; the feature does **not backfill old chats**.
+
+#### Date ranges, charts and plans
+
+| Plan | Available date range | Chart access | Detailed report |
+|---|---|---|---|
+| 🆓 **Free** | Today | — | — |
+| ⏰ **Plus** | Today + last 7 days | 📈 **Line chart** | — |
+| ✨ **Pro** | Today + last 7/30 days | 📈 **Line** + 🥧 **pie charts** | — |
+| ⭐ **Ultra** | Today + last 7/30 days | 📈 **Line**, 🥧 **pie** + 📊 **hourly bar charts** | ✅ |
+
+- **Line chart:** compares incoming and sent replies, **by hour for Today**, or **by day for 7/30 days**.
+- **Pie chart:** share of successful replies sent by FAQ, Gemini AI, standard reply or Sleep Mode.
+- **Bar chart:** incoming message activity by local hour (00–23), with the busiest window highlighted.
+- Charts are generated with **Matplotlib** and delivered as **PNG images directly in Telegram**; no separate website is required.
+- The selected period is preserved when opening charts or details. Feature and period permissions are checked against the user's **current** plan; older buttons do not grant upgraded history access after a downgrade.
+- Dates are based on the account's **supported profile-name clock time zone** if one is set; otherwise they use **Asia/Tashkent**. A “7-day” window includes today and the preceding six local calendar days.
+
+#### Privacy, storage and limitations
+
+The dedicated Analytics table, `analytics_hourly`, stores **only the account owner ID, a UTC hour bucket, an event type and a count**. It does **not** add a column for message text, chat ID, or contact identity. All Analytics reads are scoped to the owner; data is aggregated in PostgreSQL and pruned by the scheduled cleanup job, with a configured **90-day retention window**.
+
+> **Important distinction:** Analytics itself does not store chat texts, but **Gemini AI chat history is stored and managed separately** when that feature is used. See [Privacy, security & limitations](#-privacy-security--limitations).
+
+Analytics writes run in the background and are best-effort: database outages, restarts, or delayed/background write failures can cause some counts to be missing or briefly delayed. Charts use a short (~60-second) cache to reduce rendering load. Historic data **before the feature was enabled** cannot be reconstructed from Analytics counters. Figures are operational indicators, not an audited record of all Telegram delivery outcomes.
+
 ### 🔀 How automatic replies are chosen
 
 When Telegram allows the bot to respond to a Business message, the code checks the account's connection rights, channel-membership rules (if enabled), Offline/Sleep settings, and other applicable restrictions.
@@ -193,6 +253,7 @@ AI-generated replies can be wrong. Never rely on them to commit to prices, appoi
 - Static replies and Sleep Mode work without a Gemini API key.
 - Gemini AI and AI Personal Knowledge are **Ultra** features in the current plan configuration. Ultra's AI reply quota is **50 per day** for a regular user; the configured administrator is exempt.
 - Ordinary static replies support per-chat cooldowns; AI replies use a separate reply flow.
+- **AutoReply Analytics** collects hourly counters for supported incoming/reply events and produces statistics without an AI API key.
 - The name clock updates periodically, subject to Telegram Business permissions and API rate limits.
 - Free-tier accounts may see a promotional footer in auto-replies and a promotional BIO message when using the profile clock. Paid plans are configured as ad-free.
 
@@ -213,6 +274,13 @@ Prices below are **the currently configured public bot prices for one month**, i
 | Smart FAQ entries | — | **15** | **30** | **65** |
 | Gemini AI assistant (50 replies/day*) | — | — | — | ✅ |
 | AI Personal Knowledge (55 entries) | — | — | — | ✅ |
+| AutoReply Analytics — Today | ✅ | ✅ | ✅ | ✅ |
+| Analytics — 7-day view | — | ✅ | ✅ | ✅ |
+| Analytics — 30-day view | — | — | ✅ | ✅ |
+| Analytics — line chart | — | ✅ | ✅ | ✅ |
+| Analytics — pie chart | — | — | ✅ | ✅ |
+| Analytics — hourly bar chart | — | — | — | ✅ |
+| Analytics — detailed report | — | — | — | ✅ |
 | Extra clock fonts | — | — | — | ✅ |
 | Extra time zones | — | — | ✅ | ✅ |
 
@@ -231,7 +299,7 @@ Prices below are **the currently configured public bot prices for one month**, i
 5. Return to AutoReplyer and tap **Check connection**. If Telegram already sent a connection update, the wizard may have advanced automatically.
 6. Review the auto-reply text and tap **Turn on Auto-Reply** to enable it with your consent.
 7. Send a test message **from another Telegram account** in a chat you authorized; select **Reply arrived** only if you actually receive a reply, or **No reply** for troubleshooting.
-8. Use the control panel for **Sleep Mode**, **Smart FAQ** (Plus/Pro/Ultra), **AI Personal Knowledge** (Ultra), the **profile clock**, **BIO countdown**, and other plan-specific features.
+8. Use the control panel for **Sleep Mode**, **Smart FAQ** (Plus/Pro/Ultra), **AI Personal Knowledge** (Ultra), **📊 Analytics** (today on Free; 7/30-day views and charts on paid plans), the **profile clock**, **BIO countdown**, and other plan-specific features.
 
 **Want to set it up later?** Use **Skip** at any step. A **Continue setup** button appears in the main menu for users who skipped. Existing accounts are not forced into a new setup wizard.
 
@@ -248,9 +316,10 @@ For feature announcements, visit **[@AutoReplyer_News](https://t.me/AutoReplyer_
 3. Onboarding’da **Auto-Reply**ni yoqing va boshqa akkauntdan sinov xabari yuboring.
 4. **Smart FAQ** — kalit so‘zga mos tayyor javob; **AI Shaxsiy Bilimlar** (Ultra) — Gemini javob berayotganda foydalanadigan siz kiritgan ma’lumotlar.
 5. AI Shaxsiy Bilimlar bo‘limiga **sarlavha + ma’lumot + ixtiyoriy kalit so‘zlar** qo‘shing. Mahsulot va narxlar uchun alohida savdo tizimi **shart emas**.
-6. **Parol, karta yoki pasport ma’lumotlarini kiritmang.** AI javoblari xato qilishi mumkin.
+6. **📊 Statistika** tugmasi orqali kelgan xabarlar, javoblar va eng faol vaqtni kuzating. **Free — bugun; Plus — 7 kun; Pro/Ultra — 30 kun**. Grafiklar Plus'dan, batafsil hisobot Ultra'dan boshlanadi.
+7. **Parol, karta yoki pasport ma’lumotlarini kiritmang.** AI javoblari xato qilishi mumkin.
 
-Ilova menyulari Telegram versiyasiga qarab farq qilishi mumkin. Batafsil ma’lumot: [Smart Onboarding](#-smart-onboarding-first-time-setup) · [Smart FAQ](#-smart-faq-guide) · [AI Shaxsiy Bilimlar](#-ai-personal-knowledge-guide).
+Ilova menyulari Telegram versiyasiga qarab farq qilishi mumkin. Batafsil ma’lumot: [Smart Onboarding](#-smart-onboarding-first-time-setup) · [Smart FAQ](#-smart-faq-guide) · [AI Shaxsiy Bilimlar](#-ai-personal-knowledge-guide) · [AutoReply Analytics](#-autoreply-analytics-guide).
 
 ## 🛠️ Run your own instance
 
@@ -292,6 +361,8 @@ py -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
+
+`requirements.txt` also installs **Matplotlib ≥ 3.8** for server-side Analytics charts. When deploying in a slim Linux image, make sure the image provides the system libraries/fonts needed for Matplotlib to generate readable PNGs. No graphical desktop is required (the code uses the non-interactive `Agg` backend).
 
 ### 4. Configure the environment
 
@@ -401,13 +472,15 @@ Telegram users / Business messages
     bot.py              ai.py ──► Google Gemini API
   handlers/jobs      optional AI replies + selected notes
        │
-       ├── logic.py  (FAQ rules and knowledge retrieval)
-       ├── i18n.py   (Uzbek / English / Russian)
+       ├── logic.py      (FAQ rules and knowledge retrieval)
+       ├── i18n.py       (Uzbek / English / Russian)
+       ├── analytics.py  (statistics and Matplotlib charts)
        │
        ▼
      db.py ───────────────► PostgreSQL / Supabase
        │                      settings, plans, connections,
        │                      FAQ and knowledge_entries,
+       │                      analytics_hourly counters,
        │                      broadcasts, conversation history
        ▼
   Render / Python host
@@ -415,18 +488,20 @@ Telegram users / Business messages
 
 | File | Responsibility |
 |---|---|
-| [`bot.py`](bot.py) | Telegram handlers, Business updates, onboarding, Smart FAQ and AI Personal Knowledge panels, AI reply routing, plans, scheduling, broadcasts, name clock, and health server |
-| [`db.py`](db.py) | PostgreSQL access and schema initialization, onboarding progress, owner-scoped FAQ and knowledge CRUD, settings, AI conversation history, plans, and job persistence |
+| [`bot.py`](bot.py) | Telegram handlers, Business updates, onboarding, Smart FAQ and AI Personal Knowledge panels, **Analytics menu/event tracking**, AI reply routing, plans, scheduling, broadcasts, name clock, and health server |
+| [`db.py`](db.py) | PostgreSQL access and schema initialization, onboarding progress, owner-scoped FAQ/knowledge CRUD, **analytics_hourly UPSERTs and cleanup**, settings, AI conversation history, plans, and job persistence |
 | [`ai.py`](ai.py) | Gemini requests, role presets, prompting with selected AI Personal Knowledge facts, and reply extraction |
+| [`analytics.py`](analytics.py) | Time-window aggregation, busiest-hour calculation, line/pie/bar PNG chart rendering and short-lived chart caching |
 | [`logic.py`](logic.py) | Cooldown/time handling, countdowns, name formatting, FAQ matching, Personal Knowledge parsing and relevance ranking |
 | [`i18n.py`](i18n.py) | User-facing strings in three languages, including onboarding and Telegram connection instructions |
-| [`tests/`](tests/) | Unit and behavior tests for key features |
+| [`tests/`](tests/) | Unit and behavior tests, including [`test_analytics.py`](tests/test_analytics.py) for chart rendering, plan gates and counter behavior |
 | [`requirements.txt`](requirements.txt) | Python runtime dependencies |
 
 **Operational notes:**
 
-- PostgreSQL keeps account settings, onboarding progress, FAQ entries, Personal Knowledge entries, and jobs across Render restarts.
-- On startup, `db.init_db()` adds missing onboarding columns and creates the `knowledge_entries` table and `kb_enabled` setting if needed. Existing users initially receive the `legacy` onboarding status; newly inserted users default to `welcome`.
+- PostgreSQL keeps account settings, onboarding progress, FAQ entries, Personal Knowledge entries, Analytics counters, and jobs across Render restarts.
+- On startup, `db.init_db()` adds missing onboarding columns and creates `knowledge_entries`, `analytics_hourly`, and `kb_enabled` where needed. Existing users initially receive the `legacy` onboarding status; newly inserted users default to `welcome`.
+- Analytics uses atomic per-hour PostgreSQL UPSERT counters with a thread-safe connection pool and a limited number of concurrent Analytics writes. Retention cleanup is scheduled through the existing AI cleanup job.
 - Broadcasts persist progress, have a one-active-job database constraint, support recovery and retry, and handle Telegram rate limits.
 - Exactly-once broadcast delivery is **not guaranteed**: an interruption between Telegram accepting a message and database progress being saved can produce a duplicate.
 - Bot-level feature restrictions and subscription status are enforced in application logic; third-party services still enforce their own limits.
@@ -461,7 +536,7 @@ This assigns a time-limited plan to the specified user ID; use the bot's help te
 
 ## 🧪 Testing
 
-The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ, translations, **Smart Onboarding**, **AI Personal Knowledge**, and **test database safety guards**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
+The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ, translations, **Smart Onboarding**, **AI Personal Knowledge**, **AutoReply Analytics**, and **test database safety guards**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
 
 Install the development-only test runner and run the suite:
 
@@ -470,28 +545,29 @@ python -m pip install pytest
 python -m pytest -q
 ```
 
-**Onboarding and AI Personal Knowledge database tests require `TEST_DATABASE_URL`.** Without it, their database-backed classes are skipped (other unit tests can still run). **Run the suite with pytest**, which loads `tests/conftest.py` *before test modules are imported* and overrides `DATABASE_URL` with the provided test URL, or a fake URL when none is set. Use a **dedicated disposable PostgreSQL test database**; never production:
+**Onboarding, AI Personal Knowledge and Analytics database tests require `TEST_DATABASE_URL`.** Without it, their database-backed classes are skipped (other unit tests can still run). **Run the suite with pytest**, which loads `tests/conftest.py` *before test modules are imported* and overrides `DATABASE_URL` with the provided test URL, or a fake URL when none is set. Use a **dedicated disposable PostgreSQL test database**; never production:
 
 ```bash
 # Example: PostgreSQL running locally on your development machine.
 # Replace with YOUR disposable local test database:
 export TEST_DATABASE_URL='postgresql://TEST_USER:TEST_PASSWORD@localhost:5432/autoreplyer_test'
-python -m pytest tests/test_knowledge.py tests/test_onboarding.py tests/test_db_guard.py -v
+python -m pytest tests/test_analytics.py tests/test_knowledge.py tests/test_onboarding.py tests/test_db_guard.py -v
 python -m pytest -q
 ```
 
-Database integration suites call `db.init_db()` and create/update/delete records. Do not run them against real user data. The pytest guard accepts local hosts by default and **refuses remote test database hosts** unless `ALLOW_REMOTE_TEST_DB=1` is explicitly set. **That opt-in is not proof a remote database is safe**; use it only for a separately provisioned throwaway test database.
+Database integration suites call `db.init_db()` and create/update/delete records. The Analytics suite includes **parallel database writes**, per-owner counters, date periods, chart rendering in Uzbek/English/Russian, and plan-gate tests. Do not run them against real user data. The pytest guard accepts local hosts by default and **refuses remote test database hosts** unless `ALLOW_REMOTE_TEST_DB=1` is explicitly set. **That opt-in is not proof a remote database is safe**; use it only for a separately provisioned throwaway test database.
 
 **Important limitation:** the database guard is implemented in `tests/conftest.py`, which **pytest** loads. Running test modules directly with `unittest` bypasses this protection; do not do so with any production credentials or `DATABASE_URL`. A skipped test is **not** a passed test. This README does not claim the latest commit passed CI — review real test results.
 
-**Recommended deployment workflow:** develop on a separate branch, use a distinct Telegram test bot token and PostgreSQL test database, manually test onboarding and Knowledge Base (including owner isolation, deletion confirmation, FAQ priority, and a second Telegram account), then review and merge a pull request to `main`. Never run multiple polling processes with the production bot token.
+**Recommended deployment workflow:** develop on a separate branch, use a distinct Telegram test bot token and PostgreSQL test database, manually test onboarding, Knowledge Base and Analytics (including owner isolation, downgrade restrictions, current-period charts, FAQ priority, and a second Telegram account), then review and merge a pull request to `main`. Never run multiple polling processes with the production bot token.
 
 ## 🔐 Privacy, security & limitations
 
 - **Official permissions only:** use the Telegram Business connection flow. The bot should never request Telegram passwords or authentication codes.
 - **AI message processing:** incoming text and relevant chat context may be sent to Google's Gemini API when AI replies are enabled. **Relevant owner-authored Personal Knowledge entries are also sent to Gemini** when retrieved. Don't store information you aren't willing to disclose to a chat contact and the AI provider.
-- **Stored data:** PostgreSQL stores settings, Business connections, **onboarding state/timestamps**, **Smart FAQ entries**, **AI Personal Knowledge titles, texts and keywords**, AI conversation history, referrals, broadcasts, and related metadata. AI history retrieval is limited to recent messages and a background cleanup job purges old history; verify retention and deletion behavior in [`db.py`](db.py) for your own deployment.
+- **Stored data:** PostgreSQL stores settings, Business connections, **onboarding state/timestamps**, **Smart FAQ entries**, **AI Personal Knowledge titles, texts and keywords**, **owner-scoped hourly Analytics counters (without message text/chat IDs)**, AI conversation history, referrals, broadcasts, and related metadata. AI history retrieval is limited to recent messages and a background cleanup job purges old history; verify retention and deletion behavior in [`db.py`](db.py) for your own deployment.
 - **Secrets:** never commit `.env`, API keys, database URLs, Telegram tokens, or customer information. Rotate any exposed secrets immediately.
+- **Analytics limitations:** counters are best-effort, begin only after the feature is running, and cannot recover past chat activity. Charts may be cached briefly. Analytics and Gemini AI chat-history storage are separate.
 - **AI limitations:** the model may be inaccurate, unavailable, or rate-limited. Knowledge Base retrieval is heuristic, and even an instruction to avoid invented or confidential details **cannot guarantee** a safe or correct generated response. Static reply fallback is available, but delivery is not guaranteed under every failure mode.
 - **Telegram restrictions:** Business rights, flood limits, profile editing privileges, and availability of features are controlled by Telegram.
 - **Commercial use:** payment verification in the current code is manual; the repository does not provide a full automated billing provider integration.
