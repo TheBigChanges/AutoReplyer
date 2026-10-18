@@ -1170,9 +1170,9 @@ T: dict[str, dict] = {
         "\u2139\uFE0F Входящих может быть больше, чем ответов: пока вы Онлайн или идёт cooldown, автоответ не отправляется.",
     ),
     "an_privacy": _(
-        "\U0001F512 Xabar matnlari saqlanmaydi — faqat vaqt, javob turi va sonlar.",
-        "\U0001F512 Message texts are never stored - only time, reply type and counts.",
-        "\U0001F512 Тексты сообщений не хранятся — только время, тип ответа и счётчики.",
+        "\U0001F512 Analytics xabar matnlarini saqlamaydi — faqat vaqt va statistik hisoblagichlar saqlanadi. Gemini AI suhbat tarixi alohida boshqariladi.",
+        "\U0001F512 Analytics does not store message texts - only time and statistical counters. Gemini AI chat history is managed separately.",
+        "\U0001F512 Аналитика не хранит тексты сообщений — только время и статистические счётчики. История чатов Gemini AI управляется отдельно.",
     ),
     "an_charts_caption": _("\U0001F4CA Statistika: {name} ({period})", "\U0001F4CA Analytics: {name} ({period})", "\U0001F4CA Аналитика: {name} ({period})"),
     "an_charts_failed": _(
