@@ -1554,6 +1554,35 @@ def list_schedule_rules(owner_user_id: int):
         return [dict(r) for r in cur.fetchall()]
 
 
+# Jadvallar keshi: har bir mijoz xabarida bazaga bormaslik uchun (bo'sh ro'yxat ham keshlanadi — ko'pchilikda jadval yo'q).
+# Har qanday o'zgarishda (qo'shish/tahrirlash/o'chirish) shu egasining keshi darhol tozalanadi; TTL — boshqa instansiya
+# o'zgartirgan holat uchun xavfsizlik chegarasi.
+SCHEDULE_CACHE_TTL_SECONDS = 60
+_SCHEDULE_CACHE_MAX = 5000
+_schedule_cache: dict[int, tuple[float, list]] = {}
+_schedule_cache_lock = threading.Lock()
+
+
+def invalidate_schedule_cache(owner_user_id: int):
+    with _schedule_cache_lock:
+        _schedule_cache.pop(owner_user_id, None)
+
+
+def get_schedule_rules_cached(owner_user_id: int):
+    """list_schedule_rules() ning qisqa muddatli keshlangan varianti (faqat o'qish uchun — ro'yxatni o'zgartirmang)."""
+    now = time.monotonic()
+    with _schedule_cache_lock:
+        hit = _schedule_cache.get(owner_user_id)
+        if hit and now - hit[0] < SCHEDULE_CACHE_TTL_SECONDS:
+            return hit[1]
+    rules = list_schedule_rules(owner_user_id)
+    with _schedule_cache_lock:
+        if len(_schedule_cache) >= _SCHEDULE_CACHE_MAX:
+            _schedule_cache.clear()
+        _schedule_cache[owner_user_id] = (now, rules)
+    return rules
+
+
 def get_schedule_rule(owner_user_id: int, rule_id: int):
     """Faqat shu egasiniki; boshqasiniki 'topilmadi' (None)."""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1586,6 +1615,7 @@ def _locked_schedule_tx(owner_user_id: int, work):
             cur.execute("SELECT * FROM schedule_rules WHERE owner_user_id = %s ORDER BY id", (owner_user_id,))
             result = work(cur, [dict(r) for r in cur.fetchall()])
             cur.execute("COMMIT")
+            invalidate_schedule_cache(owner_user_id)
             return result
         except BaseException:
             try:
@@ -1638,7 +1668,9 @@ def update_schedule_rule(owner_user_id: int, rule_id: int, **fields):
 def delete_schedule_rule(owner_user_id: int, rule_id: int) -> bool:
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM schedule_rules WHERE id = %s AND owner_user_id = %s", (rule_id, owner_user_id))
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    invalidate_schedule_cache(owner_user_id)
+    return deleted
 
 
 # --------------------------------------------------------------------------
