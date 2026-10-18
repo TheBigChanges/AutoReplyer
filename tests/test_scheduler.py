@@ -212,7 +212,7 @@ class CurrentRuleTests(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def cur(self, rules, settings=None, now=MON_10):
-        with patch.object(db, "list_schedule_rules", return_value=rules):
+        with patch.object(db, "get_schedule_rules_cached", return_value=rules):
             return _REAL_CURRENT(OWNER, settings or _settings(), now)
 
     def test_inside_and_outside_window(self):
@@ -224,7 +224,7 @@ class CurrentRuleTests(unittest.TestCase):
         self.assertIsNone(self.cur([_rule(enabled=False)]))
 
     def test_db_error_means_no_schedule(self):
-        with patch.object(db, "list_schedule_rules", side_effect=RuntimeError("db")):
+        with patch.object(db, "get_schedule_rules_cached", side_effect=RuntimeError("db")):
             self.assertIsNone(_REAL_CURRENT(OWNER, _settings(), MON_10))
 
     def test_downgraded_user_only_first_rules_within_limit_work(self):
@@ -369,6 +369,64 @@ class ReplyFlowTests(unittest.TestCase):
 
 
 @unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL kerak")
+class CacheTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+
+    def setUp(self):
+        with db.get_conn() as c, c.cursor() as cur:
+            cur.execute("DELETE FROM schedule_rules WHERE owner_user_id IN (%s, %s)", (OWNER, OTHER))
+        db.invalidate_schedule_cache(OWNER)
+        db.invalidate_schedule_cache(OTHER)
+
+    def reads(self):
+        """list_schedule_rules ga haqiqiy murojaatlar soni."""
+        return patch.object(db, "list_schedule_rules", wraps=db.list_schedule_rules)
+
+    def test_repeated_reads_hit_db_once_even_when_empty(self):
+        with self.reads() as spy:
+            for _ in range(5):
+                self.assertEqual(db.get_schedule_rules_cached(OWNER), [])
+        self.assertEqual(spy.call_count, 1)
+
+    def test_add_update_delete_invalidate_immediately(self):
+        self.assertEqual(db.get_schedule_rules_cached(OWNER), [])
+        _, rid = db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(9), m(18), "A", 5)
+        self.assertEqual(len(db.get_schedule_rules_cached(OWNER)), 1)  # yangi jadval darhol ko'rinadi
+        db.update_schedule_rule(OWNER, rid, text="B")
+        self.assertEqual(db.get_schedule_rules_cached(OWNER)[0]["text"], "B")
+        db.update_schedule_rule(OWNER, rid, is_enabled=False)
+        self.assertFalse(db.get_schedule_rules_cached(OWNER)[0]["is_enabled"])
+        db.delete_schedule_rule(OWNER, rid)
+        self.assertEqual(db.get_schedule_rules_cached(OWNER), [])
+
+    def test_ttl_expiry_rereads(self):
+        db.get_schedule_rules_cached(OWNER)
+        with self.reads() as spy, patch.object(db.time, "monotonic", return_value=db.time.monotonic() + db.SCHEDULE_CACHE_TTL_SECONDS + 1):
+            db.get_schedule_rules_cached(OWNER)
+        self.assertEqual(spy.call_count, 1)
+
+    def test_cache_is_per_owner(self):
+        db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(9), m(18), "A", 5)
+        self.assertEqual(len(db.get_schedule_rules_cached(OWNER)), 1)
+        self.assertEqual(db.get_schedule_rules_cached(OTHER), [])
+
+    def test_failed_write_does_not_leave_stale_cache(self):
+        db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(9), m(18), "A", 5)
+        db.get_schedule_rules_cached(OWNER)
+        self.assertEqual(db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(10), m(11), "x", 5)[0], "conflict")
+        self.assertEqual(len(db.get_schedule_rules_cached(OWNER)), 1)
+
+    def test_current_schedule_rule_uses_cache_not_direct_reads(self):
+        with patch.object(bot, "plan_of", lambda uid: "ultra"), patch.object(bot, "ADMIN_ID", ADMIN), \
+             patch.object(db, "list_schedule_rules", return_value=[]) as direct:
+            for _ in range(3):
+                _REAL_CURRENT(OWNER, _settings(), MON_10)
+        self.assertEqual(direct.call_count, 1)
+
+
+@unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL kerak")
 class MenuFlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -386,7 +444,14 @@ class MenuFlowTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def press(self, data, user=OWNER):
+    STAGED = ("sc_d", "sc_dp", "sc_dnext", "sc_allday", "sc_deftext", "sc_save")
+
+    def press(self, data, user=OWNER, fresh=True):
+        """fresh=True: tugma hozirgi qoralamaning ID sini oladi (yangi ekrandagi tugma kabi);
+        fresh=False: `data` aynan berilganidek yuboriladi (eski xabardagi tugma)."""
+        draft = bot._sc_drafts.get(user)
+        if fresh and draft and data.split(":")[0] in self.STAGED:
+            data = f"{data}:{draft['id']}"
         q = MagicMock()
         q.data = data
         q.from_user.id = user
@@ -505,6 +570,62 @@ class MenuFlowTests(unittest.TestCase):
         q = self.press(f"sc_ed:text:{rid}")
         self.assertIn(i18n.t("uz", "feature_text"), self.shown(q))
 
+    def test_old_save_button_cannot_save_a_newer_draft(self):
+        """Birinchi jadval tasdiqlash ekraniga yetdi -> bekor qilindi -> ikkinchisi ham tasdiqlashga yetdi:
+        birinchisining eski «Saqlash» tugmasi ikkinchisini saqlamasligi kerak."""
+        self.press("sc_add")
+        self.press("sc_d:0")
+        self.press("sc_dnext")
+        self.say("09:00-18:00")
+        self.say("Birinchi")
+        old_save = f"sc_save:{bot._sc_drafts[OWNER]['id']}"
+        self.press("sc_cancel")
+        self.press("sc_add")
+        self.press("sc_d:1")
+        self.press("sc_dnext")
+        self.say("10:00-12:00")
+        self.say("Ikkinchi")
+        self.assertEqual(bot._sc_drafts[OWNER]["stage"], "confirm")
+        q = self.press(old_save, fresh=False)
+        self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q))
+        self.assertEqual(db.count_schedule_rules(OWNER), 0)
+        # Yangi qoralama buzilmaydi: uning o'z «Saqlash» tugmasi ishlaydi
+        self.assertEqual(bot._sc_drafts[OWNER]["text"], "Ikkinchi")
+        self.press("sc_save")
+        rules = db.list_schedule_rules(OWNER)
+        self.assertEqual([(r["days"], r["text"]) for r in rules], [(logic.days_mask([1]), "Ikkinchi")])
+
+    def test_old_id_buttons_are_ignored_on_every_step(self):
+        self.press("sc_add")
+        old = bot._sc_drafts[OWNER]["id"]
+        self.press("sc_cancel")
+        self.press("sc_add")
+        new = bot._sc_drafts[OWNER]
+        for data in (f"sc_d:3:{old}", f"sc_dp:all:{old}", f"sc_dnext:{old}", f"sc_allday:{old}", f"sc_deftext:{old}"):
+            q = self.press(data, fresh=False)
+            self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q), data)
+            self.press("sc_add")
+            new = bot._sc_drafts[OWNER]
+        self.assertEqual(new["days"], set())
+
+    def test_buttons_without_draft_id_from_old_messages_are_ignored(self):
+        self.press("sc_add")
+        self.press("sc_d:0")
+        q = self.press("sc_dnext", fresh=False)  # deploydan oldingi xabar: ID yo'q
+        self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q))
+        self.assertEqual(db.count_schedule_rules(OWNER), 0)
+
+    def test_every_staged_button_in_screens_carries_the_draft_id(self):
+        self.press("sc_add")
+        d = bot._sc_drafts[OWNER]
+        _, markup = bot.build_sched_days(OWNER)
+        datas = [b.callback_data for row in markup.inline_keyboard for b in row]
+        staged = [x for x in datas if x.split(":")[0] in self.STAGED]
+        self.assertTrue(staged)
+        self.assertTrue(all(x.endswith(f":{d['id']}") for x in staged))
+        self.assertTrue(all(len(x.encode()) <= 64 for x in datas))
+        self.assertTrue(all(b.callback_data.endswith(d["id"]) for b in bot._sc_time_markup("uz", d).inline_keyboard[0]))
+
     def test_stale_save_button_never_writes_incomplete_draft(self):
         """Eski «Saqlash» tugmasi: yangi qoralama hali to'liq emas (kun/vaqt yo'q) — bazaga hech narsa yozilmaydi."""
         self.press("sc_add")
@@ -533,7 +654,8 @@ class MenuFlowTests(unittest.TestCase):
         d["stage"] = "confirm"  # kun va vaqt yo'q
         self.press("sc_save")
         self.assertEqual(db.count_schedule_rules(OWNER), 0)
-        d = {"days": {0}, "start": None, "end": None, "text": None, "edit_id": None, "edit": None, "stage": "confirm", "ts": 10**12}
+        d = {"id": "forged", "days": {0}, "start": None, "end": None, "text": None, "edit_id": None, "edit": None,
+             "stage": "confirm", "ts": 10**12}
         bot._sc_drafts[OWNER] = d
         self.press("sc_save")
         self.assertEqual(db.count_schedule_rules(OWNER), 0)
