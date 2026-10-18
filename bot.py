@@ -1968,6 +1968,16 @@ def _sc_new_draft(owner_id: int, **fields) -> dict:
     return d
 
 
+def sc_button_is_stale(owner_id: int, data: str) -> bool:
+    """Qoralamaga bog'liq tugma eskirganmi: qoralama yo'q, ID boshqa yoki bosqich mos emas."""
+    base, *rest = data.split(":")
+    if base not in _SC_STAGE_FOR and base not in ("sc_d", "sc_dp"):
+        return False
+    d = _sc_draft(owner_id)
+    token = rest[-1] if rest else None
+    return d is None or d.get("id") != token or d.get("stage") != _SC_STAGE_FOR.get(base, "days")
+
+
 def _sc_cb(prefix: str, d: dict) -> str:
     return f"{prefix}:{d['id']}"
 
@@ -2306,9 +2316,12 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
         # Tugma qoralama ID sini olib yuradi (oxirgi qism): ID mos kelmasa yoki bosqich mos bo'lmasa — eski xabar, hech narsa o'zgarmaydi
         token = rest[-1] if rest else None
         arg = rest[0] if base in ("sc_d", "sc_dp") and len(rest) >= 2 else None
-        needed = _SC_STAGE_FOR.get(base, "days")  # kun tugmalari faqat "days" bosqichida
-        if d is None or d.get("id") != token or d.get("stage") != needed:
-            text, markup = build_sched_menu(owner_id, t(lang, "sc_draft_lost"))
+        if sc_button_is_stale(owner_id, data):
+            if d is None:  # qoralama umuman yo'q (tugagan/bekor qilingan)
+                text, markup = build_sched_menu(owner_id, t(lang, "sc_draft_lost"))
+            else:  # boshqa (joriy) qoralama bor — unga tegmaymiz, faqat eski xabarni ogohlantirishga almashtiramiz
+                text = t(lang, "sc_stale_button")
+                markup = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]])
             await query.edit_message_text(text, reply_markup=markup)
             return True
         data = base  # pastdagi qadamlar tugma turi bo'yicha ishlaydi
@@ -2926,7 +2939,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Har qanday boshqa tugma bosilsa, oldingi tugallanmagan amal (masalan "yangi matn
     # yuboring") bekor bo'ladi; yangi amal boshlaydigan tugmalar pastda uni qayta o'rnatadi.
-    clear_pending_action(owner_id)
+    # Istisno: jadval qoralamasiga bog'liq ESKIRGAN tugma hech narsani bekor qilmaydi — foydalanuvchining
+    # hozirgi kiritishi (vaqt/matn) davom etaveradi.
+    if not (data.startswith("sc_") and sc_button_is_stale(owner_id, data)):
+        clear_pending_action(owner_id)
 
     lang = get_lang(owner_id)
 
