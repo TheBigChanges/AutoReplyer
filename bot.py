@@ -1956,7 +1956,9 @@ async def send_analytics_charts(bot, owner_id: int, chat_id: int, days: int) -> 
 # Jadval foydalanuvchi sozlamalarini HECH QACHON o'zgartirmaydi: faqat javob berish paytida
 # "hozir jadval oynasidami?" deb hisoblanadi.
 # ---------------------------------------------------------------------------
-_sc_drafts: dict[int, dict] = {}  # {owner_id: {"days": set, "start", "end", "text", "edit_id", "edit", "ts"}}
+_sc_drafts: dict[int, dict] = {}  # {owner_id: {"days": set, "start", "end", "text", "edit_id", "edit", "stage", "ts"}}
+# Qaysi tugma qoralamaning qaysi bosqichida ma'noga ega (eski xabardagi tugma boshqa bosqichda ishlamasligi uchun)
+_SC_STAGE_FOR = {"sc_dnext": "days", "sc_allday": "time", "sc_deftext": "text", "sc_save": "confirm"}
 SC_PREVIEW_CHARS = 60
 
 
@@ -2188,7 +2190,7 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
         if db.count_schedule_rules(owner_id) >= schedule_limit_for(owner_id):
             text, markup = build_sched_menu(owner_id, t(lang, "sc_limit", max=schedule_limit_for(owner_id)))
         else:
-            _sc_drafts[owner_id] = {"days": set(), "start": None, "end": None, "text": None, "edit_id": None, "edit": None, "ts": time.time()}
+            _sc_drafts[owner_id] = {"days": set(), "start": None, "end": None, "text": None, "edit_id": None, "edit": None, "stage": "days", "ts": time.time()}
             text, markup = build_sched_days(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return True
@@ -2265,7 +2267,7 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
             return True
         _sc_drafts[owner_id] = {
             "days": set(mask_days(rule["days"])), "start": rule["start_min"], "end": rule["end_min"], "text": rule["text"],
-            "edit_id": rule_id, "edit": field, "ts": time.time(),
+            "edit_id": rule_id, "edit": field, "stage": {"days": "days", "time": "time", "text": "text"}[field], "ts": time.time(),
         }
         if field == "days":
             text, markup = build_sched_days(owner_id)
@@ -2284,8 +2286,10 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
 
     # --- qoralama bilan ishlaydigan qadamlar ---
     d = _sc_draft(owner_id)
-    if data in ("sc_dnext", "sc_allday", "sc_deftext", "sc_save") or data.startswith(("sc_d:", "sc_dp:")):
-        if d is None:
+    if data in _SC_STAGE_FOR or data.startswith(("sc_d:", "sc_dp:")):
+        needed = _SC_STAGE_FOR.get(data, "days")  # kun tugmalari faqat "days" bosqichida
+        if d is None or d.get("stage") != needed:
+            # Qoralama yo'q yoki bu tugma eski xabardan (bosqich mos emas) — hech narsa saqlanmaydi
             text, markup = build_sched_menu(owner_id, t(lang, "sc_draft_lost"))
             await query.edit_message_text(text, reply_markup=markup)
             return True
@@ -2327,6 +2331,7 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
                 view = build_sched_menu(owner_id, t(lang, "sc_gone"))
             await query.edit_message_text(view[0], reply_markup=view[1])
             return True
+        d["stage"] = "time"
         set_pending_action(owner_id, "sc_time")
         markup = InlineKeyboardMarkup([
             [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data="sc_allday")],
@@ -2347,6 +2352,15 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
 
     if data == "sc_save":
         clear_pending_action(owner_id)
+        valid = (
+            d["edit_id"] is None and d["days"] and d["start"] is not None and d["end"] is not None
+            and valid_schedule_time(d["start"], d["end"])
+        )
+        if not valid:  # to'liq bo'lmagan qoralama bazaga yozilmaydi
+            _sc_drafts.pop(owner_id, None)
+            text, markup = build_sched_menu(owner_id, t(lang, "sc_draft_lost"))
+            await query.edit_message_text(text, reply_markup=markup)
+            return True
         _sc_drafts.pop(owner_id, None)
         status, n = db.add_schedule_rule(
             owner_id, days_mask(d["days"]), d["start"], d["end"], d.get("text"), schedule_limit_for(owner_id)
@@ -2397,9 +2411,11 @@ async def _sc_after_time(message, owner_id: int, lang: str, start: int, end: int
     if step is None:  # Free: alohida matn yo'q — standart matn ishlatiladi
         clear_pending_action(owner_id)
         d["text"] = None
+        d["stage"] = "confirm"
         text, markup = _sc_confirm_view(owner_id, d)
         await _sc_reply(message, edit_message, f"{t(lang, 'sc_text_locked_note')}\n\n{text}", markup)
         return
+    d["stage"] = "text"
     set_pending_action(owner_id, "sc_text")
     await _sc_reply(message, edit_message, step[0], step[1])
 
@@ -2418,6 +2434,7 @@ async def _sc_finish_text(message, owner_id: int, lang: str, edit_message=None):
             or build_sched_menu(owner_id, t(lang, "sc_gone"))
         await _sc_reply(message, edit_message, view[0], view[1])
         return
+    d["stage"] = "confirm"
     text, markup = _sc_confirm_view(owner_id, d)
     await _sc_reply(message, edit_message, text, markup)
 
@@ -2667,7 +2684,7 @@ def build_sleep_menu(owner_id: int):
         status=t(lang, "sleep_status_on" if enabled else "status_off"),
         range=format_time_range(start_minutes, end_minutes),
         text=sleep_text_for(s, lang),
-    )
+    ) + "\n\n" + t(lang, "sleep_tz_note", tz=str(tz_from_settings(s)))
     keyboard = [
         [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="sleep_toggle")],
         [InlineKeyboardButton(t(lang, "btn_sleep_time"), callback_data="sleep_edit_time")],
@@ -4713,7 +4730,8 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         settings = db.get_settings(owner_id)
 
-        now = datetime.now(TASHKENT_TZ)
+        # Uxlash rejimi va Jadval BIR XIL vaqt zonasi bilan hisoblanadi: egasining zonasi (Ism soati sozlamasi), yo'q bo'lsa Toshkent
+        now = datetime.now(tz_from_settings(settings))
         now_minutes = now.hour * 60 + now.minute
         sleeping = settings.get("sleep_mode_enabled") and is_within_sleep_window(
             now_minutes, settings.get("sleep_start_minutes", 0), settings.get("sleep_end_minutes", 0)
@@ -4722,7 +4740,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_lang = get_lang(owner_id)
         # Ustuvorlik: Sleep Mode -> Jadval -> (FAQ -> AI ->) oddiy avtojavob. Jadval oynasida bot Oflayn kabi ishlaydi,
         # lekin foydalanuvchining sozlamalari o'zgartirilmaydi.
-        schedule_rule = None if sleeping else current_schedule_rule(owner_id, settings)
+        schedule_rule = None if sleeping else current_schedule_rule(owner_id, settings, now)
         if sleeping:
             reply_text = sleep_text_for(settings, owner_lang)
         elif schedule_rule is not None:
