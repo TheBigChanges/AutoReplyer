@@ -448,27 +448,30 @@ T: dict[str, dict] = {
         "{usage}\n"
         "Rol: {role}\n"
         "Ma'lumot va uslub: {info}\n\n"
-        "Yoqilganda, avtojavob ishlaydigan paytda (Oflayn holat yoki uxlash vaqti) odatiy matn o'rniga "
+        "Yoqilganda, avtojavob ishlaydigan paytda (Oflayn holat yoki jadval oynasi) odatiy matn o'rniga "
         "sun'iy intellekt suhbatdoshingizga o'zi javob yozadi. Oddiy avtojavob matnlari o'chmaydi — "
         "AI o'chirilsa, kunlik limit tugasa yoki xato bo'lsa, ular ishlatiladi.\n"
+        "Uxlash rejimi (Sleep Mode) vaqtida AI ishlamaydi — har doim uxlash xabaringiz yuboriladi.\n"
         "Chatga o'zingiz yozsangiz, AI shu chatda 2 soat jim turadi.",
         "\U0001F916 AI Assistant\n\n"
         "Status: {status}\n"
         "{usage}\n"
         "Role: {role}\n"
         "Info and style: {info}\n\n"
-        "When on, while auto-reply is active (Offline status or sleep time), artificial intelligence "
+        "When on, while auto-reply is active (Offline status or a schedule window), artificial intelligence "
         "writes the reply to your contact instead of the usual text. The regular auto-reply texts are kept — "
         "they are used if AI is turned off, the daily limit runs out or an error occurs.\n"
+        "During Sleep Mode the AI does not reply — your sleep message is always sent.\n"
         "If you write in a chat yourself, the AI stays silent in that chat for 2 hours.",
         "\U0001F916 AI-помощник\n\n"
         "Статус: {status}\n"
         "{usage}\n"
         "Роль: {role}\n"
         "Информация и стиль: {info}\n\n"
-        "Когда включён, в моменты работы автоответа (статус Офлайн или время сна) вместо обычного текста "
+        "Когда включён, в моменты работы автоответа (статус Офлайн или окно расписания) вместо обычного текста "
         "собеседнику отвечает искусственный интеллект. Обычные тексты автоответа не удаляются — "
         "они используются, если AI выключен, закончился дневной лимит или произошла ошибка.\n"
+        "Во время режима сна (Sleep Mode) AI не отвечает — всегда отправляется ваше сообщение о сне.\n"
         "Если вы сами напишете в чат, AI будет молчать в этом чате 2 часа.",
     ),
     "ai_usage_unlimited": _("Limit: cheklovsiz", "Limit: unlimited", "Лимит: без ограничений"),
