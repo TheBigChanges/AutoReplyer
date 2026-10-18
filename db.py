@@ -60,6 +60,7 @@ ALLOWED_SETTINGS_FIELDS = {
     "clock_bio_ad",
     "faq_enabled",
     "kb_enabled",
+    "scheduler_enabled",
     "name_clock_style",
 }
 
@@ -250,6 +251,23 @@ def init_db():
             """
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_analytics_bucket ON analytics_hourly(bucket)")
+        # Smart Auto-Reply Scheduler: haftalik jadvallar (days — bitmask, 0-bit = Dushanba; text NULL = standart matn)
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS scheduler_enabled BOOLEAN NOT NULL DEFAULT TRUE")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedule_rules (
+                id BIGSERIAL PRIMARY KEY,
+                owner_user_id BIGINT NOT NULL,
+                days SMALLINT NOT NULL,
+                start_min INTEGER NOT NULL,
+                end_min INTEGER NOT NULL,
+                text TEXT,
+                is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_schedule_owner ON schedule_rules(owner_user_id)")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_style TEXT")
         cur.execute(
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS birthday_month INTEGER"
@@ -1527,6 +1545,103 @@ def purge_old_ai_data(max_age_seconds: float = AI_HISTORY_MAX_AGE_SECONDS):
 
 
 # --------------------------------------------------------------------------
+# Smart Auto-Reply Scheduler
+# --------------------------------------------------------------------------
+def list_schedule_rules(owner_user_id: int):
+    """Egasining jadvallari (id bo'yicha tartiblangan — raqamlash va tarif limiti shu tartibda)."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM schedule_rules WHERE owner_user_id = %s ORDER BY id", (owner_user_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_schedule_rule(owner_user_id: int, rule_id: int):
+    """Faqat shu egasiniki; boshqasiniki 'topilmadi' (None)."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM schedule_rules WHERE id = %s AND owner_user_id = %s", (rule_id, owner_user_id))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def count_schedule_rules(owner_user_id: int) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM schedule_rules WHERE owner_user_id = %s", (owner_user_id,))
+        return cur.fetchone()[0]
+
+
+def _conflict_index(rules, days: int, start: int, end: int, skip_id=None):
+    """Kesishgan jadvalning tartib raqami (1 dan) yoki None."""
+    import logic  # kech import: db.py logic.py'ga modul yuklanishida bog'lanib qolmasligi uchun
+    for n, r in enumerate(rules, 1):
+        if r["id"] != skip_id and logic.schedules_overlap(days, start, end, r["days"], r["start_min"], r["end_min"]):
+            return n
+    return None
+
+
+def _locked_schedule_tx(owner_user_id: int, work):
+    """Egasining jadvallarini advisory lock ostida o'qish+yozish (parallel so'rovlardan himoya)."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("BEGIN")
+        try:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('schedule_rules'), (%s %% 2147483647)::int)", (owner_user_id,))
+            cur.execute("SELECT * FROM schedule_rules WHERE owner_user_id = %s ORDER BY id", (owner_user_id,))
+            result = work(cur, [dict(r) for r in cur.fetchall()])
+            cur.execute("COMMIT")
+            return result
+        except BaseException:
+            try:
+                cur.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+
+
+def add_schedule_rule(owner_user_id: int, days: int, start_min: int, end_min: int, text, max_rules: int):
+    """('ok', id) | ('limit', None) | ('conflict', n) — n: kesishgan jadvalning tartib raqami."""
+    def work(cur, rules):
+        if len(rules) >= max_rules:
+            return ("limit", None)
+        n = _conflict_index(rules, days, start_min, end_min)
+        if n is not None:
+            return ("conflict", n)
+        cur.execute(
+            "INSERT INTO schedule_rules (owner_user_id, days, start_min, end_min, text) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (owner_user_id, days, start_min, end_min, text),
+        )
+        return ("ok", cur.fetchone()["id"])
+    return _locked_schedule_tx(owner_user_id, work)
+
+
+_SCHEDULE_EDITABLE = ("days", "start_min", "end_min", "text", "is_enabled")
+
+
+def update_schedule_rule(owner_user_id: int, rule_id: int, **fields):
+    """('ok', None) | ('gone', None) | ('conflict', n). Kunlar/vaqt o'zgarsa boshqa jadvallar bilan kesishmasligi tekshiriladi."""
+    bad = set(fields) - set(_SCHEDULE_EDITABLE)
+    if bad or not fields:
+        raise ValueError(f"bad schedule fields: {bad or 'empty'}")
+
+    def work(cur, rules):
+        cur_rule = next((r for r in rules if r["id"] == rule_id), None)
+        if cur_rule is None:
+            return ("gone", None)
+        merged = {**cur_rule, **fields}
+        if {"days", "start_min", "end_min"} & set(fields):
+            n = _conflict_index(rules, merged["days"], merged["start_min"], merged["end_min"], skip_id=rule_id)
+            if n is not None:
+                return ("conflict", n)
+        sets = ", ".join(f"{k} = %s" for k in fields)
+        cur.execute(f"UPDATE schedule_rules SET {sets} WHERE id = %s AND owner_user_id = %s", (*fields.values(), rule_id, owner_user_id))
+        return ("ok", None)
+    return _locked_schedule_tx(owner_user_id, work)
+
+
+def delete_schedule_rule(owner_user_id: int, rule_id: int) -> bool:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM schedule_rules WHERE id = %s AND owner_user_id = %s", (rule_id, owner_user_id))
+        return cur.rowcount > 0
+
+
+# --------------------------------------------------------------------------
 # Analytics (soatlik hisoblagichlar)
 # --------------------------------------------------------------------------
 ANALYTICS_KINDS = ("incoming", "faq", "ai", "static", "sleep", "skipped")
@@ -1651,7 +1766,7 @@ for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info",
     "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "get_faq_entry", "count_faq_entries",
-    "get_analytics_rows", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
+    "get_analytics_rows", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
