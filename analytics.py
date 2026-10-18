@@ -196,7 +196,8 @@ _cache: dict = {}
 
 def _cache_key(kind: str, owner_id: int, summary: dict, labels: dict):
     return (kind, owner_id, summary["days"], summary["incoming"], summary["sent"], tuple(summary["hourly"]), tuple(summary["hourly_sent"]),
-            tuple(sorted(summary["kinds"].items())), labels.get("title"), summary["daily"][-1][0] if summary["daily"] else None)
+            tuple(sorted(summary["kinds"].items())), labels.get("title"),
+            tuple((d, i, s) for d, i, s in summary["daily"]))  # barcha kunlar: (sana, kelgan, yuborilgan)
 
 
 async def render_chart(kind: str, owner_id: int, summary: dict, labels: dict) -> bytes:
