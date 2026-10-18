@@ -248,7 +248,8 @@ class ReplyFlowTests(unittest.TestCase):
             self.addCleanup(p.stop)
         bot._bot_sent_ids.clear()
 
-    def flow(self, settings=None, rule=None, sleeping=False, faq=None, ai_answer=None, claim=123.0, custom_text=True, update=None):
+    def flow(self, settings=None, rule=None, sleeping=False, faq=None, ai_answer=None, claim=123.0, custom_text=True, update=None,
+             sleep_fn=None):
         settings = settings or _settings()
         ctx = MagicMock()
         ctx.bot.send_message = AsyncMock(return_value=MagicMock(message_id=555))
@@ -259,7 +260,7 @@ class ReplyFlowTests(unittest.TestCase):
             "claim": patch.object(db, "try_claim_reply", return_value=claim),
             "release": patch.object(db, "release_reply_claim"),
             "rule": patch.object(bot, "current_schedule_rule", lambda owner, st, now=None: rule),
-            "sleepwin": patch.object(bot, "is_within_sleep_window", return_value=sleeping),
+            "sleepwin": patch.object(bot, "is_within_sleep_window", sleep_fn or MagicMock(return_value=sleeping)),
             "faq": patch.object(bot, "find_faq_answer", lambda owner, text: faq),
             "paused": patch.object(db, "is_ai_paused", return_value=False),
             "quota": patch.object(db, "try_consume_ai_quota", return_value=True),
@@ -322,6 +323,45 @@ class ReplyFlowTests(unittest.TestCase):
     def test_rule_without_text_uses_standard_text(self):
         texts, _ = self.flow(settings=_settings(auto_reply_text="Standart"), rule=_rule(None))
         self.assertEqual(texts, ["Standart"])
+
+    def test_sleep_and_scheduler_share_owner_time_zone(self):
+        seen = {}
+
+        def spy(now_minutes, a, b):
+            seen["minutes"] = now_minutes
+            return False
+
+        class FixedDT(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 10, 19, 6, 30, tzinfo=ZoneInfo("Asia/Tashkent")).astimezone(tz)  # Toshkent 06:30
+
+        with patch.object(bot, "datetime", FixedDT):
+            self.flow(settings=_settings(sleep_mode_enabled=True, name_clock_tz="Asia/Tokyo"), sleep_fn=spy)
+            self.assertEqual(seen["minutes"], 10 * 60 + 30)  # Tokio 10:30 (Toshkent 06:30 emas)
+            self.flow(settings=_settings(sleep_mode_enabled=True), sleep_fn=spy)
+            self.assertEqual(seen["minutes"], 6 * 60 + 30)  # zona tanlanmagan — Toshkent
+
+    def test_scheduler_receives_the_same_now_as_sleep(self):
+        captured = {}
+
+        def fake(owner, st, now=None):
+            captured["now"] = now
+            return None
+
+        with patch.object(bot, "current_schedule_rule", fake), \
+             patch.object(db, "get_connection_by_business_id", return_value={"owner_user_id": OWNER, "is_enabled": True, "can_reply": True}), \
+             patch.object(db, "get_settings", return_value=_settings(name_clock_tz="Asia/Tokyo")):
+            ctx = MagicMock()
+            ctx.bot.send_message = AsyncMock()
+            run(bot.on_raw_update(_update(), ctx))
+        self.assertEqual(str(captured["now"].tzinfo), "Asia/Tokyo")
+
+    def test_sleep_menu_shows_the_time_zone(self):
+        with patch.object(db, "get_settings", return_value=_settings(name_clock_tz="Asia/Tokyo")), \
+             patch.object(bot, "get_lang", lambda uid: "uz"):
+            text, _ = bot.build_sleep_menu(OWNER)
+        self.assertIn("Asia/Tokyo", text)
 
     def test_own_messages_still_ignored(self):
         texts, _ = self.flow(rule=_rule(), update=_update(from_id=OWNER))
@@ -464,6 +504,43 @@ class MenuFlowTests(unittest.TestCase):
         rid = db.list_schedule_rules(OWNER)[0]["id"]
         q = self.press(f"sc_ed:text:{rid}")
         self.assertIn(i18n.t("uz", "feature_text"), self.shown(q))
+
+    def test_stale_save_button_never_writes_incomplete_draft(self):
+        """Eski «Saqlash» tugmasi: yangi qoralama hali to'liq emas (kun/vaqt yo'q) — bazaga hech narsa yozilmaydi."""
+        self.press("sc_add")
+        for stage_action in (lambda: None, lambda: self.press("sc_d:0"), lambda: (self.press("sc_dnext"))):
+            stage_action()
+            q = self.press("sc_save")
+            self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q))
+            self.assertEqual(db.count_schedule_rules(OWNER), 0)
+            self.press("sc_add")  # qoralama bekor bo'ldi — qaytadan boshlaymiz
+
+    def test_stale_buttons_from_other_stages_are_ignored(self):
+        self.press("sc_add")
+        self.press("sc_d:2")
+        self.press("sc_dnext")  # endi bosqich: vaqt
+        for stale in ("sc_deftext", "sc_save", "sc_dnext", "sc_d:3", "sc_dp:all"):
+            q = self.press(stale)
+            self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q), stale)
+            self.assertEqual(db.count_schedule_rules(OWNER), 0)
+            self.press("sc_add")
+            self.press("sc_d:2")
+            self.press("sc_dnext")
+
+    def test_save_validates_fields_even_if_stage_is_forged(self):
+        self.press("sc_add")
+        d = bot._sc_drafts[OWNER]
+        d["stage"] = "confirm"  # kun va vaqt yo'q
+        self.press("sc_save")
+        self.assertEqual(db.count_schedule_rules(OWNER), 0)
+        d = {"days": {0}, "start": None, "end": None, "text": None, "edit_id": None, "edit": None, "stage": "confirm", "ts": 10**12}
+        bot._sc_drafts[OWNER] = d
+        self.press("sc_save")
+        self.assertEqual(db.count_schedule_rules(OWNER), 0)
+        d.update(start=m(9), end=m(9))  # noto'g'ri vaqt
+        bot._sc_drafts[OWNER] = d
+        self.press("sc_save")
+        self.assertEqual(db.count_schedule_rules(OWNER), 0)
 
     def test_expired_draft_is_handled(self):
         self.press("sc_add")
