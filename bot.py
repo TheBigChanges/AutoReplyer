@@ -1850,9 +1850,9 @@ def build_analytics_menu(owner_id: int, days: int = 1):
     return text, InlineKeyboardMarkup(keyboard)
 
 
-def build_analytics_detail(owner_id: int, days: int = 7):
+def build_analytics_detail(owner_id: int, days: int = 1):
     lang = get_lang(owner_id)
-    days = days if days in (7, 30) else 7
+    days = days if days in (1, 7, 30) and days <= analytics_allowed_days(owner_id) else 1
     summary = analytics_summary(owner_id, days)
     back = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"an:{days}")]])
     if analytics.is_empty(summary):
@@ -1895,13 +1895,22 @@ def analytics_chart_labels(lang: str, kind: str) -> dict:
 
 
 async def send_analytics_charts(bot, owner_id: int, chat_id: int, days: int) -> bool:
-    """Tarifga mos grafiklarni rasm sifatida yuboradi. Grafik uchun kamida 7 kunlik davr olinadi."""
+    """Tarifga mos grafiklarni TANLANGAN davr uchun rasm sifatida yuboradi.
+    Davr joriy tarif bilan qayta tekshiriladi (tarif tushirilgandan keyin eski tugma 30 kunlik grafik bermaydi).
+    Ruxsat yo'q bo'lsa False qaytaradi."""
     lang = get_lang(owner_id)
-    chart_days = 30 if days == 30 else 7
-    summary = analytics_summary(owner_id, chart_days)
+    if days not in (1, 7, 30) or days > analytics_allowed_days(owner_id):
+        return False
+    summary = analytics_summary(owner_id, days)
     if analytics.is_empty(summary):
         await bot.send_message(chat_id=chat_id, text=t(lang, "an_empty"))
         return True
+    for kind in analytics_chart_kinds(owner_id):
+        labels = analytics_chart_labels(lang, kind)
+        png = await analytics.render_chart(kind, owner_id, summary, labels)
+        caption = t(lang, "an_charts_caption", name=labels["title"], period=_an_period_name(lang, days))
+        await bot.send_photo(chat_id=chat_id, photo=png, caption=caption)
+    return True
     for kind in analytics_chart_kinds(owner_id):
         labels = analytics_chart_labels(lang, kind)
         png = await analytics.render_chart(kind, owner_id, summary, labels)
@@ -2576,7 +2585,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             days = 1
         try:
-            await send_analytics_charts(context.bot, owner_id, query.message.chat_id, days)
+            if not await send_analytics_charts(context.bot, owner_id, query.message.chat_id, days):
+                text, markup = build_locked_view(owner_id, "analytics_30" if days == 30 else "analytics_7")
+                await query.edit_message_text(text, reply_markup=markup)
         except Exception:
             logger.exception("Analytics grafigini yuborishda xato (owner=%s)", owner_id)
             await context.bot.send_message(chat_id=query.message.chat_id, text=t(lang, "an_charts_failed"))
@@ -2586,7 +2597,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             days = int(data.split(":")[1])
         except ValueError:
-            days = 7
+            days = 1
         text, markup = build_analytics_detail(owner_id, days)
         await query.edit_message_text(text, reply_markup=markup)
         return
