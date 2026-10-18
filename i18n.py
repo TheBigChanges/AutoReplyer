@@ -1119,6 +1119,11 @@ T: dict[str, dict] = {
     "btn_ob_fail": _("❌ Javob kelmadi", "❌ No reply", "❌ Ответа нет"),
     "btn_ob_skip": _("⏭ O'tkazib yuborish", "⏭ Skip", "⏭ Пропустить"),
     "btn_ob_resume": _("\U0001F680 Sozlashni davom ettirish", "\U0001F680 Continue setup", "\U0001F680 Продолжить настройку"),
+    "sleep_tz_note": _(
+        "\U0001F30D Vaqt zonasi: {tz} (Uxlash rejimi va Smart Jadval bir xil zonada ishlaydi — «Ism soati»dagi zona, tanlanmagan bo'lsa Toshkent).",
+        "\U0001F30D Time zone: {tz} (Sleep Mode and Smart Scheduler use the same zone - the one set in Name Clock, Tashkent if none).",
+        "\U0001F30D Часовой пояс: {tz} (Режим сна и умное расписание работают в одном поясе — из «Часов в имени», если не выбран — Ташкент).",
+    ),
     # ---------------- Smart Auto-Reply Scheduler ----------------
     "btn_sched": _("\U0001F4C5 Smart Jadval", "\U0001F4C5 Smart Scheduler", "\U0001F4C5 Умное расписание"),
     "feature_sched": _("Smart Jadval", "Smart Scheduler", "Умное расписание"),
