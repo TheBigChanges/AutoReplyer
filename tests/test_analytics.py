@@ -75,6 +75,19 @@ class SummarizeTests(unittest.TestCase):
         h[23] = 5
         self.assertEqual(analytics.busiest_window(h), (22, 24))
 
+    def test_busiest_window_compares_all_two_hour_sums(self):
+        h = [0] * 24
+        h[0], h[1], h[12] = 10, 10, 11
+        self.assertEqual(analytics.busiest_window(h), (0, 2))  # 20 ta > 12:00-14:00 dagi 11 ta
+        h = [0] * 24
+        h[5], h[6] = 3, 3
+        self.assertEqual(analytics.busiest_window(h), (5, 7))
+
+    def test_today_has_hourly_sent_series(self):
+        s = analytics.summarize(self.rows(), 1, TZ)
+        self.assertEqual(s["hourly_sent"][9], 3)
+        self.assertEqual(s["hourly_sent"][10], 5)
+
     def test_unknown_kind_ignored(self):
         s = analytics.summarize([(hour_ts(0, 9), "weird", 9)], 1, TZ)
         self.assertTrue(analytics.is_empty(s))
@@ -120,6 +133,27 @@ class DbTests(unittest.TestCase):
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'analytics_hourly'")
             cols = {r[0] for r in cur.fetchall()}
         self.assertEqual(cols, {"owner_user_id", "bucket", "kind", "count"})  # matn/chat ID ustuni yo'q
+
+    def test_pool_is_threaded_and_parallel_writes_are_exact(self):
+        import threading
+        import psycopg2.pool
+        db._get_pool()
+        self.assertIsInstance(db._pool, psycopg2.pool.ThreadedConnectionPool)
+        ts = hour_ts(0, 9)
+        errors = []
+
+        def work():
+            try:
+                for _ in range(10):
+                    db.record_analytics(OWNER, "incoming", ts)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=work) for _ in range(30)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertEqual(errors, [])
+        self.assertEqual(sum(c for _, k, c in db.get_analytics_rows(OWNER, ts - 3600) if k == "incoming"), 300)
 
     def test_track_analytics_end_to_end_and_errors_swallowed(self):
         async def go():
@@ -386,6 +420,24 @@ class ButtonAndChartTests(unittest.TestCase):
             photo = ctx.bot.send_photo.await_args.kwargs["photo"]
             self.assertTrue(photo.startswith(b"\x89PNG"))
 
+    def test_downgraded_user_cannot_get_30_day_charts(self):
+        self.plan = "plus"  # eski Pro tugmasi (an_ch:30) hali ekranda
+        q, ctx = self.press("an_ch:30")
+        ctx.bot.send_photo.assert_not_awaited()
+        self.assertIn(i18n.t("uz", "feature_an30"), q.edit_message_text.await_args.args[0])
+
+    def test_charts_keep_selected_period(self):
+        self.plan = "ultra"
+        for days, key in ((1, "an_period_1"), (7, "an_period_7"), (30, "an_period_30")):
+            _, ctx = self.press(f"an_ch:{days}")
+            self.assertIn(i18n.t("uz", key), ctx.bot.send_photo.await_args.kwargs["caption"])
+
+    def test_detail_keeps_selected_period(self):
+        self.plan = "ultra"
+        for days, key in ((1, "an_period_1"), (7, "an_period_7"), (30, "an_period_30")):
+            q, _ = self.press(f"an_detail:{days}")
+            self.assertIn(i18n.t("uz", key), q.edit_message_text.await_args.args[0])
+
     def test_free_user_gets_locked_view_instead_of_charts(self):
         self.plan = "free"
         q, ctx = self.press("an_ch:1")
@@ -433,6 +485,11 @@ class ChartTests(unittest.TestCase):
                 png = asyncio.run(analytics.render_chart(kind, OWNER, self.summary, labels))
                 self.assertTrue(png.startswith(b"\x89PNG"), (lang, kind))
 
+    def test_today_line_chart_renders_hourly(self):
+        s = analytics.summarize([(hour_ts(0, 9), "incoming", 3), (hour_ts(0, 9), "static", 2)], 1, TZ)
+        png = asyncio.run(analytics.render_chart("line", OWNER, s, bot.analytics_chart_labels("uz", "line")))
+        self.assertTrue(png.startswith(b"\x89PNG"))
+
     def test_pie_without_sent_replies_still_renders(self):
         s = analytics.summarize([(hour_ts(0, 9), "incoming", 3)], 7, TZ)
         png = asyncio.run(analytics.render_chart("pie", OWNER, s, bot.analytics_chart_labels("uz", "pie")))
@@ -455,6 +512,10 @@ class ChartTests(unittest.TestCase):
 
 
 class I18nTests(unittest.TestCase):
+    def test_privacy_text_mentions_separate_ai_history(self):
+        for lang in ("uz", "en", "ru"):
+            self.assertIn("Gemini", i18n.t(lang, "an_privacy"))
+
     def test_every_analytics_key_in_three_languages(self):
         keys = [k for k in i18n.T if k.startswith(("an_", "btn_an", "feature_an", "pf_an_", "btn_analytics"))]
         self.assertTrue(keys)
