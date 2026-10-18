@@ -1565,6 +1565,7 @@ _schedule_cache_lock = threading.Lock()
 # natijani keshga FAQAT shu vaqt ichida invalidatsiya bo'lmagan bo'lsa yozadi — shunda parallel yozuv bilan
 # poyga (eski ma'lumot yangi tozalangan keshga qaytib yozilishi) bo'lmaydi.
 _schedule_cache_gen = 0
+_SCHEDULE_READ_RETRIES = 3
 
 
 def invalidate_schedule_cache(owner_user_id: int):
@@ -1581,14 +1582,19 @@ def get_schedule_rules_cached(owner_user_id: int):
         hit = _schedule_cache.get(owner_user_id)
         if hit and now - hit[0] < SCHEDULE_CACHE_TTL_SECONDS:
             return hit[1]
-        gen = _schedule_cache_gen
-    rules = list_schedule_rules(owner_user_id)
-    with _schedule_cache_lock:
-        if gen == _schedule_cache_gen:  # o'qish davomida jadval o'zgargan bo'lsa — eskirgan natija keshga yozilmaydi
-            if len(_schedule_cache) >= _SCHEDULE_CACHE_MAX:
-                _schedule_cache.clear()
-            _schedule_cache[owner_user_id] = (now, rules)
-    return rules
+    # O'qish davomida jadval o'zgargan bo'lsa (avlod almashgan) — natija eskirgan: keshga yozilmaydi va
+    # chaqiruvchiga ham qaytarilmaydi, bazadan qayta o'qiladi (cheklangan urinishlar bilan).
+    for attempt in range(_SCHEDULE_READ_RETRIES):
+        with _schedule_cache_lock:
+            gen = _schedule_cache_gen
+        rules = list_schedule_rules(owner_user_id)
+        with _schedule_cache_lock:
+            if gen == _schedule_cache_gen:
+                if len(_schedule_cache) >= _SCHEDULE_CACHE_MAX:
+                    _schedule_cache.clear()
+                _schedule_cache[owner_user_id] = (time.monotonic(), rules)
+                return rules
+    return rules  # doimiy parallel yozuv: oxirgi o'qilgan (eng yangi) natija, keshsiz
 
 
 def get_schedule_rule(owner_user_id: int, rule_id: int):
