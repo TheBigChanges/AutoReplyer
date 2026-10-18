@@ -427,8 +427,9 @@ class CacheTests(unittest.TestCase):
             return old  # 3) o'quvchi eski ma'lumot bilan qaytadi
 
         with patch.object(db, "list_schedule_rules", racing_read):
-            self.assertEqual(db.get_schedule_rules_cached(OWNER)[0]["text"], "ESKI")  # shu chaqiruv eskisini oladi
-        self.assertEqual(db.get_schedule_rules_cached(OWNER)[0]["text"], "YANGI")  # keyingisi — yangi (60 soniya kutmaydi)
+            # o'qish davomida jadval o'zgardi — eskirgan natija qaytarilmaydi, bazadan qayta o'qiladi
+            self.assertEqual(db.get_schedule_rules_cached(OWNER)[0]["text"], "YANGI")
+        self.assertEqual(db.get_schedule_rules_cached(OWNER)[0]["text"], "YANGI")  # keshda ham yangi (60 soniya kutmaydi)
 
     def test_threaded_readers_and_writers_end_with_fresh_cache(self):
         _, rid = db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(9), m(18), "0", 5)
@@ -478,7 +479,7 @@ class MenuFlowTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    STAGED = ("sc_d", "sc_dp", "sc_dnext", "sc_allday", "sc_deftext", "sc_save")
+    STAGED = ("sc_d", "sc_dp", "sc_dnext", "sc_allday", "sc_deftext", "sc_save", "sc_cancel")
 
     def press(self, data, user=OWNER, fresh=True):
         """fresh=True: tugma hozirgi qoralamaning ID sini oladi (yangi ekrandagi tugma kabi);
@@ -717,6 +718,52 @@ class MenuFlowTests(unittest.TestCase):
         self.say("09:00-18:00")  # joriy kiritish hamon ishlaydi
         self.assertEqual(bot._sc_drafts[OWNER]["stage"], "text")
         self.assertEqual(bot._sc_drafts[OWNER]["start"], m(9))
+
+    def test_old_cancel_button_cannot_cancel_new_draft(self):
+        """Eski oynadagi «Bekor qilish» yangi qoralamani ham, kutilayotgan kiritishni ham bekor qilmasligi kerak."""
+        self.press("sc_add")
+        old_cancel = f"sc_cancel:{bot._sc_drafts[OWNER]['id']}"
+        self.press("sc_cancel")
+        self.press("sc_add")
+        self.press("sc_d:2")
+        self.press("sc_dnext")
+        draft_id = bot._sc_drafts[OWNER]["id"]
+        self.assertEqual(bot.get_pending_action(OWNER), "sc_time")
+        for stale in (old_cancel, "sc_cancel", "sc_cancel:zzzzzz"):  # eski ID, ID'siz (eski format), noma'lum ID
+            q = self.press(stale, fresh=False)
+            self.assertIn(i18n.t("uz", "sc_stale_button"), self.shown(q))
+            self.assertEqual(bot.get_pending_action(OWNER), "sc_time", stale)
+            self.assertEqual(bot._sc_drafts[OWNER]["id"], draft_id)
+            self.assertEqual(bot._sc_drafts[OWNER]["days"], {2})
+
+    def test_current_cancel_button_cancels_own_draft(self):
+        self.press("sc_add")
+        self.press("sc_d:2")
+        self.press("sc_dnext")
+        did = bot._sc_drafts[OWNER]["id"]
+        q = self.press(f"sc_cancel:{did}", fresh=False)
+        self.assertNotIn(OWNER, bot._sc_drafts)
+        self.assertIsNone(bot.get_pending_action(OWNER))
+        self.assertIn(i18n.t("uz", "sc_cancelled"), self.shown(q))
+
+    def test_cancel_without_draft_is_harmless(self):
+        q = self.press("sc_cancel:abc123", fresh=False)
+        self.assertIn(i18n.t("uz", "sc_cancelled"), self.shown(q))
+
+    def test_every_cancel_button_carries_draft_id(self):
+        d = bot._sc_new_draft(OWNER, days={0}, start=m(9), end=m(18), text="x", stage="confirm")
+        views = [bot._sc_time_markup("uz", d), bot._sc_confirm_view(OWNER, d)[1], bot.build_sched_days(OWNER)[1]]
+        step = bot._sc_text_step(OWNER, d)
+        if step:
+            views.append(step[1])
+        found = 0
+        for markup in views:
+            for row in markup.inline_keyboard:
+                for btn in row:
+                    if btn.callback_data.startswith("sc_cancel"):
+                        found += 1
+                        self.assertEqual(btn.callback_data, f"sc_cancel:{d['id']}")
+        self.assertGreaterEqual(found, 3)
 
     def test_valid_buttons_still_clear_pending_input(self):
         self.press("sc_add")
