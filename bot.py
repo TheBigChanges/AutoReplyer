@@ -1971,10 +1971,14 @@ def _sc_new_draft(owner_id: int, **fields) -> dict:
 def sc_button_is_stale(owner_id: int, data: str) -> bool:
     """Qoralamaga bog'liq tugma eskirganmi: qoralama yo'q, ID boshqa yoki bosqich mos emas."""
     base, *rest = data.split(":")
-    if base not in _SC_STAGE_FOR and base not in ("sc_d", "sc_dp"):
-        return False
     d = _sc_draft(owner_id)
     token = rest[-1] if rest else None
+    if base == "sc_cancel":
+        # Bekor qilish bosqichga bog'liq emas, lekin faqat O'ZINING qoralamasini bekor qiladi.
+        # Qoralama yo'q bo'lsa — zararsiz (menyuga qaytaradi), stale emas.
+        return d is not None and d.get("id") != token
+    if base not in _SC_STAGE_FOR and base not in ("sc_d", "sc_dp"):
+        return False
     return d is None or d.get("id") != token or d.get("stage") != _SC_STAGE_FOR.get(base, "days")
 
 
@@ -1985,7 +1989,7 @@ def _sc_cb(prefix: str, d: dict) -> str:
 def _sc_time_markup(lang: str, d: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data=_sc_cb("sc_allday", d))],
-        [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
+        [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data=_sc_cb("sc_cancel", d))],
     ])
 
 
@@ -2154,7 +2158,7 @@ def build_sched_days(owner_id: int):
             InlineKeyboardButton(t(lang, "btn_sc_all"), callback_data=f"sc_dp:all:{d['id']}"),
         ],
         [InlineKeyboardButton(t(lang, "btn_sc_continue"), callback_data=_sc_cb("sc_dnext", d))],
-        [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
+        [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data=_sc_cb("sc_cancel", d))],
     ]
     return t(lang, "sc_days_prompt"), InlineKeyboardMarkup(keyboard)
 
@@ -2172,7 +2176,7 @@ def _sc_confirm_view(owner_id: int, d: dict):
     )
     markup = InlineKeyboardMarkup([[
         InlineKeyboardButton(t(lang, "btn_sc_save"), callback_data=_sc_cb("sc_save", d)),
-        InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel"),
+        InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data=_sc_cb("sc_cancel", d)),
     ]])
     return text, markup
 
@@ -2184,7 +2188,7 @@ def _sc_text_step(owner_id: int, d: dict):
         return None
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton(t(lang, "btn_sc_deftext"), callback_data=_sc_cb("sc_deftext", d))],
-        [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
+        [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data=_sc_cb("sc_cancel", d))],
     ])
     return t(lang, "sc_text_prompt", max=SCHEDULE_MAX_TEXT), markup
 
@@ -2274,7 +2278,13 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
         await query.edit_message_text(text, reply_markup=markup)
         return True
 
-    if data == "sc_cancel":
+    if data.split(":")[0] == "sc_cancel":
+        if sc_button_is_stale(owner_id, data):  # eski xabardagi «Bekor qilish» — joriy qoralamaga tegmaydi
+            await query.edit_message_text(
+                t(lang, "sc_stale_button"),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]]),
+            )
+            return True
         _sc_drafts.pop(owner_id, None)
         clear_pending_action(owner_id)
         text, markup = build_sched_menu(owner_id, t(lang, "sc_cancelled"))
