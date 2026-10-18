@@ -540,7 +540,7 @@ class TestHandlerRouting(_BaseCase):
 
     def test_business_text_only_reaches_raw_update_and_gate(self):
         names = self._matching(self._update("business_message", "salom"))
-        self.assertEqual(names, {"block_gate", "on_raw_update"})
+        self.assertEqual(names, {"block_gate", "subscribe_gate", "on_raw_update"})
 
     def test_edited_text_does_not_reach_text_handlers(self):
         names = self._matching(self._update("edited_message", "salom"))
@@ -560,8 +560,9 @@ class TestHandlerRouting(_BaseCase):
 
     def test_gate_runs_before_every_other_group(self):
         groups = sorted(self.app.handlers)
-        self.assertEqual(groups[0], -2)
-        self.assertEqual([h.callback.__name__ for h in self.app.handlers[-2]], ["block_gate"])
+        self.assertEqual(groups[0], -3)
+        self.assertEqual([h.callback.__name__ for h in self.app.handlers[-3]], ["block_gate"])
+        self.assertEqual([h.callback.__name__ for h in self.app.handlers[-2]], ["subscribe_gate"])
 
 
 class TestEndToEndThroughRealDispatcher(_BaseCase):
