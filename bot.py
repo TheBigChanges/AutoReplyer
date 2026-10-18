@@ -42,6 +42,8 @@ from telegram.ext import (
     filters,
 )
 
+import secrets
+
 import ai
 import analytics
 import db
@@ -1942,12 +1944,6 @@ async def send_analytics_charts(bot, owner_id: int, chat_id: int, days: int) -> 
         caption = t(lang, "an_charts_caption", name=labels["title"], period=_an_period_name(lang, days))
         await bot.send_photo(chat_id=chat_id, photo=png, caption=caption)
     return True
-    for kind in analytics_chart_kinds(owner_id):
-        labels = analytics_chart_labels(lang, kind)
-        png = await analytics.render_chart(kind, owner_id, summary, labels)
-        caption = t(lang, "an_charts_caption", name=labels["title"], period=_an_period_name(lang, chart_days))
-        await bot.send_photo(chat_id=chat_id, photo=png, caption=caption)
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1956,10 +1952,31 @@ async def send_analytics_charts(bot, owner_id: int, chat_id: int, days: int) -> 
 # Jadval foydalanuvchi sozlamalarini HECH QACHON o'zgartirmaydi: faqat javob berish paytida
 # "hozir jadval oynasidami?" deb hisoblanadi.
 # ---------------------------------------------------------------------------
-_sc_drafts: dict[int, dict] = {}  # {owner_id: {"days": set, "start", "end", "text", "edit_id", "edit", "stage", "ts"}}
+_sc_drafts: dict[int, dict] = {}  # {owner_id: {"id", "days": set, "start", "end", "text", "edit_id", "edit", "stage", "ts"}}
 # Qaysi tugma qoralamaning qaysi bosqichida ma'noga ega (eski xabardagi tugma boshqa bosqichda ishlamasligi uchun)
 _SC_STAGE_FOR = {"sc_dnext": "days", "sc_allday": "time", "sc_deftext": "text", "sc_save": "confirm"}
 SC_PREVIEW_CHARS = 60
+
+
+def _sc_new_draft(owner_id: int, **fields) -> dict:
+    """Yangi qoralama. Har qoralamaga o'ziga xos ID beriladi; qoralamaga bog'liq tugmalar shu ID ni olib yuradi —
+    shuning uchun eski (bekor qilingan) qoralamaning tugmasi yangisiga ta'sir qila olmaydi."""
+    d = {"id": secrets.token_hex(3), "days": set(), "start": None, "end": None, "text": None,
+         "edit_id": None, "edit": None, "stage": "days", "ts": time.time()}
+    d.update(fields)
+    _sc_drafts[owner_id] = d
+    return d
+
+
+def _sc_cb(prefix: str, d: dict) -> str:
+    return f"{prefix}:{d['id']}"
+
+
+def _sc_time_markup(lang: str, d: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data=_sc_cb("sc_allday", d))],
+        [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
+    ])
 
 
 def _sc_draft(owner_id: int) -> dict | None:
@@ -2009,7 +2026,7 @@ def current_schedule_rule(owner_id: int, settings: dict, now: datetime | None = 
     try:
         if not settings.get("scheduler_enabled", True):
             return None
-        rules = db.list_schedule_rules(owner_id)[: schedule_limit_for(owner_id)]
+        rules = db.get_schedule_rules_cached(owner_id)[: schedule_limit_for(owner_id)]
         if not rules:
             return None
         now = now or datetime.now(tz_from_settings(settings))
@@ -2113,20 +2130,20 @@ def build_sched_entry(owner_id: int, rule_id: int, notice: str | None = None):
 def build_sched_days(owner_id: int):
     """Kunlarni belgilash ekrani (qoralamadagi tanlovga qarab)."""
     lang = get_lang(owner_id)
-    d = _sc_draft(owner_id)
-    chosen = d["days"] if d else set()
+    d = _sc_draft(owner_id) or {"id": "-", "days": set()}
+    chosen = d["days"]
     short = _sc_day_names(lang, short=True)
     day_buttons = [
-        InlineKeyboardButton(("✅ " if i in chosen else "") + short[i], callback_data=f"sc_d:{i}") for i in range(7)
+        InlineKeyboardButton(("✅ " if i in chosen else "") + short[i], callback_data=f"sc_d:{i}:{d['id']}") for i in range(7)
     ]
     keyboard = [
         day_buttons[:4], day_buttons[4:],
         [
-            InlineKeyboardButton(t(lang, "btn_sc_wd"), callback_data="sc_dp:wd"),
-            InlineKeyboardButton(t(lang, "btn_sc_we"), callback_data="sc_dp:we"),
-            InlineKeyboardButton(t(lang, "btn_sc_all"), callback_data="sc_dp:all"),
+            InlineKeyboardButton(t(lang, "btn_sc_wd"), callback_data=f"sc_dp:wd:{d['id']}"),
+            InlineKeyboardButton(t(lang, "btn_sc_we"), callback_data=f"sc_dp:we:{d['id']}"),
+            InlineKeyboardButton(t(lang, "btn_sc_all"), callback_data=f"sc_dp:all:{d['id']}"),
         ],
-        [InlineKeyboardButton(t(lang, "btn_sc_continue"), callback_data="sc_dnext")],
+        [InlineKeyboardButton(t(lang, "btn_sc_continue"), callback_data=_sc_cb("sc_dnext", d))],
         [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
     ]
     return t(lang, "sc_days_prompt"), InlineKeyboardMarkup(keyboard)
@@ -2144,19 +2161,19 @@ def _sc_confirm_view(owner_id: int, d: dict):
         time_icon=icon, time=time_text, text=_sc_text_preview(lang, d.get("text"), 300),
     )
     markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton(t(lang, "btn_sc_save"), callback_data="sc_save"),
+        InlineKeyboardButton(t(lang, "btn_sc_save"), callback_data=_sc_cb("sc_save", d)),
         InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel"),
     ]])
     return text, markup
 
 
-def _sc_text_step(owner_id: int):
-    """Matn qadamini boshlaydi. (matn, tugmalar, kutilgan_amal) — Free'da matn qadami o'tkazib yuboriladi (None)."""
+def _sc_text_step(owner_id: int, d: dict):
+    """Matn qadami: (matn, tugmalar) — Free'da matn qadami o'tkazib yuboriladi (None)."""
     lang = get_lang(owner_id)
     if not has_feature(owner_id, "custom_text"):
         return None
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton(t(lang, "btn_sc_deftext"), callback_data="sc_deftext")],
+        [InlineKeyboardButton(t(lang, "btn_sc_deftext"), callback_data=_sc_cb("sc_deftext", d))],
         [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
     ])
     return t(lang, "sc_text_prompt", max=SCHEDULE_MAX_TEXT), markup
@@ -2190,7 +2207,7 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
         if db.count_schedule_rules(owner_id) >= schedule_limit_for(owner_id):
             text, markup = build_sched_menu(owner_id, t(lang, "sc_limit", max=schedule_limit_for(owner_id)))
         else:
-            _sc_drafts[owner_id] = {"days": set(), "start": None, "end": None, "text": None, "edit_id": None, "edit": None, "stage": "days", "ts": time.time()}
+            _sc_new_draft(owner_id)
             text, markup = build_sched_days(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return True
@@ -2265,39 +2282,41 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
             text, markup = build_sched_list(owner_id, "edit")
             await query.edit_message_text(f"{t(lang, 'sc_gone')}\n\n{text}", reply_markup=markup)
             return True
-        _sc_drafts[owner_id] = {
-            "days": set(mask_days(rule["days"])), "start": rule["start_min"], "end": rule["end_min"], "text": rule["text"],
-            "edit_id": rule_id, "edit": field, "stage": {"days": "days", "time": "time", "text": "text"}[field], "ts": time.time(),
-        }
+        d = _sc_new_draft(
+            owner_id, days=set(mask_days(rule["days"])), start=rule["start_min"], end=rule["end_min"], text=rule["text"],
+            edit_id=rule_id, edit=field, stage={"days": "days", "time": "time", "text": "text"}[field],
+        )
         if field == "days":
             text, markup = build_sched_days(owner_id)
         elif field == "time":
             set_pending_action(owner_id, "sc_time")
             text = t(lang, "sc_time_prompt")
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data="sc_allday")],
-                [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
-            ])
+            markup = _sc_time_markup(lang, d)
         else:
             set_pending_action(owner_id, "sc_text")
-            text, markup = _sc_text_step(owner_id)
+            text, markup = _sc_text_step(owner_id, d)
         await query.edit_message_text(text, reply_markup=markup)
         return True
 
     # --- qoralama bilan ishlaydigan qadamlar ---
     d = _sc_draft(owner_id)
-    if data in _SC_STAGE_FOR or data.startswith(("sc_d:", "sc_dp:")):
-        needed = _SC_STAGE_FOR.get(data, "days")  # kun tugmalari faqat "days" bosqichida
-        if d is None or d.get("stage") != needed:
-            # Qoralama yo'q yoki bu tugma eski xabardan (bosqich mos emas) — hech narsa saqlanmaydi
+    base, *rest = data.split(":")
+    arg = None
+    if base in _SC_STAGE_FOR or base in ("sc_d", "sc_dp"):
+        # Tugma qoralama ID sini olib yuradi (oxirgi qism): ID mos kelmasa yoki bosqich mos bo'lmasa — eski xabar, hech narsa o'zgarmaydi
+        token = rest[-1] if rest else None
+        arg = rest[0] if base in ("sc_d", "sc_dp") and len(rest) >= 2 else None
+        needed = _SC_STAGE_FOR.get(base, "days")  # kun tugmalari faqat "days" bosqichida
+        if d is None or d.get("id") != token or d.get("stage") != needed:
             text, markup = build_sched_menu(owner_id, t(lang, "sc_draft_lost"))
             await query.edit_message_text(text, reply_markup=markup)
             return True
+        data = base  # pastdagi qadamlar tugma turi bo'yicha ishlaydi
 
-    if data.startswith("sc_d:"):
+    if data == "sc_d":
         try:
-            i = int(data.split(":")[1])
-        except ValueError:
+            i = int(arg)
+        except (TypeError, ValueError):
             return True
         if 0 <= i <= 6:
             d["days"] ^= {i}
@@ -2306,8 +2325,8 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
         await query.edit_message_text(text, reply_markup=markup)
         return True
 
-    if data.startswith("sc_dp:"):
-        d["days"] = set(mask_days({"wd": WEEKDAYS_MASK, "we": WEEKEND_MASK, "all": ALL_DAYS_MASK}.get(data.split(":")[1], 0)))
+    if data == "sc_dp":
+        d["days"] = set(mask_days({"wd": WEEKDAYS_MASK, "we": WEEKEND_MASK, "all": ALL_DAYS_MASK}.get(arg, 0)))
         d["ts"] = time.time()
         text, markup = build_sched_days(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
@@ -2333,11 +2352,7 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
             return True
         d["stage"] = "time"
         set_pending_action(owner_id, "sc_time")
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data="sc_allday")],
-            [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
-        ])
-        await query.edit_message_text(t(lang, "sc_time_prompt"), reply_markup=markup)
+        await query.edit_message_text(t(lang, "sc_time_prompt"), reply_markup=_sc_time_markup(lang, d))
         return True
 
     if data == "sc_allday":
@@ -2396,18 +2411,14 @@ async def _sc_after_time(message, owner_id: int, lang: str, start: int, end: int
     if d["edit_id"] is not None:
         status, n = db.update_schedule_rule(owner_id, d["edit_id"], start_min=start, end_min=end)
         if status == "conflict":
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data="sc_allday")],
-                [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
-            ])
-            await _sc_reply(message, edit_message, f"{_sc_conflict_notice(lang, n)}\n\n{t(lang, 'sc_time_prompt')}", markup)
+            await _sc_reply(message, edit_message, f"{_sc_conflict_notice(lang, n)}\n\n{t(lang, 'sc_time_prompt')}", _sc_time_markup(lang, d))
             return
         clear_pending_action(owner_id)
         _sc_drafts.pop(owner_id, None)
         view = build_sched_entry(owner_id, d["edit_id"], t(lang, "sc_updated")) or build_sched_menu(owner_id, t(lang, "sc_gone"))
         await _sc_reply(message, edit_message, view[0], view[1])
         return
-    step = _sc_text_step(owner_id)
+    step = _sc_text_step(owner_id, d)
     if step is None:  # Free: alohida matn yo'q — standart matn ishlatiladi
         clear_pending_action(owner_id)
         d["text"] = None
