@@ -495,6 +495,16 @@ class ChartTests(unittest.TestCase):
         png = asyncio.run(analytics.render_chart("pie", OWNER, s, bot.analytics_chart_labels("uz", "pie")))
         self.assertTrue(png.startswith(b"\x89PNG"))
 
+    def test_cache_key_covers_whole_daily_distribution(self):
+        """Jami va oxirgi kun bir xil, lekin kunlar taqsimoti boshqa — keshdan eski grafik qaytmasligi kerak."""
+        a = analytics.summarize([(hour_ts(1, 9), "incoming", 5), (hour_ts(0, 9), "incoming", 1)], 7, TZ)
+        b = analytics.summarize([(hour_ts(1, 9), "incoming", 1), (hour_ts(0, 9), "incoming", 5)], 7, TZ)
+        a["hourly"], b["hourly"] = list(a["hourly"]), list(a["hourly"])  # soatlar ham bir xil
+        a["incoming"] = b["incoming"] = 6
+        labels = bot.analytics_chart_labels("uz", "line")
+        self.assertNotEqual(analytics._cache_key("line", OWNER, a, labels), analytics._cache_key("line", OWNER, b, labels))
+        hash(analytics._cache_key("line", OWNER, a, labels))  # kalit hashlanadigan bo'lishi shart
+
     def test_identical_chart_is_cached(self):
         async def go():
             a = await analytics.render_chart("bar", OWNER, self.summary, self.labels)
