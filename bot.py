@@ -47,6 +47,18 @@ import analytics
 import db
 from i18n import DEFAULT_LANG, LANG_NAMES, LANGS, all_defaults, is_lang, t
 from logic import (
+    ALL_DAYS_MASK,
+    SCHEDULE_ALL_DAY,
+    SCHEDULE_MAX_TEXT,
+    SCHEDULE_PLAN_LIMITS,
+    WEEKDAYS_MASK,
+    WEEKEND_MASK,
+    days_mask,
+    find_active_schedule,
+    format_day_set,
+    is_all_day,
+    mask_days,
+    valid_schedule_time,
     bio_event_label,
     DEFAULT_NAME_CLOCK_STYLE,
     DEFAULT_NAME_CLOCK_ZONE,
@@ -762,6 +774,7 @@ DEFAULT_FEATURE_PLANS = {
     "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
     "faq": ("plus", "pro", "ultra"),    # Smart FAQ (savollar soni tarifga qarab: FAQ_PLAN_LIMITS)
     "kb": ("ultra",),                   # AI Bilimlar bazasi (AI bilan birga ishlaydi; KB_LIMIT ta yozuv)
+    "scheduler": ("free", "plus", "pro", "ultra"),  # Smart Jadval (jadvallar soni: SCHEDULE_PLAN_LIMITS)
     "analytics_7": ("plus", "pro", "ultra"),   # Statistika: 7 kunlik davr
     "analytics_30": ("pro", "ultra"),          # Statistika: 30 kunlik davr
     "analytics_charts": ("plus", "pro", "ultra"),  # Statistika grafiklari (turlari tarifga qarab)
@@ -772,7 +785,7 @@ FEATURE_NAME_KEYS = {
     "bio": "feature_bio", "custom_text": "feature_text", "ai": "feature_ai", "name_clock_fonts": "feature_fonts",
     "name_clock_zones": "feature_zones", "faq": "feature_faq", "kb": "feature_kb",
     "analytics_7": "feature_an7", "analytics_30": "feature_an30", "analytics_charts": "feature_anch",
-    "analytics_full": "feature_anfull",
+    "analytics_full": "feature_anfull", "scheduler": "feature_sched",
 }
 
 
@@ -851,6 +864,14 @@ def has_feature(user_id: int, feature: str) -> bool:
     return plan_allows(user_id, plan_of(user_id), feature)
 
 
+def schedule_limit_for(user_id: int, plan: str | None = None) -> int:
+    """Nechta jadval yaratish mumkin (tarifga qarab). Admin — eng yuqori limit."""
+    if ADMIN_ID and user_id == ADMIN_ID:
+        return max(SCHEDULE_PLAN_LIMITS.values())
+    plan = plan if plan is not None else plan_of(user_id)
+    return SCHEDULE_PLAN_LIMITS.get(plan, SCHEDULE_PLAN_LIMITS["free"])
+
+
 def kb_limit_for(user_id: int, plan: str | None = None) -> int:
     """Bilimlar bazasida nechta yozuv saqlash mumkin (0 — tarifda yo'q). Admin ham KB_LIMIT bilan cheklanadi."""
     plan = plan if plan is not None else plan_of(user_id)
@@ -896,6 +917,8 @@ def locked_feature_for(data: str) -> str | None:
         return "faq"
     if data.startswith("kb_"):
         return "kb"
+    if data.startswith("sc_ed:text"):
+        return "custom_text"  # jadval uchun alohida matn — Plus'dan
     if data == "an:7":
         return "analytics_7"
     if data == "an:30":
@@ -962,6 +985,7 @@ def plan_features_text(lang: str, plan: str) -> str:
     else:
         excluded.append(t(lang, "pf_faq_locked", limits=" / ".join(f"{p.capitalize()} — {n}" for p, n in FAQ_PLAN_LIMITS.items() if p in FEATURE_PLANS.get("faq", ()))))
     (included if plan in FEATURE_PLANS.get("kb", ()) else excluded).append(t(lang, "pf_kb", n=KB_LIMIT))
+    included.append(t(lang, "pf_sched", n=SCHEDULE_PLAN_LIMITS.get(plan, SCHEDULE_PLAN_LIMITS["free"])))
     included.append(t(lang, "pf_an_" + (plan if plan in ("plus", "pro", "ultra") else "free")))
     included.append(t(lang, "pf_ads_off" if plan in AD_FREE_PLANS else "pf_ads_on"))
     parts = [t(lang, "plan_includes")] + [f"• {line}" for line in included]
@@ -1762,6 +1786,7 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton(lock_label(t(lang, "btn_faq"), plan_allows(owner_id, plan, "faq")), callback_data="faq_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_kb"), plan_allows(owner_id, plan, "kb")), callback_data="kb_menu")],
     ]
+    keyboard.append([InlineKeyboardButton(t(lang, "btn_sched"), callback_data="sc_menu")])
     keyboard.append([InlineKeyboardButton(t(lang, "btn_analytics"), callback_data="an_menu")])
     if name_clock_allowed(owner_id):
         keyboard.append([InlineKeyboardButton(t(lang, "btn_name_clock"), callback_data="nc_menu")])
@@ -1789,12 +1814,18 @@ def track_analytics(owner_id: int, kind: str):
         _record_analytics_safe(owner_id, kind)
 
 
+def tz_from_settings(settings: dict):
+    """Ism soati zonasi (agar tanlangan va ma'lum bo'lsa), aks holda Toshkent."""
+    name = (settings or {}).get("name_clock_tz")
+    if name and is_known_zone(name):
+        return ZoneInfo(name)
+    return TASHKENT_TZ
+
+
 def analytics_tz(owner_id: int):
     """"Eng faol soat" uchun vaqt zonasi: ism soati zonasi (agar tanlangan bo'lsa), aks holda Toshkent."""
     try:
-        name = db.get_settings(owner_id).get("name_clock_tz")
-        if name and is_known_zone(name):
-            return ZoneInfo(name)
+        return tz_from_settings(db.get_settings(owner_id))
     except Exception:
         logger.warning("Analytics: vaqt zonasini o'qib bo'lmadi (owner=%s)", owner_id, exc_info=True)
     return TASHKENT_TZ
@@ -1917,6 +1948,506 @@ async def send_analytics_charts(bot, owner_id: int, chat_id: int, days: int) -> 
         caption = t(lang, "an_charts_caption", name=labels["title"], period=_an_period_name(lang, chart_days))
         await bot.send_photo(chat_id=chat_id, photo=png, caption=caption)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Smart Auto-Reply Scheduler
+# Ustuvorlik (on_raw_update): Sleep Mode -> Jadval -> Smart FAQ -> Gemini AI -> oddiy avtojavob.
+# Jadval foydalanuvchi sozlamalarini HECH QACHON o'zgartirmaydi: faqat javob berish paytida
+# "hozir jadval oynasidami?" deb hisoblanadi.
+# ---------------------------------------------------------------------------
+_sc_drafts: dict[int, dict] = {}  # {owner_id: {"days": set, "start", "end", "text", "edit_id", "edit", "ts"}}
+SC_PREVIEW_CHARS = 60
+
+
+def _sc_draft(owner_id: int) -> dict | None:
+    d = _sc_drafts.get(owner_id)
+    if d is None or time.time() - d["ts"] > PENDING_ACTION_TTL_SECONDS:
+        _sc_drafts.pop(owner_id, None)
+        return None
+    return d
+
+
+def _sc_day_names(lang: str, short: bool = False) -> list[str]:
+    return t(lang, "sched_days_short" if short else "sched_days_full").split("|")
+
+
+def _sc_time_text(lang: str, start: int, end: int) -> tuple[str, str]:
+    """(belgi, matn): 'Butun kun' yoki 09:00–18:00."""
+    if is_all_day(start, end):
+        return "\U0001F334", t(lang, "sched_all_day")
+    return "\U0001F558", format_time_range(start, end)
+
+
+def _sc_text_preview(lang: str, rule_text: str | None, limit: int = SC_PREVIEW_CHARS) -> str:
+    if not rule_text:
+        return t(lang, "sched_default_text")
+    one = " ".join(rule_text.split())
+    return f"«{one if len(one) <= limit else one[: limit - 1] + chr(0x2026)}»"
+
+
+def _sc_rule_lines(lang: str, n: int, r: dict) -> str:
+    icon, time_text = _sc_time_text(lang, r["start_min"], r["end_min"])
+    days = format_day_set(r["days"], _sc_day_names(lang), t(lang, "sched_everyday"))
+    head = f"{n}. {days}" + ("" if r["is_enabled"] else f" ({t(lang, 'sched_paused')})")
+    return f"{head}\n{icon} {time_text}\n\U0001F4AC {_sc_text_preview(lang, r['text'])}"
+
+
+def schedule_text_for(owner_id: int, rule: dict, settings: dict, lang: str) -> str:
+    """Jadval javob matni: o'z matni (faqat custom_text tarifida) yoki egasining standart avtojavob matni."""
+    own = (rule.get("text") or "").strip()
+    if own and has_feature(owner_id, "custom_text"):
+        return own
+    return auto_reply_text_for(settings, lang)
+
+
+def current_schedule_rule(owner_id: int, settings: dict, now: datetime | None = None):
+    """Hozir faol jadval yoki None (o'chirilgan / oyna tashqarisida / xato bo'lsa). Tarif pasaygan bo'lsa,
+    faqat limitga sig'adigan birinchi jadvallar ishlaydi."""
+    try:
+        if not settings.get("scheduler_enabled", True):
+            return None
+        rules = db.list_schedule_rules(owner_id)[: schedule_limit_for(owner_id)]
+        if not rules:
+            return None
+        now = now or datetime.now(tz_from_settings(settings))
+        return find_active_schedule(rules, now.weekday(), now.hour * 60 + now.minute)
+    except Exception:
+        logger.warning("Jadvalni tekshirib bo'lmadi (owner=%s)", owner_id, exc_info=True)
+        return None
+
+
+def build_sched_menu(owner_id: int, notice: str | None = None):
+    lang = get_lang(owner_id)
+    s = db.get_settings(owner_id)
+    on = s.get("scheduler_enabled", True)
+    rules = db.list_schedule_rules(owner_id)
+    limit = schedule_limit_for(owner_id)
+    body = "\n\n".join(_sc_rule_lines(lang, n, r) for n, r in enumerate(rules, 1)) if rules else t(lang, "sched_none")
+    text = t(
+        lang, "sched_menu",
+        status_icon="\U0001F7E2" if on else "\U0001F534",
+        status=t(lang, "status_on" if on else "status_off").replace("\U0001F7E2 ", ""),
+        tz=str(tz_from_settings(s)), count=len(rules), max=limit, rules=body,
+    ) + "\n\n" + t(lang, "sched_how")
+    if notice:
+        text = f"{notice}\n\n{text}"
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_sc_add"), callback_data="sc_add")],
+        [InlineKeyboardButton(t(lang, "btn_sc_edit"), callback_data="sc_list:edit")],
+        [InlineKeyboardButton(t(lang, "btn_sc_delete"), callback_data="sc_list:del")],
+        [InlineKeyboardButton(t(lang, "btn_sc_settings"), callback_data="sc_settings")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_sched_settings(owner_id: int):
+    lang = get_lang(owner_id)
+    s = db.get_settings(owner_id)
+    on = s.get("scheduler_enabled", True)
+    text = t(
+        lang, "sc_settings", status_icon="\U0001F7E2" if on else "\U0001F534",
+        status=t(lang, "status_on" if on else "status_off").replace("\U0001F7E2 ", ""), tz=str(tz_from_settings(s)),
+    )
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_sc_toggle_on" if on else "btn_sc_toggle_off"), callback_data="sc_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_sched_list(owner_id: int, mode: str):
+    """mode: 'edit' | 'del' — jadvalni tanlash ro'yxati."""
+    lang = get_lang(owner_id)
+    rules = db.list_schedule_rules(owner_id)
+    if not rules:
+        return t(lang, "sc_no_rules"), InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]])
+    rows = []
+    for n, r in enumerate(rules, 1):
+        icon, time_text = _sc_time_text(lang, r["start_min"], r["end_min"])
+        days = format_day_set(r["days"], _sc_day_names(lang, short=True), t(lang, "sched_everyday"), sep="–")
+        label = f"{n}. {days} {time_text}" + ("" if r["is_enabled"] else " ⏸")
+        rows.append([InlineKeyboardButton(label, callback_data=(f"sc_e:{r['id']}" if mode == "edit" else f"sc_del:{r['id']}"))])
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")])
+    return t(lang, "sc_pick_edit" if mode == "edit" else "sc_pick_delete"), InlineKeyboardMarkup(rows)
+
+
+def _sc_entry_text(owner_id: int, rule_id: int):
+    """(tartib raqami, matn) yoki None."""
+    lang = get_lang(owner_id)
+    rules = db.list_schedule_rules(owner_id)
+    for n, r in enumerate(rules, 1):
+        if r["id"] == rule_id:
+            icon, time_text = _sc_time_text(lang, r["start_min"], r["end_min"])
+            return n, t(
+                lang, "sc_entry", n=n, days=format_day_set(r["days"], _sc_day_names(lang), t(lang, "sched_everyday")),
+                time_icon=icon, time=time_text, text=_sc_text_preview(lang, r["text"], 200),
+                status_icon="\U0001F7E2" if r["is_enabled"] else "⏸",
+                status=t(lang, "status_on" if r["is_enabled"] else "status_off").replace("\U0001F7E2 ", ""),
+            ), r
+    return None
+
+
+def build_sched_entry(owner_id: int, rule_id: int, notice: str | None = None):
+    lang = get_lang(owner_id)
+    found = _sc_entry_text(owner_id, rule_id)
+    if found is None:
+        return None
+    _, text, r = found
+    if notice:
+        text += f"\n\n{notice}"
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_sc_ed_days"), callback_data=f"sc_ed:days:{rule_id}")],
+        [InlineKeyboardButton(t(lang, "btn_sc_ed_time"), callback_data=f"sc_ed:time:{rule_id}")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_sc_ed_text"), has_feature(owner_id, "custom_text")), callback_data=f"sc_ed:text:{rule_id}")],
+        [InlineKeyboardButton(t(lang, "btn_sc_pause" if r["is_enabled"] else "btn_sc_resume"), callback_data=f"sc_tg:{rule_id}")],
+        [InlineKeyboardButton(t(lang, "btn_sc_delete"), callback_data=f"sc_del:{rule_id}")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_list:edit")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_sched_days(owner_id: int):
+    """Kunlarni belgilash ekrani (qoralamadagi tanlovga qarab)."""
+    lang = get_lang(owner_id)
+    d = _sc_draft(owner_id)
+    chosen = d["days"] if d else set()
+    short = _sc_day_names(lang, short=True)
+    day_buttons = [
+        InlineKeyboardButton(("✅ " if i in chosen else "") + short[i], callback_data=f"sc_d:{i}") for i in range(7)
+    ]
+    keyboard = [
+        day_buttons[:4], day_buttons[4:],
+        [
+            InlineKeyboardButton(t(lang, "btn_sc_wd"), callback_data="sc_dp:wd"),
+            InlineKeyboardButton(t(lang, "btn_sc_we"), callback_data="sc_dp:we"),
+            InlineKeyboardButton(t(lang, "btn_sc_all"), callback_data="sc_dp:all"),
+        ],
+        [InlineKeyboardButton(t(lang, "btn_sc_continue"), callback_data="sc_dnext")],
+        [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
+    ]
+    return t(lang, "sc_days_prompt"), InlineKeyboardMarkup(keyboard)
+
+
+def _sc_conflict_notice(lang: str, n: int) -> str:
+    return t(lang, "sc_conflict", n=n)
+
+
+def _sc_confirm_view(owner_id: int, d: dict):
+    lang = get_lang(owner_id)
+    icon, time_text = _sc_time_text(lang, d["start"], d["end"])
+    text = t(
+        lang, "sc_confirm", days=format_day_set(days_mask(d["days"]), _sc_day_names(lang), t(lang, "sched_everyday")),
+        time_icon=icon, time=time_text, text=_sc_text_preview(lang, d.get("text"), 300),
+    )
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton(t(lang, "btn_sc_save"), callback_data="sc_save"),
+        InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel"),
+    ]])
+    return text, markup
+
+
+def _sc_text_step(owner_id: int):
+    """Matn qadamini boshlaydi. (matn, tugmalar, kutilgan_amal) — Free'da matn qadami o'tkazib yuboriladi (None)."""
+    lang = get_lang(owner_id)
+    if not has_feature(owner_id, "custom_text"):
+        return None
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t(lang, "btn_sc_deftext"), callback_data="sc_deftext")],
+        [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
+    ])
+    return t(lang, "sc_text_prompt", max=SCHEDULE_MAX_TEXT), markup
+
+
+async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -> bool:
+    """sc_* tugmalari. True — qayta ishlandi."""
+    if data == "sc_menu":
+        _sc_drafts.pop(owner_id, None)
+        text, markup = build_sched_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data == "sc_settings":
+        text, markup = build_sched_settings(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data == "sc_toggle":
+        db.update_settings(owner_id, scheduler_enabled=not db.get_settings(owner_id).get("scheduler_enabled", True))
+        text, markup = build_sched_settings(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data.startswith("sc_list:"):
+        text, markup = build_sched_list(owner_id, "del" if data.endswith(":del") else "edit")
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data == "sc_add":
+        if db.count_schedule_rules(owner_id) >= schedule_limit_for(owner_id):
+            text, markup = build_sched_menu(owner_id, t(lang, "sc_limit", max=schedule_limit_for(owner_id)))
+        else:
+            _sc_drafts[owner_id] = {"days": set(), "start": None, "end": None, "text": None, "edit_id": None, "edit": None, "ts": time.time()}
+            text, markup = build_sched_days(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data.startswith("sc_e:"):
+        try:
+            view = build_sched_entry(owner_id, int(data.split(":")[1]))
+        except ValueError:
+            view = None
+        if view is None:
+            view = build_sched_list(owner_id, "edit")
+            view = (f"{t(lang, 'sc_gone')}\n\n{view[0]}", view[1])
+        await query.edit_message_text(view[0], reply_markup=view[1])
+        return True
+
+    if data.startswith("sc_tg:"):
+        try:
+            rule_id = int(data.split(":")[1])
+        except ValueError:
+            return True
+        rule = db.get_schedule_rule(owner_id, rule_id)
+        if rule is None:
+            text, markup = build_sched_list(owner_id, "edit")
+            await query.edit_message_text(f"{t(lang, 'sc_gone')}\n\n{text}", reply_markup=markup)
+            return True
+        db.update_schedule_rule(owner_id, rule_id, is_enabled=not rule["is_enabled"])
+        text, markup = build_sched_entry(owner_id, rule_id, t(lang, "sc_updated"))
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data.startswith("sc_del:"):
+        try:
+            found = _sc_entry_text(owner_id, int(data.split(":")[1]))
+        except ValueError:
+            found = None
+        if found is None:
+            text, markup = build_sched_list(owner_id, "del")
+            await query.edit_message_text(f"{t(lang, 'sc_gone')}\n\n{text}", reply_markup=markup)
+            return True
+        rule_id = found[2]["id"]
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(t(lang, "btn_sc_del_yes"), callback_data=f"sc_del_yes:{rule_id}")],
+            [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_menu")],
+        ])
+        await query.edit_message_text(t(lang, "sc_del_confirm", entry=found[1]), reply_markup=markup)
+        return True
+
+    if data.startswith("sc_del_yes:"):
+        try:
+            gone = not db.delete_schedule_rule(owner_id, int(data.split(":")[1]))
+        except ValueError:
+            gone = True
+        text, markup = build_sched_menu(owner_id, t(lang, "sc_gone" if gone else "sc_deleted"))
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data == "sc_cancel":
+        _sc_drafts.pop(owner_id, None)
+        clear_pending_action(owner_id)
+        text, markup = build_sched_menu(owner_id, t(lang, "sc_cancelled"))
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data.startswith("sc_ed:"):
+        parts = data.split(":")
+        try:
+            field, rule_id = parts[1], int(parts[2])
+        except (IndexError, ValueError):
+            return True
+        rule = db.get_schedule_rule(owner_id, rule_id)
+        if rule is None or field not in ("days", "time", "text"):
+            text, markup = build_sched_list(owner_id, "edit")
+            await query.edit_message_text(f"{t(lang, 'sc_gone')}\n\n{text}", reply_markup=markup)
+            return True
+        _sc_drafts[owner_id] = {
+            "days": set(mask_days(rule["days"])), "start": rule["start_min"], "end": rule["end_min"], "text": rule["text"],
+            "edit_id": rule_id, "edit": field, "ts": time.time(),
+        }
+        if field == "days":
+            text, markup = build_sched_days(owner_id)
+        elif field == "time":
+            set_pending_action(owner_id, "sc_time")
+            text = t(lang, "sc_time_prompt")
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data="sc_allday")],
+                [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
+            ])
+        else:
+            set_pending_action(owner_id, "sc_text")
+            text, markup = _sc_text_step(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    # --- qoralama bilan ishlaydigan qadamlar ---
+    d = _sc_draft(owner_id)
+    if data in ("sc_dnext", "sc_allday", "sc_deftext", "sc_save") or data.startswith(("sc_d:", "sc_dp:")):
+        if d is None:
+            text, markup = build_sched_menu(owner_id, t(lang, "sc_draft_lost"))
+            await query.edit_message_text(text, reply_markup=markup)
+            return True
+
+    if data.startswith("sc_d:"):
+        try:
+            i = int(data.split(":")[1])
+        except ValueError:
+            return True
+        if 0 <= i <= 6:
+            d["days"] ^= {i}
+        d["ts"] = time.time()
+        text, markup = build_sched_days(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data.startswith("sc_dp:"):
+        d["days"] = set(mask_days({"wd": WEEKDAYS_MASK, "we": WEEKEND_MASK, "all": ALL_DAYS_MASK}.get(data.split(":")[1], 0)))
+        d["ts"] = time.time()
+        text, markup = build_sched_days(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    if data == "sc_dnext":
+        if not d["days"]:  # callback'ga bir martadan ortiq javob berib bo'lmaydi — ogohlantirish xabar ichida
+            text, markup = build_sched_days(owner_id)
+            await query.edit_message_text(f"\u26A0\uFE0F {t(lang, 'sc_days_none')}\n\n{text}", reply_markup=markup)
+            return True
+        d["ts"] = time.time()
+        if d["edit_id"] is not None:  # mavjud jadval kunlarini o'zgartirish
+            status, n = db.update_schedule_rule(owner_id, d["edit_id"], days=days_mask(d["days"]))
+            if status == "conflict":
+                text, markup = build_sched_days(owner_id)
+                await query.edit_message_text(f"{_sc_conflict_notice(lang, n)}\n\n{text}", reply_markup=markup)
+                return True
+            _sc_drafts.pop(owner_id, None)
+            view = build_sched_entry(owner_id, d["edit_id"], t(lang, "sc_updated"))
+            if view is None:
+                view = build_sched_menu(owner_id, t(lang, "sc_gone"))
+            await query.edit_message_text(view[0], reply_markup=view[1])
+            return True
+        set_pending_action(owner_id, "sc_time")
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data="sc_allday")],
+            [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
+        ])
+        await query.edit_message_text(t(lang, "sc_time_prompt"), reply_markup=markup)
+        return True
+
+    if data == "sc_allday":
+        await _sc_after_time(query.message, owner_id, lang, *SCHEDULE_ALL_DAY, edit_message=query)
+        return True
+
+    if data == "sc_deftext":
+        clear_pending_action(owner_id)
+        d["text"] = None
+        await _sc_finish_text(query.message, owner_id, lang, edit_message=query)
+        return True
+
+    if data == "sc_save":
+        clear_pending_action(owner_id)
+        _sc_drafts.pop(owner_id, None)
+        status, n = db.add_schedule_rule(
+            owner_id, days_mask(d["days"]), d["start"], d["end"], d.get("text"), schedule_limit_for(owner_id)
+        )
+        if status == "ok":
+            notice = t(lang, "sc_saved")
+        elif status == "limit":
+            notice = t(lang, "sc_limit", max=schedule_limit_for(owner_id))
+        else:
+            notice = _sc_conflict_notice(lang, n)
+        text, markup = build_sched_menu(owner_id, notice)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
+    return False
+
+
+async def _sc_reply(message, edit_message, text, markup):
+    if edit_message is not None:
+        await edit_message.edit_message_text(text, reply_markup=markup)
+    else:
+        await message.reply_text(text, reply_markup=markup)
+
+
+async def _sc_after_time(message, owner_id: int, lang: str, start: int, end: int, edit_message=None):
+    """Vaqt kiritilgach: tahrirlash bo'lsa — saqlaydi; yangi jadval bo'lsa — matn qadamiga (yoki tasdiqqa) o'tadi."""
+    d = _sc_draft(owner_id)
+    if d is None:
+        clear_pending_action(owner_id)
+        await _sc_reply(message, edit_message, t(lang, "sc_draft_lost"), None)
+        return
+    d["start"], d["end"], d["ts"] = start, end, time.time()
+    if d["edit_id"] is not None:
+        status, n = db.update_schedule_rule(owner_id, d["edit_id"], start_min=start, end_min=end)
+        if status == "conflict":
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data="sc_allday")],
+                [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_cancel")],
+            ])
+            await _sc_reply(message, edit_message, f"{_sc_conflict_notice(lang, n)}\n\n{t(lang, 'sc_time_prompt')}", markup)
+            return
+        clear_pending_action(owner_id)
+        _sc_drafts.pop(owner_id, None)
+        view = build_sched_entry(owner_id, d["edit_id"], t(lang, "sc_updated")) or build_sched_menu(owner_id, t(lang, "sc_gone"))
+        await _sc_reply(message, edit_message, view[0], view[1])
+        return
+    step = _sc_text_step(owner_id)
+    if step is None:  # Free: alohida matn yo'q — standart matn ishlatiladi
+        clear_pending_action(owner_id)
+        d["text"] = None
+        text, markup = _sc_confirm_view(owner_id, d)
+        await _sc_reply(message, edit_message, f"{t(lang, 'sc_text_locked_note')}\n\n{text}", markup)
+        return
+    set_pending_action(owner_id, "sc_text")
+    await _sc_reply(message, edit_message, step[0], step[1])
+
+
+async def _sc_finish_text(message, owner_id: int, lang: str, edit_message=None):
+    """Matn tanlangach: tahrirlash bo'lsa saqlaydi, aks holda tasdiq ekrani."""
+    d = _sc_draft(owner_id)
+    if d is None:
+        await _sc_reply(message, edit_message, t(lang, "sc_draft_lost"), None)
+        return
+    d["ts"] = time.time()
+    if d["edit_id"] is not None:
+        status, _ = db.update_schedule_rule(owner_id, d["edit_id"], text=d["text"])
+        _sc_drafts.pop(owner_id, None)
+        view = (build_sched_entry(owner_id, d["edit_id"], t(lang, "sc_updated")) if status == "ok" else None) \
+            or build_sched_menu(owner_id, t(lang, "sc_gone"))
+        await _sc_reply(message, edit_message, view[0], view[1])
+        return
+    text, markup = _sc_confirm_view(owner_id, d)
+    await _sc_reply(message, edit_message, text, markup)
+
+
+async def handle_schedule_text(update, owner_id: int, action: str, value: str, lang: str) -> bool:
+    """Foydalanuvchi matn yuborganda: sc_time / sc_text qadamlari. True — qayta ishlandi."""
+    if action == "sc_time":
+        parsed = parse_time_range_input(value)
+        if parsed is None or not valid_schedule_time(*parsed):
+            await update.message.reply_text(t(lang, "sc_time_bad"))
+            return True  # amal saqlanadi — qayta yuboradi
+        await _sc_after_time(update.message, owner_id, lang, parsed[0], parsed[1])
+        return True
+    if action == "sc_text":
+        d = _sc_draft(owner_id)
+        if d is None:
+            clear_pending_action(owner_id)
+            await update.message.reply_text(t(lang, "sc_draft_lost"))
+            return True
+        if not value:
+            await update.message.reply_text(t(lang, "sc_text_too_long", n=0, max=SCHEDULE_MAX_TEXT))
+            return True
+        if len(value) > SCHEDULE_MAX_TEXT:
+            await update.message.reply_text(t(lang, "sc_text_too_long", n=len(value), max=SCHEDULE_MAX_TEXT))
+            return True
+        clear_pending_action(owner_id)
+        d["text"] = value
+        await _sc_finish_text(update.message, owner_id, lang)
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -2574,6 +3105,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
+    if data.startswith("sc_") and await handle_schedule_callback(query, owner_id, data, lang):
+        return
+
     if data in ("an_menu", "an:1", "an:7", "an:30"):
         text, markup = build_analytics_menu(owner_id, int(data.split(":")[1]) if ":" in data else 1)
         await query.edit_message_text(text, reply_markup=markup)
@@ -2787,11 +3321,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
              "faq_q": "faq", "faq_kw": "faq", "faq_ans": "faq", "faq_confirm": "faq",
              "faq_edit_q": "faq", "faq_edit_kw": "faq", "faq_edit_ans": "faq",
              "kb_title": "kb", "kb_content": "kb", "kb_kw": "kb", "kb_confirm": "kb",
-             "kb_edit_t": "kb", "kb_edit_c": "kb", "kb_edit_kw": "kb"}.get(action)
+             "kb_edit_t": "kb", "kb_edit_c": "kb", "kb_edit_kw": "kb", "sc_text": "custom_text"}.get(action)
     if gated and not has_feature(owner_id, gated):
         clear_pending_action(owner_id)
         text, markup = build_locked_view(owner_id, gated)
         await update.message.reply_text(text, reply_markup=markup)
+        return
+
+    if action in ("sc_time", "sc_text"):
+        await handle_schedule_text(update, owner_id, action, value, lang)
         return
 
     if action == "feedback":
@@ -4182,23 +4720,29 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         owner_lang = get_lang(owner_id)
+        # Ustuvorlik: Sleep Mode -> Jadval -> (FAQ -> AI ->) oddiy avtojavob. Jadval oynasida bot Oflayn kabi ishlaydi,
+        # lekin foydalanuvchining sozlamalari o'zgartirilmaydi.
+        schedule_rule = None if sleeping else current_schedule_rule(owner_id, settings)
         if sleeping:
             reply_text = sleep_text_for(settings, owner_lang)
+        elif schedule_rule is not None:
+            reply_text = schedule_text_for(owner_id, schedule_rule, settings, owner_lang)
         elif settings["offline"]:
             reply_text = auto_reply_text_for(settings, owner_lang)
         else:
             return
+        effective_offline = bool(settings["offline"]) or schedule_rule is not None
 
         if bm.from_user and bm.from_user.is_bot:
             return
 
         chat_id = bm.chat.id
-        label = f"sleeping={sleeping}"
+        label = f"sleeping={sleeping}" + (",schedule" if schedule_rule is not None else "")
 
         ai_usable = bool(settings.get("ai_enabled")) and ai.is_configured() and has_feature(owner_id, "ai")
 
         # Smart FAQ: faqat Oflayn holatda (uxlash vaqtida emas) va faqat aniq, yagona moslik bo'lsa
-        if not sleeping and settings["offline"] and settings.get("faq_enabled", True):
+        if not sleeping and effective_offline and settings.get("faq_enabled", True):
             faq_text = (bm.text or bm.caption or "").strip()
             faq_answer = find_faq_answer(owner_id, faq_text) if faq_text else None
             if faq_answer:
