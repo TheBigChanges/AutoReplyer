@@ -1561,10 +1561,16 @@ SCHEDULE_CACHE_TTL_SECONDS = 60
 _SCHEDULE_CACHE_MAX = 5000
 _schedule_cache: dict[int, tuple[float, list]] = {}
 _schedule_cache_lock = threading.Lock()
+# Avlod hisoblagichi: har bir invalidatsiyada oshadi. O'quvchi bazadan o'qishni boshlashdan oldin avlodni eslab qoladi va
+# natijani keshga FAQAT shu vaqt ichida invalidatsiya bo'lmagan bo'lsa yozadi — shunda parallel yozuv bilan
+# poyga (eski ma'lumot yangi tozalangan keshga qaytib yozilishi) bo'lmaydi.
+_schedule_cache_gen = 0
 
 
 def invalidate_schedule_cache(owner_user_id: int):
+    global _schedule_cache_gen
     with _schedule_cache_lock:
+        _schedule_cache_gen += 1
         _schedule_cache.pop(owner_user_id, None)
 
 
@@ -1575,11 +1581,13 @@ def get_schedule_rules_cached(owner_user_id: int):
         hit = _schedule_cache.get(owner_user_id)
         if hit and now - hit[0] < SCHEDULE_CACHE_TTL_SECONDS:
             return hit[1]
+        gen = _schedule_cache_gen
     rules = list_schedule_rules(owner_user_id)
     with _schedule_cache_lock:
-        if len(_schedule_cache) >= _SCHEDULE_CACHE_MAX:
-            _schedule_cache.clear()
-        _schedule_cache[owner_user_id] = (now, rules)
+        if gen == _schedule_cache_gen:  # o'qish davomida jadval o'zgargan bo'lsa — eskirgan natija keshga yozilmaydi
+            if len(_schedule_cache) >= _SCHEDULE_CACHE_MAX:
+                _schedule_cache.clear()
+            _schedule_cache[owner_user_id] = (now, rules)
     return rules
 
 
