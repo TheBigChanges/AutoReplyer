@@ -10,6 +10,7 @@ fayl (SQLite) saqlanib qolishi kafolatlanmaydi, tashqi Postgres esa doimiy.
 
 import logging
 import os
+import threading
 import time
 
 import psycopg2
@@ -62,23 +63,28 @@ ALLOWED_SETTINGS_FIELDS = {
     "name_clock_style",
 }
 
-_pool: "psycopg2.pool.SimpleConnectionPool | None" = None
+POOL_MAX_CONNECTIONS = 10
+_pool_init_lock = threading.Lock()
+_pool: "psycopg2.pool.ThreadedConnectionPool | None" = None
 
 
-def _get_pool() -> "psycopg2.pool.SimpleConnectionPool":
+def _get_pool() -> "psycopg2.pool.ThreadedConnectionPool":
     """Connection pool'ni "lazy" (birinchi so'rovda) yaratadi — shu bilan
     DATABASE_URL faqat chindan bazaga murojaat qilinganda o'qiladi. Bu
     modulni (masalan testlarda) DATABASE_URL o'rnatilmagan holda ham xavfsiz
     import qilish imkonini beradi."""
     global _pool
     if _pool is None:
-        database_url = os.environ["DATABASE_URL"]
-        try:
-            _pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=database_url)
-        except Exception:
-            logger.exception("Bazaga ulanib bo'lmadi (DATABASE_URL noto'g'ri yoki server javob bermayapti)")
-            raise
-        logger.info("Baza connection pool yaratildi")
+        with _pool_init_lock:  # bir vaqtda ikki oqim ikkita pool yaratmasligi uchun
+            if _pool is None:
+                database_url = os.environ["DATABASE_URL"]
+                try:
+                    # ThreadedConnectionPool — ko'p oqimli (asyncio.to_thread) ishlatish uchun xavfsiz
+                    _pool = psycopg2.pool.ThreadedConnectionPool(1, POOL_MAX_CONNECTIONS, dsn=database_url)
+                except Exception:
+                    logger.exception("Bazaga ulanib bo'lmadi (DATABASE_URL noto'g'ri yoki server javob bermayapti)")
+                    raise
+                logger.info("Baza connection pool yaratildi")
     return _pool
 
 
@@ -1527,12 +1533,16 @@ ANALYTICS_KINDS = ("incoming", "faq", "ai", "static", "sleep", "skipped")
 ANALYTICS_RETENTION_DAYS = 90
 
 
+# Statistika yozuvlari bir vaqtda ko'pi bilan 3 ta ulanish oladi — asosiy oqim uchun pool'da joy qoladi
+_analytics_write_slots = threading.BoundedSemaphore(3)
+
+
 def record_analytics(owner_user_id: int, kind: str, ts: float | None = None, n: int = 1):
     """Bir hodisani soatlik hisoblagichga qo'shadi (UPSERT). Hech qanday matn/chat ID yozilmaydi."""
     if kind not in ANALYTICS_KINDS:
         raise ValueError(f"unknown analytics kind: {kind}")
     bucket = int((ts if ts is not None else time.time()) // 3600) * 3600
-    with get_conn() as conn, conn.cursor() as cur:
+    with _analytics_write_slots, get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO analytics_hourly (owner_user_id, bucket, kind, count) VALUES (%s, %s, %s, %s)
