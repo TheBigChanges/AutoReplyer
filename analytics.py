@@ -36,6 +36,7 @@ def summarize(rows, days: int, tz, now: datetime | None = None) -> dict:
     day_in: dict = {}
     day_sent: dict = {}
     hourly_in = [0] * 24
+    hourly_sent = [0] * 24
     hourly_all = [0] * 24
     for bucket, kind, count in rows:
         if bucket < start_ts or kind not in kinds:
@@ -48,6 +49,7 @@ def summarize(rows, days: int, tz, now: datetime | None = None) -> dict:
             hourly_in[local.hour] += count
         elif kind in SENT_KINDS:
             day_sent[d] = day_sent.get(d, 0) + count
+            hourly_sent[local.hour] += count
         if kind == "incoming" or kind in SENT_KINDS:
             hourly_all[local.hour] += count
     incoming = kinds["incoming"]
@@ -64,6 +66,7 @@ def summarize(rows, days: int, tz, now: datetime | None = None) -> dict:
         "kinds": kinds,
         "daily": daily,
         "hourly": hourly_in,
+        "hourly_sent": hourly_sent,
         "peak": busiest_window(hourly_in),
         "busiest_day": (busiest_day[0], busiest_day[1]) if busiest_day and busiest_day[1] else None,
         "daily_avg": round(incoming / max(days, 1), 1),
@@ -73,15 +76,11 @@ def summarize(rows, days: int, tz, now: datetime | None = None) -> dict:
 
 
 def busiest_window(hourly, width: int = 2):
-    """Eng faol soatdan boshlab (yoki uni qo'shnisi bilan) `width` soatlik oyna: (boshlanish, tugash) yoki None.
-    Eng faol soat oynaga doim kiradi; ikkinchi soat — qo'shnilardan ko'prog'i (teng bo'lsa — keyingisi)."""
+    """Eng ko'p xabar kelgan ketma-ket `width` soatlik oyna: barcha oraliqlar yig'indisi solishtiriladi.
+    Teng bo'lsa — faol soatdan boshlanadigani, so'ng eng erta oyna. Natija: (boshlanish, tugash) yoki None."""
     if not any(hourly):
         return None
-    peak = max(range(24), key=lambda h: (hourly[h], -h))
-    nxt = hourly[peak + 1] if peak + 1 < 24 else -1
-    prev = hourly[peak - 1] if peak > 0 else -1
-    start = peak if nxt >= prev else peak - 1
-    start = min(start, 24 - width)
+    start = max(range(0, 24 - width + 1), key=lambda h: (sum(hourly[h:h + width]), hourly[h], -h))
     return start, start + width
 
 
@@ -118,9 +117,14 @@ def _new_fig(figsize=(7.5, 4.2)):
 def render_line_chart(summary: dict, labels: dict) -> bytes:
     """Kunlik kelgan va yuborilgan xabarlar (chiziqli grafik)."""
     fig, ax = _new_fig()
-    xs = [d.strftime("%d.%m") for d, _, _ in summary["daily"]]
-    inc = [i for _, i, _ in summary["daily"]]
-    snt = [s for _, _, s in summary["daily"]]
+    if summary["days"] == 1:  # bugun: bitta nuqta ma'nosiz — soatlar kesimida chiziladi
+        xs = [f"{h:02d}" for h in range(24)]
+        inc, snt = summary["hourly"], summary["hourly_sent"]
+        ax.set_xlabel(labels["hour"])
+    else:
+        xs = [d.strftime("%d.%m") for d, _, _ in summary["daily"]]
+        inc = [i for _, i, _ in summary["daily"]]
+        snt = [s for _, _, s in summary["daily"]]
     ax.plot(xs, inc, marker="o", color=_COLORS["incoming"], linewidth=2.2, label=labels["incoming"])
     ax.plot(xs, snt, marker="o", color=_COLORS["sent"], linewidth=2.2, label=labels["sent"])
     ax.set_title(labels["title"], fontsize=13, fontweight="bold")
@@ -191,7 +195,7 @@ _cache: dict = {}
 
 
 def _cache_key(kind: str, owner_id: int, summary: dict, labels: dict):
-    return (kind, owner_id, summary["days"], summary["incoming"], summary["sent"], tuple(summary["hourly"]),
+    return (kind, owner_id, summary["days"], summary["incoming"], summary["sent"], tuple(summary["hourly"]), tuple(summary["hourly_sent"]),
             tuple(sorted(summary["kinds"].items())), labels.get("title"), summary["daily"][-1][0] if summary["daily"] else None)
 
 
