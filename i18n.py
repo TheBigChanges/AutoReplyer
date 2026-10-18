@@ -1119,6 +1119,150 @@ T: dict[str, dict] = {
     "btn_ob_fail": _("❌ Javob kelmadi", "❌ No reply", "❌ Ответа нет"),
     "btn_ob_skip": _("⏭ O'tkazib yuborish", "⏭ Skip", "⏭ Пропустить"),
     "btn_ob_resume": _("\U0001F680 Sozlashni davom ettirish", "\U0001F680 Continue setup", "\U0001F680 Продолжить настройку"),
+    # ---------------- Smart Auto-Reply Scheduler ----------------
+    "btn_sched": _("\U0001F4C5 Smart Jadval", "\U0001F4C5 Smart Scheduler", "\U0001F4C5 Умное расписание"),
+    "feature_sched": _("Smart Jadval", "Smart Scheduler", "Умное расписание"),
+    "pf_sched": _(
+        "Smart Jadval — haftalik avtojavob jadvallari (ko'pi bilan {n} ta)",
+        "Smart Scheduler - weekly auto-reply schedules (up to {n})",
+        "Умное расписание — недельные расписания автоответа (до {n})",
+    ),
+    "sched_days_full": _(
+        "Dushanba|Seshanba|Chorshanba|Payshanba|Juma|Shanba|Yakshanba",
+        "Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday",
+        "Понедельник|Вторник|Среда|Четверг|Пятница|Суббота|Воскресенье",
+    ),
+    "sched_days_short": _(
+        "Du|Se|Ch|Pa|Ju|Sh|Ya", "Mon|Tue|Wed|Thu|Fri|Sat|Sun", "Пн|Вт|Ср|Чт|Пт|Сб|Вс",
+    ),
+    "sched_everyday": _("Har kuni", "Every day", "Каждый день"),
+    "sched_all_day": _("Butun kun", "All day", "Весь день"),
+    "sched_default_text": _("standart avtojavob matni", "your standard auto-reply text", "стандартный текст автоответа"),
+    "sched_paused": _("⏸ to'xtatilgan", "⏸ paused", "⏸ приостановлено"),
+    "sched_menu": _(
+        "\U0001F4C5 SMART AUTO-REPLY SCHEDULER\n\n"
+        "{status_icon} Holat: {status}\n"
+        "\U0001F30D Vaqt zonasi: {tz}\n\n"
+        "\U0001F4CB Jadvallarim ({count}/{max}):\n\n{rules}",
+        "\U0001F4C5 SMART AUTO-REPLY SCHEDULER\n\n"
+        "{status_icon} Status: {status}\n"
+        "\U0001F30D Time zone: {tz}\n\n"
+        "\U0001F4CB My schedules ({count}/{max}):\n\n{rules}",
+        "\U0001F4C5 SMART AUTO-REPLY SCHEDULER\n\n"
+        "{status_icon} Статус: {status}\n"
+        "\U0001F30D Часовой пояс: {tz}\n\n"
+        "\U0001F4CB Мои расписания ({count}/{max}):\n\n{rules}",
+    ),
+    "sched_none": _(
+        "Hozircha jadval yo'q. «Jadval qo'shish» tugmasi bilan birinchisini yarating — masalan, ish kunlari 09:00–18:00.",
+        "No schedules yet. Tap “Add schedule” to create the first one, for example weekdays 09:00–18:00.",
+        "Расписаний пока нет. Нажмите «Добавить расписание» и создайте первое, например будни 09:00–18:00.",
+    ),
+    "sched_how": _(
+        "ℹ️ Jadval vaqtida bot siz «Onlayn» bo'lsangiz ham javob beradi. Jadval tugagach avvalgi sozlamalaringiz o'zgarishsiz ishlaydi. Uxlash rejimi har doim ustun.",
+        "ℹ️ During a schedule the bot replies even if you are “Online”. When it ends your previous settings apply unchanged. Sleep Mode always takes priority.",
+        "ℹ️ Во время расписания бот отвечает, даже если вы «Онлайн». После его окончания работают прежние настройки без изменений. Режим сна всегда в приоритете.",
+    ),
+    "btn_sc_add": _("➕ Jadval qo'shish", "➕ Add schedule", "➕ Добавить расписание"),
+    "btn_sc_edit": _("✏️ Jadvalni tahrirlash", "✏️ Edit schedule", "✏️ Редактировать расписание"),
+    "btn_sc_delete": _("\U0001F5D1 Jadvalni o'chirish", "\U0001F5D1 Delete schedule", "\U0001F5D1 Удалить расписание"),
+    "btn_sc_settings": _("⚙️ Sozlamalar", "⚙️ Settings", "⚙️ Настройки"),
+    "btn_sc_continue": _("➡️ Davom etish", "➡️ Continue", "➡️ Продолжить"),
+    "btn_sc_wd": _("Ish kunlari", "Weekdays", "Будни"),
+    "btn_sc_we": _("Dam olish", "Weekend", "Выходные"),
+    "btn_sc_all": _("Har kuni", "Every day", "Каждый день"),
+    "btn_sc_allday": _("\U0001F334 Butun kun", "\U0001F334 All day", "\U0001F334 Весь день"),
+    "btn_sc_deftext": _("Standart matn", "Standard text", "Стандартный текст"),
+    "btn_sc_save": _("✅ Saqlash", "✅ Save", "✅ Сохранить"),
+    "btn_sc_cancel": _("❌ Bekor qilish", "❌ Cancel", "❌ Отмена"),
+    "btn_sc_ed_days": _("\U0001F4C6 Kunlarni o'zgartirish", "\U0001F4C6 Change days", "\U0001F4C6 Изменить дни"),
+    "btn_sc_ed_time": _("\U0001F558 Vaqtni o'zgartirish", "\U0001F558 Change time", "\U0001F558 Изменить время"),
+    "btn_sc_ed_text": _("\U0001F4AC Matnni o'zgartirish", "\U0001F4AC Change text", "\U0001F4AC Изменить текст"),
+    "btn_sc_pause": _("⏸ Vaqtincha to'xtatish", "⏸ Pause", "⏸ Приостановить"),
+    "btn_sc_resume": _("▶️ Yoqish", "▶️ Resume", "▶️ Включить"),
+    "btn_sc_del_yes": _("✅ Ha, o'chirish", "✅ Yes, delete", "✅ Да, удалить"),
+    "btn_sc_toggle_on": _("⏸ Jadvallarni o'chirish", "⏸ Turn schedules off", "⏸ Выключить расписания"),
+    "btn_sc_toggle_off": _("▶️ Jadvallarni yoqish", "▶️ Turn schedules on", "▶️ Включить расписания"),
+    "sc_days_prompt": _(
+        "\U0001F4C6 1/3 — Qaysi kunlarga jadval qo'yamiz? Kunlarni belgilang (qayta bossangiz — bekor bo'ladi), keyin «Davom etish»ni bosing.",
+        "\U0001F4C6 1/3 — Which days should this schedule cover? Tick the days (tap again to untick), then press “Continue”.",
+        "\U0001F4C6 1/3 — На какие дни поставить расписание? Отметьте дни (повторное нажатие снимает), затем нажмите «Продолжить».",
+    ),
+    "sc_days_none": _("Kamida bitta kunni belgilang.", "Select at least one day.", "Выберите хотя бы один день."),
+    "sc_time_prompt": _(
+        "\U0001F558 2/3 — Vaqt oralig'ini yuboring, masalan: 09:00-18:00. Yarim tundan o'tadigan oraliq ham mumkin (22:00-06:00). Yoki «Butun kun»ni bosing.",
+        "\U0001F558 2/3 — Send the time range, for example: 09:00-18:00. Ranges past midnight work too (22:00-06:00). Or press “All day”.",
+        "\U0001F558 2/3 — Отправьте промежуток времени, например: 09:00-18:00. Можно и через полночь (22:00-06:00). Или нажмите «Весь день».",
+    ),
+    "sc_time_bad": _(
+        "Vaqt noto'g'ri. Namuna: 09:00-18:00 (boshlanish va tugash bir xil bo'lmasin).",
+        "Invalid time. Example: 09:00-18:00 (start and end must differ).",
+        "Неверное время. Пример: 09:00-18:00 (начало и конец не должны совпадать).",
+    ),
+    "sc_text_prompt": _(
+        "\U0001F4AC 3/3 — Shu jadval uchun javob matnini yuboring (ko'pi bilan {max} belgi). Yoki «Standart matn»ni bosing — odatdagi avtojavob matni ishlatiladi.",
+        "\U0001F4AC 3/3 — Send the reply text for this schedule (up to {max} characters). Or press “Standard text” to use your usual auto-reply text.",
+        "\U0001F4AC 3/3 — Отправьте текст ответа для этого расписания (до {max} символов). Или нажмите «Стандартный текст» — будет использован обычный текст автоответа.",
+    ),
+    "sc_text_too_long": _(
+        "Matn juda uzun: {n} belgi (ko'pi bilan {max}). Qisqartirib qayta yuboring.",
+        "Text is too long: {n} characters (max {max}). Shorten it and send again.",
+        "Текст слишком длинный: {n} символов (максимум {max}). Сократите и отправьте снова.",
+    ),
+    "sc_text_locked_note": _(
+        "ℹ️ Alohida javob matni Plus tarifidan boshlab ochiladi — hozircha standart avtojavob matni ishlatiladi.",
+        "ℹ️ A separate reply text is available from the Plus plan - for now your standard auto-reply text is used.",
+        "ℹ️ Отдельный текст ответа доступен с тарифа Plus — пока используется стандартный текст автоответа.",
+    ),
+    "sc_confirm": _(
+        "\U0001F4CB Yangi jadval:\n\n\U0001F4C6 {days}\n{time_icon} {time}\n\U0001F4AC {text}\n\nSaqlaymizmi?",
+        "\U0001F4CB New schedule:\n\n\U0001F4C6 {days}\n{time_icon} {time}\n\U0001F4AC {text}\n\nSave it?",
+        "\U0001F4CB Новое расписание:\n\n\U0001F4C6 {days}\n{time_icon} {time}\n\U0001F4AC {text}\n\nСохранить?",
+    ),
+    "sc_saved": _("✅ Jadval saqlandi.", "✅ Schedule saved.", "✅ Расписание сохранено."),
+    "sc_updated": _("✅ Jadval yangilandi.", "✅ Schedule updated.", "✅ Расписание обновлено."),
+    "sc_cancelled": _("Bekor qilindi.", "Cancelled.", "Отменено."),
+    "sc_limit": _(
+        "Jadvallar limiti to'ldi (ko'pi bilan {max} ta). Yangisini qo'shish uchun avval eskisini o'chiring yoki tarifingizni oshiring.",
+        "Schedule limit reached (max {max}). Delete an old one first or upgrade your plan.",
+        "Лимит расписаний исчерпан (максимум {max}). Сначала удалите старое или повысите тариф.",
+    ),
+    "sc_conflict": _(
+        "⚠️ Bu kun va vaqt {n}-jadval bilan kesishadi. Kunlar yoki vaqtni o'zgartiring — bir vaqtda faqat bitta jadval ishlashi mumkin.",
+        "⚠️ These days and times overlap schedule #{n}. Change the days or time - only one schedule can be active at a time.",
+        "⚠️ Эти дни и время пересекаются с расписанием №{n}. Измените дни или время — одновременно может действовать только одно расписание.",
+    ),
+    "sc_draft_lost": _(
+        "Jarayon eskirdi. «Jadval qo'shish»dan qaytadan boshlang.",
+        "This flow has expired. Start again with “Add schedule”.",
+        "Процесс устарел. Начните заново через «Добавить расписание».",
+    ),
+    "sc_gone": _("Bu jadval topilmadi (o'chirilgan bo'lishi mumkin).", "This schedule was not found (it may have been deleted).", "Это расписание не найдено (возможно, оно удалено)."),
+    "sc_pick_edit": _("✏️ Qaysi jadvalni tahrirlaymiz?", "✏️ Which schedule do you want to edit?", "✏️ Какое расписание редактировать?"),
+    "sc_pick_delete": _("\U0001F5D1 Qaysi jadvalni o'chiramiz?", "\U0001F5D1 Which schedule do you want to delete?", "\U0001F5D1 Какое расписание удалить?"),
+    "sc_no_rules": _("Hali jadval yo'q.", "There are no schedules yet.", "Расписаний пока нет."),
+    "sc_entry": _(
+        "{n}. {days}\n{time_icon} {time}\n\U0001F4AC {text}\n{status_icon} Holat: {status}",
+        "{n}. {days}\n{time_icon} {time}\n\U0001F4AC {text}\n{status_icon} Status: {status}",
+        "{n}. {days}\n{time_icon} {time}\n\U0001F4AC {text}\n{status_icon} Статус: {status}",
+    ),
+    "sc_del_confirm": _(
+        "\U0001F5D1 Bu jadvalni o'chirasizmi?\n\n{entry}\n\nBu amalni qaytarib bo'lmaydi.",
+        "\U0001F5D1 Delete this schedule?\n\n{entry}\n\nThis cannot be undone.",
+        "\U0001F5D1 Удалить это расписание?\n\n{entry}\n\nЭто действие нельзя отменить.",
+    ),
+    "sc_deleted": _("\U0001F5D1 Jadval o'chirildi.", "\U0001F5D1 Schedule deleted.", "\U0001F5D1 Расписание удалено."),
+    "sc_settings": _(
+        "⚙️ JADVAL SOZLAMALARI\n\n{status_icon} Holat: {status}\n\U0001F30D Vaqt zonasi: {tz}\n\n"
+        "Vaqt zonasi «Ism soati» sozlamasidan olinadi (tanlanmagan bo'lsa — Toshkent). "
+        "Jadvallarni o'chirib qo'ysangiz, ular saqlanib qoladi, faqat ishlamaydi.",
+        "⚙️ SCHEDULER SETTINGS\n\n{status_icon} Status: {status}\n\U0001F30D Time zone: {tz}\n\n"
+        "The time zone comes from your Name Clock setting (Tashkent if none is chosen). "
+        "If you turn schedules off they are kept, they just stop working.",
+        "⚙️ НАСТРОЙКИ РАСПИСАНИЯ\n\n{status_icon} Статус: {status}\n\U0001F30D Часовой пояс: {tz}\n\n"
+        "Часовой пояс берётся из настройки «Часы в имени» (если не выбран — Ташкент). "
+        "Если выключить расписания, они сохранятся, но не будут работать.",
+    ),
     # ---------------- AutoReply Analytics ----------------
     "btn_analytics": _("\U0001F4CA Statistika", "\U0001F4CA Analytics", "\U0001F4CA Аналитика"),
     "btn_an_today": _("\U0001F4C5 Bugun", "\U0001F4C5 Today", "\U0001F4C5 Сегодня"),
