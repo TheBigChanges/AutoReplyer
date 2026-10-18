@@ -342,6 +342,28 @@ class ReplyFlowTests(unittest.TestCase):
             self.flow(settings=_settings(sleep_mode_enabled=True), sleep_fn=spy)
             self.assertEqual(seen["minutes"], 6 * 60 + 30)  # zona tanlanmagan — Toshkent
 
+    def test_sleep_mode_beats_ai(self):
+        """Uxlash vaqtida Gemini ishlamaydi: maxsus uxlash xabari ketadi (AI sozlangan va yoqilgan bo'lsa ham)."""
+        s = _settings(offline=True, sleep_mode_enabled=True, sleep_reply_text="Uxlayapman, ertalab javob beraman", ai_enabled=True)
+        texts, started = self.flow(settings=s, sleeping=True, ai_answer="AI javobi")
+        self.assertEqual(texts, ["Uxlayapman, ertalab javob beraman"])
+        started["gen"].assert_not_called()
+
+    def test_ai_still_works_when_not_sleeping(self):
+        s = _settings(offline=True, sleep_mode_enabled=True, sleep_reply_text="Uxlayapman", ai_enabled=True)
+        texts, started = self.flow(settings=s, sleeping=False, ai_answer="AI javobi")
+        self.assertEqual(texts, ["AI javobi"])
+
+    def test_sleep_mode_beats_faq_and_ai_together(self):
+        s = _settings(offline=True, sleep_mode_enabled=True, sleep_reply_text="Uxlayapman", ai_enabled=True)
+        texts, started = self.flow(settings=s, sleeping=True, faq="FAQ javobi", ai_answer="AI javobi")
+        self.assertEqual(texts, ["Uxlayapman"])
+        started["gen"].assert_not_called()
+
+    def test_ai_menu_text_mentions_sleep_mode_priority_in_all_languages(self):
+        for lang, word in (("uz", "Uxlash rejimi"), ("en", "Sleep Mode"), ("ru", "Sleep Mode")):
+            self.assertIn(word, i18n.t(lang, "ai_menu", status="", usage="", role="", info=""))
+
     def test_scheduler_receives_the_same_now_as_sleep(self):
         captured = {}
 
@@ -366,6 +388,56 @@ class ReplyFlowTests(unittest.TestCase):
     def test_own_messages_still_ignored(self):
         texts, _ = self.flow(rule=_rule(), update=_update(from_id=OWNER))
         self.assertEqual(texts, [])
+
+
+class TimeZoneRuleTests(unittest.TestCase):
+    """Yagona vaqt zonasi qoidasi: zona faqat tarif ruxsat bersa amal qiladi (Sleep, Jadval, Analytics, Ism soati)."""
+
+    def setUp(self):
+        p = patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def tz(self, plan, name="Asia/Tokyo"):
+        with patch.object(bot, "plan_of", lambda uid: plan), patch.object(bot, "ADMIN_ID", ADMIN):
+            return str(bot.tz_from_settings(_settings(name_clock_tz=name), OWNER))
+
+    def test_paid_plan_with_zone_access_uses_chosen_zone(self):
+        self.assertEqual(self.tz("pro"), "Asia/Tokyo")
+
+    def test_downgrade_to_free_falls_back_to_tashkent_everywhere(self):
+        self.assertEqual(self.tz("free"), "Asia/Tashkent")
+        with patch.object(bot, "plan_of", lambda uid: "free"), patch.object(bot, "ADMIN_ID", ADMIN), \
+             patch.object(db, "get_settings", return_value=_settings(name_clock_tz="Asia/Tokyo")), \
+             patch.object(bot, "get_lang", lambda uid: "uz"):
+            self.assertEqual(str(bot.analytics_tz(OWNER)), "Asia/Tashkent")
+            self.assertIn("Asia/Tashkent", bot.build_sleep_menu(OWNER)[0])
+            self.assertNotIn("Asia/Tokyo", bot.build_sleep_menu(OWNER)[0])
+            self.assertIn("Asia/Tashkent", bot.build_sched_menu(OWNER)[0])
+
+    def test_scheduler_and_sleep_get_tashkent_time_after_downgrade(self):
+        captured = {}
+
+        def fake(owner, st, now=None):
+            captured["now"] = now
+
+        with patch.object(bot, "plan_of", lambda uid: "free"), patch.object(bot, "ADMIN_ID", ADMIN), \
+             patch.object(bot, "current_schedule_rule", fake), \
+             patch.object(db, "get_connection_by_business_id", return_value={"owner_user_id": OWNER, "is_enabled": True, "can_reply": True}), \
+             patch.object(db, "get_settings", return_value=_settings(name_clock_tz="Asia/Tokyo")):
+            ctx = MagicMock()
+            ctx.bot.send_message = AsyncMock()
+            run(bot.on_raw_update(_update(), ctx))
+        self.assertEqual(str(captured["now"].tzinfo), "Asia/Tashkent")
+
+    def test_name_clock_uses_same_rule(self):
+        """Ism soati ham xuddi shu qoida: zonalar tarifda yo'q bo'lsa Toshkent."""
+        self.assertEqual(self.tz("free"), "Asia/Tashkent")
+        self.assertTrue(bot.plan_allows(OWNER, "free", "name_clock_zones") is False)
+
+    def test_unknown_zone_name_falls_back(self):
+        self.assertEqual(self.tz("ultra", name="Mars/Olympus"), "Asia/Tashkent")
+
 
 
 @unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL kerak")
@@ -806,7 +878,7 @@ class MenuFlowTests(unittest.TestCase):
         self.press("sc_dp:we")
         self.press("sc_dnext")
         self.assertEqual(db.get_schedule_rule(OWNER, rid)["days"], logic.WEEKEND_MASK)
-        self.press(f"sc_tg:{rid}")
+        self.press(f"sc_pause:{rid}")
         self.assertFalse(db.get_schedule_rule(OWNER, rid)["is_enabled"])
         q = self.press("sc_menu")
         self.assertIn(i18n.t("uz", "sched_paused"), self.shown(q))
@@ -821,6 +893,37 @@ class MenuFlowTests(unittest.TestCase):
         self.assertIn("kesishadi", self.shown(q))
         self.assertEqual(db.get_schedule_rule(OWNER, rid)["days"], logic.days_mask([SAT]))
 
+    def test_pause_and_resume_are_idempotent(self):
+        """Eski xabardagi «Pauza» ikki marta bosilsa ham jadval qayta yoqilmaydi."""
+        self.create()
+        rid = db.list_schedule_rules(OWNER)[0]["id"]
+        self.press(f"sc_pause:{rid}")
+        self.assertFalse(db.get_schedule_rule(OWNER, rid)["is_enabled"])
+        self.press(f"sc_pause:{rid}")  # ikkinchi marta — o'zgarmaydi
+        self.assertFalse(db.get_schedule_rule(OWNER, rid)["is_enabled"])
+        self.press(f"sc_resume:{rid}")
+        self.assertTrue(db.get_schedule_rule(OWNER, rid)["is_enabled"])
+        self.press(f"sc_resume:{rid}")  # ikkinchi marta — o'zgarmaydi
+        self.assertTrue(db.get_schedule_rule(OWNER, rid)["is_enabled"])
+
+    def test_legacy_sc_tg_button_changes_nothing(self):
+        self.create()
+        rid = db.list_schedule_rules(OWNER)[0]["id"]
+        self.press(f"sc_tg:{rid}")
+        self.assertTrue(db.get_schedule_rule(OWNER, rid)["is_enabled"])
+
+    def test_entry_button_matches_state(self):
+        self.create()
+        rid = db.list_schedule_rules(OWNER)[0]["id"]
+
+        def cb():
+            _, markup = bot.build_sched_entry(OWNER, rid)
+            return [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data.split(":")[0] in ("sc_pause", "sc_resume")]
+
+        self.assertEqual(cb(), [f"sc_pause:{rid}"])
+        db.update_schedule_rule(OWNER, rid, is_enabled=False)
+        self.assertEqual(cb(), [f"sc_resume:{rid}"])
+
     def test_delete_needs_confirmation(self):
         self.create()
         rid = db.list_schedule_rules(OWNER)[0]["id"]
@@ -832,7 +935,7 @@ class MenuFlowTests(unittest.TestCase):
 
     def test_cannot_touch_other_owners_rules(self):
         _, rid = db.add_schedule_rule(OTHER, logic.WEEKDAYS_MASK, m(9), m(18), "Boshqa", 30)
-        for data in (f"sc_e:{rid}", f"sc_tg:{rid}", f"sc_del:{rid}", f"sc_del_yes:{rid}", f"sc_ed:time:{rid}"):
+        for data in (f"sc_e:{rid}", f"sc_pause:{rid}", f"sc_resume:{rid}", f"sc_tg:{rid}", f"sc_del:{rid}", f"sc_del_yes:{rid}", f"sc_ed:time:{rid}"):
             self.press(data)
         rule = db.get_schedule_rule(OTHER, rid)
         self.assertIsNotNone(rule)
