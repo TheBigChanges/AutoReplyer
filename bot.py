@@ -1816,10 +1816,12 @@ def track_analytics(owner_id: int, kind: str):
         _record_analytics_safe(owner_id, kind)
 
 
-def tz_from_settings(settings: dict):
-    """Ism soati zonasi (agar tanlangan va ma'lum bo'lsa), aks holda Toshkent."""
+def tz_from_settings(settings: dict, owner_id: int):
+    """YAGONA vaqt zonasi qoidasi (Sleep Mode, Jadval, Analytics va Ism soati uchun bir xil): tanlangan zona
+    faqat tarif «name_clock_zones» ni bersa va zona ma'lum bo'lsagina amal qiladi; aks holda — Toshkent.
+    Tarif pasaysa ham (Pro -> Free) hamma funksiyalar birdaniga Toshkent vaqtiga qaytadi."""
     name = (settings or {}).get("name_clock_tz")
-    if name and is_known_zone(name):
+    if name and is_known_zone(name) and has_feature(owner_id, "name_clock_zones"):
         return ZoneInfo(name)
     return TASHKENT_TZ
 
@@ -1827,7 +1829,7 @@ def tz_from_settings(settings: dict):
 def analytics_tz(owner_id: int):
     """"Eng faol soat" uchun vaqt zonasi: ism soati zonasi (agar tanlangan bo'lsa), aks holda Toshkent."""
     try:
-        return tz_from_settings(db.get_settings(owner_id))
+        return tz_from_settings(db.get_settings(owner_id), owner_id)
     except Exception:
         logger.warning("Analytics: vaqt zonasini o'qib bo'lmadi (owner=%s)", owner_id, exc_info=True)
     return TASHKENT_TZ
@@ -2043,7 +2045,7 @@ def current_schedule_rule(owner_id: int, settings: dict, now: datetime | None = 
         rules = db.get_schedule_rules_cached(owner_id)[: schedule_limit_for(owner_id)]
         if not rules:
             return None
-        now = now or datetime.now(tz_from_settings(settings))
+        now = now or datetime.now(tz_from_settings(settings, owner_id))
         return find_active_schedule(rules, now.weekday(), now.hour * 60 + now.minute)
     except Exception:
         logger.warning("Jadvalni tekshirib bo'lmadi (owner=%s)", owner_id, exc_info=True)
@@ -2061,7 +2063,7 @@ def build_sched_menu(owner_id: int, notice: str | None = None):
         lang, "sched_menu",
         status_icon="\U0001F7E2" if on else "\U0001F534",
         status=t(lang, "status_on" if on else "status_off").replace("\U0001F7E2 ", ""),
-        tz=str(tz_from_settings(s)), count=len(rules), max=limit, rules=body,
+        tz=str(tz_from_settings(s, owner_id)), count=len(rules), max=limit, rules=body,
     ) + "\n\n" + t(lang, "sched_how")
     if notice:
         text = f"{notice}\n\n{text}"
@@ -2081,7 +2083,7 @@ def build_sched_settings(owner_id: int):
     on = s.get("scheduler_enabled", True)
     text = t(
         lang, "sc_settings", status_icon="\U0001F7E2" if on else "\U0001F534",
-        status=t(lang, "status_on" if on else "status_off").replace("\U0001F7E2 ", ""), tz=str(tz_from_settings(s)),
+        status=t(lang, "status_on" if on else "status_off").replace("\U0001F7E2 ", ""), tz=str(tz_from_settings(s, owner_id)),
     )
     keyboard = [
         [InlineKeyboardButton(t(lang, "btn_sc_toggle_on" if on else "btn_sc_toggle_off"), callback_data="sc_toggle")],
@@ -2134,7 +2136,7 @@ def build_sched_entry(owner_id: int, rule_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_sc_ed_days"), callback_data=f"sc_ed:days:{rule_id}")],
         [InlineKeyboardButton(t(lang, "btn_sc_ed_time"), callback_data=f"sc_ed:time:{rule_id}")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_sc_ed_text"), has_feature(owner_id, "custom_text")), callback_data=f"sc_ed:text:{rule_id}")],
-        [InlineKeyboardButton(t(lang, "btn_sc_pause" if r["is_enabled"] else "btn_sc_resume"), callback_data=f"sc_tg:{rule_id}")],
+        [InlineKeyboardButton(t(lang, "btn_sc_pause" if r["is_enabled"] else "btn_sc_resume"), callback_data=f"{'sc_pause' if r['is_enabled'] else 'sc_resume'}:{rule_id}")],
         [InlineKeyboardButton(t(lang, "btn_sc_delete"), callback_data=f"sc_del:{rule_id}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_list:edit")],
     ]
@@ -2237,17 +2239,23 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
         await query.edit_message_text(view[0], reply_markup=view[1])
         return True
 
-    if data.startswith("sc_tg:"):
+    if data.split(":")[0] in ("sc_pause", "sc_resume", "sc_tg"):
+        # Pauza va Davom ettirish ALOHIDA amallar (idempotent): eski xabardagi tugma ikki marta bosilsa ham holat teskarilanmaydi.
+        # Eski formatdagi «sc_tg:ID» tugmalari (yangilashdan oldingi xabarlar) hech narsani o'zgartirmaydi.
+        action = data.split(":")[0]
         try:
             rule_id = int(data.split(":")[1])
-        except ValueError:
+        except (ValueError, IndexError):
             return True
         rule = db.get_schedule_rule(owner_id, rule_id)
         if rule is None:
             text, markup = build_sched_list(owner_id, "edit")
             await query.edit_message_text(f"{t(lang, 'sc_gone')}\n\n{text}", reply_markup=markup)
             return True
-        db.update_schedule_rule(owner_id, rule_id, is_enabled=not rule["is_enabled"])
+        if action != "sc_tg":
+            want = action == "sc_resume"
+            if bool(rule["is_enabled"]) != want:
+                db.update_schedule_rule(owner_id, rule_id, is_enabled=want)
         text, markup = build_sched_entry(owner_id, rule_id, t(lang, "sc_updated"))
         await query.edit_message_text(text, reply_markup=markup)
         return True
@@ -2718,7 +2726,7 @@ def build_sleep_menu(owner_id: int):
         status=t(lang, "sleep_status_on" if enabled else "status_off"),
         range=format_time_range(start_minutes, end_minutes),
         text=sleep_text_for(s, lang),
-    ) + "\n\n" + t(lang, "sleep_tz_note", tz=str(tz_from_settings(s)))
+    ) + "\n\n" + t(lang, "sleep_tz_note", tz=str(tz_from_settings(s, owner_id)))
     keyboard = [
         [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="sleep_toggle")],
         [InlineKeyboardButton(t(lang, "btn_sleep_time"), callback_data="sleep_edit_time")],
@@ -4768,7 +4776,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         settings = db.get_settings(owner_id)
 
         # Uxlash rejimi va Jadval BIR XIL vaqt zonasi bilan hisoblanadi: egasining zonasi (Ism soati sozlamasi), yo'q bo'lsa Toshkent
-        now = datetime.now(tz_from_settings(settings))
+        now = datetime.now(tz_from_settings(settings, owner_id))
         now_minutes = now.hour * 60 + now.minute
         sleeping = settings.get("sleep_mode_enabled") and is_within_sleep_window(
             now_minutes, settings.get("sleep_start_minutes", 0), settings.get("sleep_end_minutes", 0)
@@ -4794,7 +4802,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = bm.chat.id
         label = f"sleeping={sleeping}" + (",schedule" if schedule_rule is not None else "")
 
-        ai_usable = bool(settings.get("ai_enabled")) and ai.is_configured() and has_feature(owner_id, "ai")
+        ai_usable = not sleeping and bool(settings.get("ai_enabled")) and ai.is_configured() and has_feature(owner_id, "ai")
 
         # Smart FAQ: faqat Oflayn holatda (uxlash vaqtida emas) va faqat aniq, yagona moslik bo'lsa
         if not sleeping and effective_offline and settings.get("faq_enabled", True):
@@ -4809,7 +4817,8 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
         # AI-Yordamchi: odatiy matn o'rniga AI javob beradi (matn faqat zaxira sifatida qoladi)
-        if settings.get("ai_enabled") and ai.is_configured() and has_feature(owner_id, "ai"):
+        # Uxlash vaqtida AI ishlamaydi: Sleep Mode har doim ustun, egasining uxlash xabari ketadi
+        if not sleeping and settings.get("ai_enabled") and ai.is_configured() and has_feature(owner_id, "ai"):
             if db.is_ai_paused(owner_id, chat_id):
                 return  # egasi shu chatda o'zi yozmoqda
             text = (bm.text or bm.caption or "").strip()
