@@ -412,6 +412,40 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(len(db.get_schedule_rules_cached(OWNER)), 1)
         self.assertEqual(db.get_schedule_rules_cached(OTHER), [])
 
+    def test_concurrent_write_during_read_does_not_leave_stale_cache(self):
+        """O'quvchi eski ma'lumotni o'qiyotganda boshqa oqim jadvalni yangilab keshni tozalasa — eski natija keshga qaytib yozilmasligi kerak."""
+        _, rid = db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(9), m(18), "ESKI", 5)
+        db.invalidate_schedule_cache(OWNER)
+        real = db.list_schedule_rules
+        fired = []
+
+        def racing_read(owner):
+            old = real(owner)  # 1) eski ma'lumot o'qildi
+            if not fired:
+                fired.append(1)
+                db.update_schedule_rule(owner, rid, text="YANGI")  # 2) boshqa oqim yozdi va keshni tozaladi
+            return old  # 3) o'quvchi eski ma'lumot bilan qaytadi
+
+        with patch.object(db, "list_schedule_rules", racing_read):
+            self.assertEqual(db.get_schedule_rules_cached(OWNER)[0]["text"], "ESKI")  # shu chaqiruv eskisini oladi
+        self.assertEqual(db.get_schedule_rules_cached(OWNER)[0]["text"], "YANGI")  # keyingisi — yangi (60 soniya kutmaydi)
+
+    def test_threaded_readers_and_writers_end_with_fresh_cache(self):
+        _, rid = db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(9), m(18), "0", 5)
+        stop = threading.Event()
+
+        def reader():
+            while not stop.is_set():
+                db.get_schedule_rules_cached(OWNER)
+
+        readers = [threading.Thread(target=reader) for _ in range(4)]
+        [t.start() for t in readers]
+        for i in range(1, 40):
+            db.update_schedule_rule(OWNER, rid, text=str(i))
+        stop.set()
+        [t.join() for t in readers]
+        self.assertEqual(db.get_schedule_rules_cached(OWNER)[0]["text"], "39")
+
     def test_failed_write_does_not_leave_stale_cache(self):
         db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(9), m(18), "A", 5)
         db.get_schedule_rules_cached(OWNER)
@@ -587,7 +621,7 @@ class MenuFlowTests(unittest.TestCase):
         self.say("Ikkinchi")
         self.assertEqual(bot._sc_drafts[OWNER]["stage"], "confirm")
         q = self.press(old_save, fresh=False)
-        self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q))
+        self.assertIn(i18n.t("uz", "sc_stale_button"), self.shown(q))
         self.assertEqual(db.count_schedule_rules(OWNER), 0)
         # Yangi qoralama buzilmaydi: uning o'z «Saqlash» tugmasi ishlaydi
         self.assertEqual(bot._sc_drafts[OWNER]["text"], "Ikkinchi")
@@ -603,7 +637,7 @@ class MenuFlowTests(unittest.TestCase):
         new = bot._sc_drafts[OWNER]
         for data in (f"sc_d:3:{old}", f"sc_dp:all:{old}", f"sc_dnext:{old}", f"sc_allday:{old}", f"sc_deftext:{old}"):
             q = self.press(data, fresh=False)
-            self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q), data)
+            self.assertIn(i18n.t("uz", "sc_stale_button"), self.shown(q), data)
             self.press("sc_add")
             new = bot._sc_drafts[OWNER]
         self.assertEqual(new["days"], set())
@@ -612,7 +646,7 @@ class MenuFlowTests(unittest.TestCase):
         self.press("sc_add")
         self.press("sc_d:0")
         q = self.press("sc_dnext", fresh=False)  # deploydan oldingi xabar: ID yo'q
-        self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q))
+        self.assertIn(i18n.t("uz", "sc_stale_button"), self.shown(q))
         self.assertEqual(db.count_schedule_rules(OWNER), 0)
 
     def test_every_staged_button_in_screens_carries_the_draft_id(self):
@@ -632,7 +666,7 @@ class MenuFlowTests(unittest.TestCase):
         for stage_action in (lambda: None, lambda: self.press("sc_d:0"), lambda: (self.press("sc_dnext"))):
             stage_action()
             q = self.press("sc_save")
-            self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q))
+            self.assertIn(i18n.t("uz", "sc_stale_button"), self.shown(q))
             self.assertEqual(db.count_schedule_rules(OWNER), 0)
             self.press("sc_add")  # qoralama bekor bo'ldi — qaytadan boshlaymiz
 
@@ -642,7 +676,7 @@ class MenuFlowTests(unittest.TestCase):
         self.press("sc_dnext")  # endi bosqich: vaqt
         for stale in ("sc_deftext", "sc_save", "sc_dnext", "sc_d:3", "sc_dp:all"):
             q = self.press(stale)
-            self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q), stale)
+            self.assertIn(i18n.t("uz", "sc_stale_button"), self.shown(q), stale)
             self.assertEqual(db.count_schedule_rules(OWNER), 0)
             self.press("sc_add")
             self.press("sc_d:2")
@@ -663,6 +697,38 @@ class MenuFlowTests(unittest.TestCase):
         bot._sc_drafts[OWNER] = d
         self.press("sc_save")
         self.assertEqual(db.count_schedule_rules(OWNER), 0)
+
+    def test_stale_button_does_not_cancel_current_input(self):
+        """Foydalanuvchi vaqt kiritayotgan paytda eski xabardagi tugma bosilsa — kiritish bekor bo'lmaydi."""
+        self.press("sc_add")
+        old_id = bot._sc_drafts[OWNER]["id"]
+        self.press("sc_cancel")
+        self.press("sc_add")
+        self.press("sc_d:2")
+        self.press("sc_dnext")  # endi vaqt kutilmoqda
+        draft_id = bot._sc_drafts[OWNER]["id"]
+        self.assertEqual(bot.get_pending_action(OWNER), "sc_time")
+        for stale in (f"sc_dnext:{old_id}", f"sc_save:{old_id}", f"sc_allday:{old_id}", f"sc_d:1:{old_id}"):
+            q = self.press(stale, fresh=False)
+            self.assertIn(i18n.t("uz", "sc_stale_button"), self.shown(q))
+            self.assertEqual(bot.get_pending_action(OWNER), "sc_time", stale)  # kiritish davom etadi
+            self.assertEqual(bot._sc_drafts[OWNER]["id"], draft_id)
+            self.assertEqual(bot._sc_drafts[OWNER]["days"], {2})
+        self.say("09:00-18:00")  # joriy kiritish hamon ishlaydi
+        self.assertEqual(bot._sc_drafts[OWNER]["stage"], "text")
+        self.assertEqual(bot._sc_drafts[OWNER]["start"], m(9))
+
+    def test_valid_buttons_still_clear_pending_input(self):
+        self.press("sc_add")
+        self.press("sc_d:2")
+        self.press("sc_dnext")
+        self.assertEqual(bot.get_pending_action(OWNER), "sc_time")
+        self.press("sc_menu")  # haqiqiy tugma — oldingi kiritishni bekor qiladi (avvalgi xatti-harakat)
+        self.assertIsNone(bot.get_pending_action(OWNER))
+
+    def test_stale_button_when_no_draft_shows_draft_lost(self):
+        q = self.press("sc_save:abc123", fresh=False)
+        self.assertIn(i18n.t("uz", "sc_draft_lost"), self.shown(q))
 
     def test_expired_draft_is_handled(self):
         self.press("sc_add")
