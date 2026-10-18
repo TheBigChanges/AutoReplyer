@@ -615,3 +615,95 @@ def parse_kb_keywords(raw: str) -> list[str] | None:
     if raw in ("", "-"):
         return []
     return parse_faq_keywords(raw)
+
+
+# ---------------------------------------------------------------------------
+# Smart Auto-Reply Scheduler: haftalik jadval mantig'i (sof funksiyalar)
+# ---------------------------------------------------------------------------
+SCHEDULE_PLAN_LIMITS = {"free": 1, "plus": 3, "pro": 10, "ultra": 30}
+SCHEDULE_MAX_TEXT = 500
+SCHEDULE_WEEK_MINUTES = 7 * 1440
+SCHEDULE_ALL_DAY = (0, 1440)  # "butun kun": boshlanish 00:00, tugash 24:00
+ALL_DAYS_MASK = 0b1111111
+WEEKDAYS_MASK = 0b0011111  # Dushanba..Juma (bit 0 = Dushanba)
+WEEKEND_MASK = 0b1100000   # Shanba, Yakshanba
+
+
+def days_mask(days) -> int:
+    """[0..6] (0 = Dushanba) -> bitmask."""
+    mask = 0
+    for d in days:
+        if 0 <= d <= 6:
+            mask |= 1 << d
+    return mask
+
+
+def mask_days(mask: int) -> list[int]:
+    return [d for d in range(7) if mask & (1 << d)]
+
+
+def is_all_day(start: int, end: int) -> bool:
+    return (start, end) == SCHEDULE_ALL_DAY
+
+
+def valid_schedule_time(start: int, end: int) -> bool:
+    """Oddiy oraliq: 0 <= start < 1440, 0 <= end < 1440, start != end (end < start — yarim tundan o'tadi);
+    yoki aynan 'butun kun' (0, 1440)."""
+    if is_all_day(start, end):
+        return True
+    return 0 <= start < 1440 and 0 <= end < 1440 and start != end
+
+
+def schedule_segments(mask: int, start: int, end: int) -> list[tuple[int, int]]:
+    """Jadvalning haftalik daqiqalar o'qidagi [a, b) bo'laklari. Hafta Dushanba 00:00 dan boshlanadi.
+    Yarim tundan o'tadigan oraliq ertasi kunga o'tadi, Yakshanbadan keyin Dushanbaga aylanadi."""
+    segments = []
+    for d in mask_days(mask):
+        a = d * 1440 + start
+        b = d * 1440 + (end if end > start else end + 1440)
+        if b > SCHEDULE_WEEK_MINUTES:
+            segments.append((a, SCHEDULE_WEEK_MINUTES))
+            segments.append((0, b - SCHEDULE_WEEK_MINUTES))
+        else:
+            segments.append((a, b))
+    return segments
+
+
+def schedules_overlap(m1: int, s1: int, e1: int, m2: int, s2: int, e2: int) -> bool:
+    for a1, b1 in schedule_segments(m1, s1, e1):
+        for a2, b2 in schedule_segments(m2, s2, e2):
+            if a1 < b2 and a2 < b1:
+                return True
+    return False
+
+
+def schedule_active(mask: int, start: int, end: int, weekday: int, minutes_of_day: int) -> bool:
+    """weekday: 0 = Dushanba (datetime.weekday())."""
+    wm = weekday * 1440 + minutes_of_day
+    return any(a <= wm < b for a, b in schedule_segments(mask, start, end))
+
+
+def find_active_schedule(rules, weekday: int, minutes_of_day: int):
+    """Faol (yoqilgan) jadvallar ichidan hozirgi vaqtga mosini qaytaradi (kesishmaydi, shuning uchun bitta)."""
+    for r in rules:
+        if r.get("is_enabled", True) and schedule_active(r["days"], r["start_min"], r["end_min"], weekday, minutes_of_day):
+            return r
+    return None
+
+
+def format_day_set(mask: int, names: list[str], everyday: str, sep: str = " – ") -> str:
+    """Kunlar to'plamini o'qiladigan matnga aylantiradi: ketma-ket 3+ kun 'Dushanba – Juma', qolganlari vergul bilan."""
+    days = mask_days(mask)
+    if len(days) == 7:
+        return everyday
+    parts, i = [], 0
+    while i < len(days):
+        j = i
+        while j + 1 < len(days) and days[j + 1] == days[j] + 1:
+            j += 1
+        if j - i >= 2:
+            parts.append(f"{names[days[i]]}{sep}{names[days[j]]}")
+        else:
+            parts.extend(names[d] for d in days[i:j + 1])
+        i = j + 1
+    return ", ".join(parts)
