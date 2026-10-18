@@ -125,7 +125,7 @@ class Base(unittest.TestCase):
         tg.set_business_account_name = AsyncMock(side_effect=set_side_effect)
         tg.send_message = AsyncMock()
         with patch.object(db, "get_name_clock_targets", return_value=targets), \
-             patch.object(db, "mark_name_clock_applied") as mark, \
+             patch.object(db, "mark_name_clock_applied_bulk") as mark, \
              patch.object(db, "update_settings") as upd:
             run(bot.name_clock_tick(tg, at_ts))
         return tg, mark, upd
@@ -135,9 +135,13 @@ class TickTests(Base):
     def test_sets_name_and_marks_minute(self):
         tg, mark, _ = self.tick([_target()])
         tg.set_business_account_name.assert_awaited_once_with(
-            business_connection_id="bc", first_name="Dilshodbek | 12:30", last_name=None
+            business_connection_id="bc", first_name="Dilshodbek | 12:30", last_name=""
         )
-        mark.assert_called_once_with(1, "2026-10-11 12:30")
+        mark.assert_called_once_with([(1, "2026-10-11 12:30")])
+
+    def test_no_last_name_sends_empty_last_to_clear_stale(self):
+        tg, _, _ = self.tick([_target()])
+        self.assertEqual(tg.set_business_account_name.call_args.kwargs["last_name"], "")
 
     def test_with_last_name(self):
         tg, _, _ = self.tick([_target(name_clock_last="Abdu")])
@@ -157,7 +161,7 @@ class TickTests(Base):
         targets = [_target(owner_user_id=i, business_connection_id=f"bc{i}") for i in range(60)]
         tg, mark, _ = self.tick(targets)
         self.assertEqual(tg.set_business_account_name.await_count, 60)
-        self.assertEqual(mark.call_count, 60)
+        self.assertEqual(len(mark.call_args.args[0]), 60)
 
     def test_one_failure_does_not_block_others(self):
         calls = []
@@ -171,10 +175,10 @@ class TickTests(Base):
         tg.set_business_account_name = AsyncMock(side_effect=side)
         targets = [_target(owner_user_id=i, business_connection_id=f"bc{i}") for i in range(3)]
         with patch.object(db, "get_name_clock_targets", return_value=targets), \
-             patch.object(db, "mark_name_clock_applied") as mark:
+             patch.object(db, "mark_name_clock_applied_bulk") as mark:
             run(bot.name_clock_tick(tg, TS))
         self.assertEqual(sorted(calls), ["bc0", "bc1", "bc2"])
-        self.assertEqual(mark.call_count, 2)  # xato bergani belgilanmaydi — keyingi daqiqada qayta uriniladi
+        self.assertEqual(len(mark.call_args.args[0]), 2)  # xato bergani belgilanmaydi — keyingi daqiqada qayta uriniladi
 
     def test_flood_sets_backoff_notifies_admin_once(self):
         tg, mark, _ = self.tick([_target(), _target(owner_user_id=2, business_connection_id="b2")],
@@ -189,7 +193,7 @@ class TickTests(Base):
 
     def test_not_modified_counts_as_success(self):
         tg, mark, upd = self.tick([_target()], set_side_effect=BadRequest("Bad Request: name is not modified"))
-        mark.assert_called_once_with(1, "2026-10-11 12:30")
+        mark.assert_called_once_with([(1, "2026-10-11 12:30")])
         upd.assert_not_called()
 
     def test_repeated_permission_errors_disable_feature_and_notify(self):
@@ -406,7 +410,7 @@ class ExternalRenameTests(Base):
         self.assertTrue(logic.is_external_rename("Ali", "", "A", ""))  # qisqa ismda prefiks o'zgarish hisoblanadi
 
     def _adopt(self, settings, cur_first, cur_last=None):
-        with patch.object(db, "get_settings", return_value=settings), \
+        with patch.object(db, "get_name_clock_base", return_value=settings), \
              patch.object(db, "update_settings") as upd:
             result = bot.adopt_new_base_name(OWNER, cur_first, cur_last)
         return result, upd
@@ -424,7 +428,7 @@ class ExternalRenameTests(Base):
         upd.assert_not_called()
 
     def test_ignored_when_clock_disabled(self):
-        result, upd = self._adopt(_settings(name_clock_enabled=False, name_clock_first="Eski"), "Yangi")
+        result, upd = self._adopt(None, "Yangi")  # db.get_name_clock_base o'chirilgan holatda None qaytaradi
         self.assertFalse(result)
         upd.assert_not_called()
 
@@ -446,7 +450,8 @@ class ExternalRenameTests(Base):
         with patch.object(db, "get_name_clock_targets", return_value=[_target()]), \
              patch.object(bot, "adopt_new_base_name") as adopt:
             run(bot.name_clock_sync(tg))
-        adopt.assert_called_once_with(1, "Yangi ism", None)
+        adopt.assert_called_once()
+        self.assertEqual(adopt.call_args.args, (1, "Yangi ism", None))
 
     def test_sync_survives_telegram_errors(self):
         tg = MagicMock()
