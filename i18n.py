@@ -1242,6 +1242,11 @@ T: dict[str, dict] = {
         "This flow has expired. Start again with “Add schedule”.",
         "Процесс устарел. Начните заново через «Добавить расписание».",
     ),
+    "sc_stale_button": _(
+        "Bu tugma eskirgan. Joriy jarayonni oxirgi xabardagi tugmalar yoki yozuvingiz bilan davom ettiring.",
+        "This button is out of date. Continue the current process with the latest message's buttons or your reply.",
+        "Эта кнопка устарела. Продолжайте текущий процесс кнопками последнего сообщения или своим ответом.",
+    ),
     "sc_gone": _("Bu jadval topilmadi (o'chirilgan bo'lishi mumkin).", "This schedule was not found (it may have been deleted).", "Это расписание не найдено (возможно, оно удалено)."),
     "sc_pick_edit": _("✏️ Qaysi jadvalni tahrirlaymiz?", "✏️ Which schedule do you want to edit?", "✏️ Какое расписание редактировать?"),
     "sc_pick_delete": _("\U0001F5D1 Qaysi jadvalni o'chiramiz?", "\U0001F5D1 Which schedule do you want to delete?", "\U0001F5D1 Какое расписание удалить?"),
