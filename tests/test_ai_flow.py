@@ -67,6 +67,7 @@ class Base(unittest.TestCase):
             "release": patch.object(db, "release_reply_claim"),
             "quota": patch.object(db, "try_consume_ai_quota", return_value=quota),
             "refund": patch.object(db, "refund_ai_quota"),
+            "usage": patch.object(db, "get_ai_usage", return_value=0),
             "paused": patch.object(db, "is_ai_paused", return_value=paused),
             "pause": patch.object(db, "pause_ai_chat"),
             "hist": patch.object(db, "get_ai_history", return_value=history or []),
@@ -208,13 +209,13 @@ class PanelTests(Base):
     def test_menu_shows_usage_and_unlimited_for_admin(self):
         with patch.object(db, "get_settings", return_value=_settings()), \
              patch.object(db, "get_ai_usage", return_value=3):
-            self.assertIn("3/10", bot.build_ai_menu(OWNER)[0])
+            self.assertIn("3/50", bot.build_ai_menu(OWNER)[0])
             self.assertIn("cheklovsiz", bot.build_ai_menu(ADMIN)[0])
 
     def test_toggle_on_requires_configuration(self):
         u, q = self._query("ai_toggle")
         with patch.object(bot, "track_user"), patch.object(db, "get_settings", return_value=_settings(ai_enabled=False)), \
-             patch.object(db, "update_settings") as upd, patch.object(db, "get_ai_usage", return_value=0), \
+             patch.object(db, "update_settings") as upd, \
              patch.object(ai, "is_configured", return_value=False):
             asyncio.run(bot.on_button(u, MagicMock()))
         upd.assert_not_called()
@@ -226,7 +227,7 @@ class PanelTests(Base):
             u, q = self._query("ai_toggle")
             with patch.object(bot, "track_user"), \
                  patch.object(db, "get_settings", return_value=_settings(ai_enabled=current)), \
-                 patch.object(db, "update_settings") as upd, patch.object(db, "get_ai_usage", return_value=0), \
+                 patch.object(db, "update_settings") as upd, \
                  patch.object(ai, "is_configured", return_value=True):
                 asyncio.run(bot.on_button(u, MagicMock()))
             upd.assert_called_once_with(OWNER, ai_enabled=expected)
@@ -252,7 +253,7 @@ class PanelTests(Base):
 
         ok = text_update("Men dizaynerman")
         with patch.object(bot, "track_user"), patch.object(db, "update_settings") as upd, \
-             patch.object(db, "get_settings", return_value=_settings()), patch.object(db, "get_ai_usage", return_value=0):
+             patch.object(db, "get_settings", return_value=_settings()):
             asyncio.run(bot.on_text(ok, MagicMock()))
         upd.assert_called_once_with(OWNER, ai_info="Men dizaynerman")
         self.assertIsNone(bot.get_pending_action(OWNER))
@@ -260,7 +261,7 @@ class PanelTests(Base):
         clear = text_update("-")
         bot.set_pending_action(OWNER, "ai_info")
         with patch.object(bot, "track_user"), patch.object(db, "update_settings") as upd, \
-             patch.object(db, "get_settings", return_value=_settings()), patch.object(db, "get_ai_usage", return_value=0):
+             patch.object(db, "get_settings", return_value=_settings()):
             asyncio.run(bot.on_text(clear, MagicMock()))
         upd.assert_called_once_with(OWNER, ai_info=None)
 
@@ -274,8 +275,7 @@ class PanelTests(Base):
         self.assertFalse(labels["ai_role:seller"].startswith("\u2705"))
 
     def test_main_ai_menu_shows_role_and_button(self):
-        with patch.object(db, "get_settings", return_value=_settings(ai_role=None)), \
-             patch.object(db, "get_ai_usage", return_value=0):
+        with patch.object(db, "get_settings", return_value=_settings(ai_role=None)):
             text, markup = bot.build_ai_menu(OWNER)
         self.assertIn(ai.role_label(None), text)
         self.assertIn("ai_roles", [b.callback_data for row in markup.inline_keyboard for b in row])
