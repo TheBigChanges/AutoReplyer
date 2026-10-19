@@ -1709,6 +1709,8 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
     unlimited = bool(ADMIN_ID) and owner_id == ADMIN_ID
     try:
         async with _chat_lock(owner_id, chat_id):
+            if db.is_ai_paused(owner_id, chat_id):
+                return  # navbat kutayotganda egasi chatga o'zi yozgan: AI ham, zaxira matn ham ketmaydi
             consumed = False
             if not unlimited:
                 if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT):
@@ -1726,6 +1728,13 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 history, info.get("full_name"), settings.get("ai_info"), settings.get("ai_role"),
                 lang=get_lang(owner_id), **({"knowledge": kb_entries} if kb_entries else {}),
             )
+            # Javob tayyorlanayotganda egasi chatga o'zi yozgan bo'lishi mumkin (AI pauzasi yoqilgan): na AI javobi, na zaxira
+            # matn yuboriladi — egasi suhbatni o'zi olib bormoqda. Sarflangan kunlik limit qaytariladi.
+            if db.is_ai_paused(owner_id, chat_id):
+                if consumed:
+                    db.refund_ai_quota(owner_id, day)
+                logger.info("AI javobi bekor qilindi: egasi chatga yozgan (owner=%s, chat=%s)", owner_id, chat_id)
+                return
             if not answer:
                 if consumed:
                     db.refund_ai_quota(owner_id, day)
@@ -1954,6 +1963,8 @@ async def send_analytics_charts(bot, owner_id: int, chat_id: int, days: int) -> 
 # Jadval foydalanuvchi sozlamalarini HECH QACHON o'zgartirmaydi: faqat javob berish paytida
 # "hozir jadval oynasidami?" deb hisoblanadi.
 # ---------------------------------------------------------------------------
+# O'chirish tasdig'i: {owner_id: {"rule_id", "token", "ts"}} — «Ha, o'chirish» faqat HOZIRGI tasdiq oynasidan ishlaydi
+_sc_del_confirms: dict[int, dict] = {}
 _sc_drafts: dict[int, dict] = {}  # {owner_id: {"id", "days": set, "start", "end", "text", "edit_id", "edit", "stage", "ts"}}
 # Qaysi tugma qoralamaning qaysi bosqichida ma'noga ega (eski xabardagi tugma boshqa bosqichda ishlamasligi uchun)
 _SC_STAGE_FOR = {"sc_dnext": "days", "sc_allday": "time", "sc_deftext": "text", "sc_save": "confirm"}
@@ -2052,13 +2063,24 @@ def current_schedule_rule(owner_id: int, settings: dict, now: datetime | None = 
         return None
 
 
-def build_sched_menu(owner_id: int, notice: str | None = None):
+SC_PAGE_SIZE = 5  # menyuda bir sahifada ko'rsatiladigan jadvallar (Ultra: 30 ta jadval Telegram'ning 4096 belgi limitiga sig'maydi)
+
+
+def build_sched_menu(owner_id: int, notice: str | None = None, page: int = 0):
     lang = get_lang(owner_id)
     s = db.get_settings(owner_id)
     on = s.get("scheduler_enabled", True)
     rules = db.list_schedule_rules(owner_id)
     limit = schedule_limit_for(owner_id)
-    body = "\n\n".join(_sc_rule_lines(lang, n, r) for n, r in enumerate(rules, 1)) if rules else t(lang, "sched_none")
+    pages = max(1, -(-len(rules) // SC_PAGE_SIZE))
+    page = min(max(page, 0), pages - 1)
+    first = page * SC_PAGE_SIZE
+    body = (
+        "\n\n".join(_sc_rule_lines(lang, n, r) for n, r in enumerate(rules[first:first + SC_PAGE_SIZE], first + 1))
+        if rules else t(lang, "sched_none")
+    )
+    if pages > 1:
+        body += "\n\n" + t(lang, "sc_page", p=page + 1, n=pages)
     text = t(
         lang, "sched_menu",
         status_icon="\U0001F7E2" if on else "\U0001F534",
@@ -2067,7 +2089,12 @@ def build_sched_menu(owner_id: int, notice: str | None = None):
     ) + "\n\n" + t(lang, "sched_how")
     if notice:
         text = f"{notice}\n\n{text}"
-    keyboard = [
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️", callback_data=f"sc_pg:{page - 1}"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton("▶️", callback_data=f"sc_pg:{page + 1}"))
+    keyboard = ([nav] if nav else []) + [
         [InlineKeyboardButton(t(lang, "btn_sc_add"), callback_data="sc_add")],
         [InlineKeyboardButton(t(lang, "btn_sc_edit"), callback_data="sc_list:edit")],
         [InlineKeyboardButton(t(lang, "btn_sc_delete"), callback_data="sc_list:del")],
@@ -2086,7 +2113,7 @@ def build_sched_settings(owner_id: int):
         status=t(lang, "status_on" if on else "status_off").replace("\U0001F7E2 ", ""), tz=str(tz_from_settings(s, owner_id)),
     )
     keyboard = [
-        [InlineKeyboardButton(t(lang, "btn_sc_toggle_on" if on else "btn_sc_toggle_off"), callback_data="sc_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_sc_toggle_on" if on else "btn_sc_toggle_off"), callback_data="sc_disable" if on else "sc_enable")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
@@ -2203,13 +2230,25 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
         await query.edit_message_text(text, reply_markup=markup)
         return True
 
+    if data.startswith("sc_pg:"):
+        try:
+            page = int(data.split(":")[1])
+        except (ValueError, IndexError):
+            page = 0
+        text, markup = build_sched_menu(owner_id, page=page)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+
     if data == "sc_settings":
         text, markup = build_sched_settings(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return True
 
-    if data == "sc_toggle":
-        db.update_settings(owner_id, scheduler_enabled=not db.get_settings(owner_id).get("scheduler_enabled", True))
+    if data in ("sc_enable", "sc_disable", "sc_toggle"):
+        # Aniq amallar (idempotent): eski xabardagi tugma qayta bosilsa ham holat teskarilanmaydi.
+        # Eski «sc_toggle» tugmalari (yangilashdan oldingi xabarlar) hech narsani o'zgartirmaydi.
+        if data != "sc_toggle":
+            db.update_settings(owner_id, scheduler_enabled=(data == "sc_enable"))
         text, markup = build_sched_settings(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return True
@@ -2270,18 +2309,30 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
             await query.edit_message_text(f"{t(lang, 'sc_gone')}\n\n{text}", reply_markup=markup)
             return True
         rule_id = found[2]["id"]
+        token = secrets.token_hex(3)
+        _sc_del_confirms[owner_id] = {"rule_id": rule_id, "token": token, "ts": time.time()}
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton(t(lang, "btn_sc_del_yes"), callback_data=f"sc_del_yes:{rule_id}")],
+            [InlineKeyboardButton(t(lang, "btn_sc_del_yes"), callback_data=f"sc_del_yes:{rule_id}:{token}")],
             [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_menu")],
         ])
         await query.edit_message_text(t(lang, "sc_del_confirm", entry=found[1]), reply_markup=markup)
         return True
 
     if data.startswith("sc_del_yes:"):
+        parts = data.split(":")
+        confirm = _sc_del_confirms.pop(owner_id, None)  # bir martalik: ikkinchi bosish ham o'chirmaydi
         try:
-            gone = not db.delete_schedule_rule(owner_id, int(data.split(":")[1]))
-        except ValueError:
-            gone = True
+            rule_id, token = int(parts[1]), (parts[2] if len(parts) > 2 else None)
+        except (ValueError, IndexError):
+            rule_id, token = None, None
+        if (
+            confirm is None or rule_id is None or confirm["rule_id"] != rule_id or confirm["token"] != token
+            or time.time() - confirm["ts"] > PENDING_ACTION_TTL_SECONDS
+        ):
+            text, markup = build_sched_menu(owner_id, t(lang, "sc_stale_button"))
+            await query.edit_message_text(text, reply_markup=markup)
+            return True
+        gone = not db.delete_schedule_rule(owner_id, rule_id)
         text, markup = build_sched_menu(owner_id, t(lang, "sc_gone" if gone else "sc_deleted"))
         await query.edit_message_text(text, reply_markup=markup)
         return True
@@ -2961,6 +3012,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # hozirgi kiritishi (vaqt/matn) davom etaveradi.
     if not (data.startswith("sc_") and sc_button_is_stale(owner_id, data)):
         clear_pending_action(owner_id)
+    # Har qanday boshqa tugma (o'chirishni tasdiqlashdan tashqari) ochiq o'chirish tasdig'ini bekor qiladi
+    if not data.startswith("sc_del_yes:"):
+        _sc_del_confirms.pop(owner_id, None)
 
     lang = get_lang(owner_id)
 
