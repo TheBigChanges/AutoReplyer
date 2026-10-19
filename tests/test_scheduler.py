@@ -559,6 +559,9 @@ class MenuFlowTests(unittest.TestCase):
         draft = bot._sc_drafts.get(user)
         if fresh and draft and data.split(":")[0] in self.STAGED:
             data = f"{data}:{draft['id']}"
+        confirm = bot._sc_del_confirms.get(user)
+        if fresh and confirm and data.startswith("sc_del_yes:") and data.count(":") == 1:
+            data = f"{data}:{confirm['token']}"
         q = MagicMock()
         q.data = data
         q.from_user.id = user
@@ -942,13 +945,131 @@ class MenuFlowTests(unittest.TestCase):
         self.assertTrue(rule["is_enabled"])
         self.assertEqual(rule["text"], "Boshqa")
 
-    def test_global_toggle(self):
-        self.press("sc_toggle")
+    def test_global_enable_disable(self):
+        self.press("sc_disable")
         self.assertFalse(db.get_settings(OWNER)["scheduler_enabled"])
         q = self.press("sc_settings")
-        self.assertIn(i18n.t("uz", "btn_sc_toggle_off"), str(q.edit_message_text.await_args.kwargs["reply_markup"]))
-        self.press("sc_toggle")
+        markup = str(q.edit_message_text.await_args.kwargs["reply_markup"])
+        self.assertIn(i18n.t("uz", "btn_sc_toggle_off"), markup)
+        self.assertIn("sc_enable", markup)
+        self.press("sc_enable")
         self.assertTrue(db.get_settings(OWNER)["scheduler_enabled"])
+
+    def test_global_enable_disable_are_idempotent(self):
+        """Eski xabardagi tugma qayta bosilsa ham Scheduler holati teskarilanmaydi."""
+        self.press("sc_disable")
+        self.press("sc_disable")
+        self.assertFalse(db.get_settings(OWNER)["scheduler_enabled"])
+        self.press("sc_enable")
+        self.press("sc_enable")
+        self.assertTrue(db.get_settings(OWNER)["scheduler_enabled"])
+
+    def test_legacy_sc_toggle_changes_nothing(self):
+        self.press("sc_toggle")
+        self.assertTrue(db.get_settings(OWNER).get("scheduler_enabled", True))
+        self.press("sc_disable")
+        self.press("sc_toggle")
+        self.assertFalse(db.get_settings(OWNER)["scheduler_enabled"])
+
+    def test_settings_button_matches_state(self):
+        db.update_settings(OWNER, scheduler_enabled=True)
+
+        def cb():
+            return [b.callback_data for row in bot.build_sched_settings(OWNER)[1].inline_keyboard for b in row if b.callback_data in ("sc_enable", "sc_disable")]
+        self.assertEqual(cb(), ["sc_disable"])
+        db.update_settings(OWNER, scheduler_enabled=False)
+        self.assertEqual(cb(), ["sc_enable"])
+
+    def test_delete_confirmation_is_single_use_and_bound_to_current_dialog(self):
+        self.create()
+        rid = db.list_schedule_rules(OWNER)[0]["id"]
+        self.press(f"sc_del:{rid}")
+        old_yes = f"sc_del_yes:{rid}:{bot._sc_del_confirms[OWNER]['token']}"
+        self.press("sc_menu")  # foydalanuvchi fikridan qaytdi
+        self.press(f"sc_ed:time:{rid}")
+        self.say("10:00-14:00")  # jadvalni tahrirladi
+        q = self.press(old_yes, fresh=False)  # eski xabardagi «Ha, o'chirish»
+        self.assertEqual(db.count_schedule_rules(OWNER), 1)
+        self.assertIn(i18n.t("uz", "sc_stale_button"), self.shown(q))
+
+    def test_delete_confirmation_cannot_be_reused_or_forged(self):
+        self.create()
+        rid = db.list_schedule_rules(OWNER)[0]["id"]
+        for forged in (f"sc_del_yes:{rid}", f"sc_del_yes:{rid}:zzzzzz", "sc_del_yes:abc:zzzzzz"):
+            self.press(f"sc_del:{rid}")
+            self.press(forged, fresh=False)
+            self.assertEqual(db.count_schedule_rules(OWNER), 1, forged)
+        self.press(f"sc_del:{rid}")
+        yes = f"sc_del_yes:{rid}:{bot._sc_del_confirms[OWNER]['token']}"
+        self.press(yes, fresh=False)
+        self.assertEqual(db.count_schedule_rules(OWNER), 0)
+        _, rid2 = db.add_schedule_rule(OWNER, logic.days_mask([1]), m(9), m(10), None, 5)
+        self.press(yes, fresh=False)  # o'sha tasdiq ikkinchi marta — boshqa jadvalni ham o'chirmaydi
+        self.assertEqual(db.count_schedule_rules(OWNER), 1)
+
+    def test_delete_confirmation_for_another_rule_does_not_apply(self):
+        self.create()
+        _, rid2 = db.add_schedule_rule(OWNER, logic.days_mask([5]), m(9), m(10), None, 5)
+        rid1 = db.list_schedule_rules(OWNER)[0]["id"]
+        self.press(f"sc_del:{rid1}")
+        token = bot._sc_del_confirms[OWNER]["token"]
+        self.press(f"sc_del_yes:{rid2}:{token}", fresh=False)  # boshqa jadval ID'si
+        self.assertEqual(db.count_schedule_rules(OWNER), 2)
+
+    def test_delete_confirmation_expires(self):
+        self.create()
+        rid = db.list_schedule_rules(OWNER)[0]["id"]
+        self.press(f"sc_del:{rid}")
+        bot._sc_del_confirms[OWNER]["ts"] -= bot.PENDING_ACTION_TTL_SECONDS + 5
+        self.press(f"sc_del_yes:{rid}")
+        self.assertEqual(db.count_schedule_rules(OWNER), 1)
+
+    def test_pagination_shows_five_rules_per_page_with_navigation(self):
+        for d in range(7):
+            for k in range(5):
+                db.add_schedule_rule(OWNER, logic.days_mask([d]), m(k * 4), m(k * 4 + 3), None, 35)
+        text, markup = bot.build_sched_menu(OWNER)
+        self.assertIn(i18n.t("uz", "sc_page", p=1, n=7), text)
+        cbs = [b.callback_data for row in markup.inline_keyboard for b in row]
+        self.assertIn("sc_pg:1", cbs)
+        self.assertNotIn("sc_pg:-1", cbs)
+        q = self.press("sc_pg:6")  # oxirgi sahifa
+        last = self.shown(q)
+        self.assertIn(i18n.t("uz", "sc_page", p=7, n=7), last)
+        cbs = [b.callback_data for row in q.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard for b in row]
+        self.assertIn("sc_pg:5", cbs)
+        self.assertNotIn("sc_pg:7", cbs)
+        self.assertIn("30.", bot.build_sched_menu(OWNER, page=5)[0])  # tartib raqami sahifalar bo'ylab davom etadi
+
+    def test_pagination_clamps_bad_pages(self):
+        db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(9), m(18), None, 5)
+        for data in ("sc_pg:99", "sc_pg:-4", "sc_pg:abc", "sc_pg:"):
+            q = self.press(data)
+            self.assertTrue(q.edit_message_text.await_args is not None, data)
+
+    def test_no_pager_for_few_rules(self):
+        db.add_schedule_rule(OWNER, logic.WEEKDAYS_MASK, m(9), m(18), None, 5)
+        text, markup = bot.build_sched_menu(OWNER)
+        self.assertFalse(any(b.callback_data.startswith("sc_pg:") for row in markup.inline_keyboard for b in row))
+
+    def test_every_page_fits_telegram_limit_in_every_language(self):
+        """Ultra: 30 ta jadval, ruscha uzun kun nomlari, eng uzun matnlar, ba'zilari pauzada — har sahifa 4096 dan kam."""
+        sets = [[0, 2, 4], [1, 3], [5], [6]]  # kesishmaydigan kun to'plamlari (ruscha: "Пн, Ср, Пт" kabi uzun nomlar)
+        n = 0
+        for slot in range(8):
+            for days in sets:
+                status, rid = db.add_schedule_rule(OWNER, logic.days_mask(days), m(slot * 3), m(slot * 3 + 2), "я" * logic.SCHEDULE_MAX_TEXT, 35)
+                self.assertEqual(status, "ok")
+                if n % 3 == 0:
+                    db.update_schedule_rule(OWNER, rid, is_enabled=False)
+                n += 1
+        self.assertEqual(db.count_schedule_rules(OWNER), 32)
+        for lang in ("uz", "en", "ru"):
+            with patch.object(bot, "get_lang", lambda uid, lang=lang: lang):
+                for page in range(7):
+                    text, markup = bot.build_sched_menu(OWNER, t_notice(lang), page=page)
+                    self.assertLess(len(text), 4096, (lang, page, len(text)))
+                self.assertLess(len(bot.build_sched_list(OWNER, "edit")[0]), 4096)
 
     def test_full_menu_with_30_rules_fits_telegram_limit(self):
         for d in range(7):
@@ -957,6 +1078,11 @@ class MenuFlowTests(unittest.TestCase):
         self.assertEqual(db.count_schedule_rules(OWNER), 35)
         text, _ = bot.build_sched_menu(OWNER)
         self.assertLess(len(text), 4096)
+
+
+def t_notice(lang):
+    """Eng uzun odatiy bildirishnoma (menyu tepasiga qo'shiladi)."""
+    return i18n.t(lang, "sc_del_confirm", entry="")
 
 
 class PlanAndI18nTests(unittest.TestCase):
