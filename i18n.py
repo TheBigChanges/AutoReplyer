@@ -1245,6 +1245,7 @@ T: dict[str, dict] = {
         "This flow has expired. Start again with “Add schedule”.",
         "Процесс устарел. Начните заново через «Добавить расписание».",
     ),
+    "sc_page": _("Sahifa {p}/{n}", "Page {p}/{n}", "Страница {p}/{n}"),
     "sc_stale_button": _(
         "Bu tugma eskirgan. Joriy jarayonni oxirgi xabardagi tugmalar yoki yozuvingiz bilan davom ettiring.",
         "This button is out of date. Continue the current process with the latest message's buttons or your reply.",
