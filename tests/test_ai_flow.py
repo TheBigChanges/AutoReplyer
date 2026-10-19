@@ -53,7 +53,7 @@ class Base(unittest.TestCase):
         bot._bot_sent_ids.clear()
 
     def flow(self, update=None, owner=OWNER, settings=None, answer="Salom! Narx 100$.", quota=True,
-             paused=False, configured=True, history=None, send_side_effect=None):
+             paused=False, configured=True, history=None, send_side_effect=None, paused_after_generate=False):
         update = update or _update()
         settings = settings or _settings()
         sent = MagicMock(message_id=555)
@@ -68,7 +68,9 @@ class Base(unittest.TestCase):
             "quota": patch.object(db, "try_consume_ai_quota", return_value=quota),
             "refund": patch.object(db, "refund_ai_quota"),
             "usage": patch.object(db, "get_ai_usage", return_value=0),
-            "paused": patch.object(db, "is_ai_paused", return_value=paused),
+            # paused_after_generate: pauza dastlabki ikki tekshiruvda (qabul + navbat) yo'q, Gemini javobi tayyor bo'lgach (egasi yozgan) yoqilgan
+            "paused": patch.object(db, "is_ai_paused", side_effect=(lambda o, c, _n=[0]: (_n.__setitem__(0, _n[0] + 1) or _n[0] >= 3))
+                                   if paused_after_generate else None, return_value=paused),
             "pause": patch.object(db, "pause_ai_chat"),
             "hist": patch.object(db, "get_ai_history", return_value=history or []),
             "add": patch.object(db, "add_ai_messages"),
@@ -89,6 +91,31 @@ class Base(unittest.TestCase):
 
     def texts(self, send):
         return [c.kwargs["text"] for c in send.call_args_list]
+
+
+class AiPauseRecheckTests(Base):
+    """Egasi chatga Gemini javob tayyorlayotgan paytda yozsa — hech narsa yuborilmaydi."""
+
+    def test_owner_wrote_while_generating_blocks_ai_answer(self):
+        send, m = self.flow(paused_after_generate=True)
+        self.assertEqual(self.texts(send), [])
+        m["gen"].assert_awaited_once()
+        m["add"].assert_not_called()  # suhbat tarixiga ham yozilmaydi
+        m["refund"].assert_called_once()  # sarflangan limit qaytariladi
+
+    def test_owner_wrote_while_generating_blocks_fallback_text_too(self):
+        send, m = self.flow(paused_after_generate=True, answer=None)
+        self.assertEqual(self.texts(send), [])  # AI xato qilganda zaxira matn ham ketmaydi
+        m["claim"].assert_not_called()
+
+    def test_admin_without_quota_also_blocked(self):
+        send, m = self.flow(owner=ADMIN, paused_after_generate=True)
+        self.assertEqual(self.texts(send), [])
+        m["refund"].assert_not_called()  # limit sarflanmagan edi
+
+    def test_no_pause_still_sends(self):
+        send, _ = self.flow()
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
 
 
 class AiReplyTests(Base):
