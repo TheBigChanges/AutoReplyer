@@ -992,6 +992,67 @@ class MenuFlowTests(unittest.TestCase):
         self.assertEqual(db.count_schedule_rules(OWNER), 1)
         self.assertIn(i18n.t("uz", "sc_stale_button"), self.shown(q))
 
+    def _command(self, handler, user=OWNER):
+        u = MagicMock()
+        u.effective_user = MagicMock(id=user, is_bot=False)
+        u.message.reply_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.args = []
+        with patch.object(bot, "track_user"), patch.object(bot, "is_subscribed", AsyncMock(return_value=True)):
+            run(handler(u, ctx))
+        return u
+
+    def test_start_cancels_open_delete_confirmation_and_draft(self):
+        self.create()
+        rid = db.list_schedule_rules(OWNER)[0]["id"]
+        self.press(f"sc_del:{rid}")
+        yes = f"sc_del_yes:{rid}:{bot._sc_del_confirms[OWNER]['token']}"
+        self.press("sc_add")  # qoralama ham ochiq
+        self.assertIn(OWNER, bot._sc_drafts)
+        self._command(bot.cmd_start)
+        self.assertNotIn(OWNER, bot._sc_del_confirms)
+        self.assertNotIn(OWNER, bot._sc_drafts)
+        self.press(yes, fresh=False)  # eski «Ha, o'chirish»
+        self.assertEqual(db.count_schedule_rules(OWNER), 1)
+
+    def test_cancel_cancels_open_delete_confirmation(self):
+        self.create()
+        rid = db.list_schedule_rules(OWNER)[0]["id"]
+        self.press(f"sc_del:{rid}")
+        yes = f"sc_del_yes:{rid}:{bot._sc_del_confirms[OWNER]['token']}"
+        u = self._command(bot.cmd_cancel)
+        self.assertNotIn(OWNER, bot._sc_del_confirms)
+        self.assertIn(i18n.t("uz", "cancelled"), u.message.reply_text.call_args[0][0])  # foydalanuvchiga xabar beriladi
+        self.press(yes, fresh=False)
+        self.assertEqual(db.count_schedule_rules(OWNER), 1)
+
+    def test_cancel_cancels_open_draft_and_old_save_button_is_stale(self):
+        self.press("sc_add")
+        self.press("sc_d:2")
+        self.press("sc_dnext")
+        old_save = f"sc_save:{bot._sc_drafts[OWNER]['id']}"
+        self._command(bot.cmd_cancel)
+        self.assertNotIn(OWNER, bot._sc_drafts)
+        self.assertIsNone(bot.get_pending_action(OWNER))
+        self.press(old_save, fresh=False)
+        self.assertEqual(db.count_schedule_rules(OWNER), 0)
+
+    def test_cancel_with_nothing_open_stays_silent(self):
+        bot._sc_drafts.pop(OWNER, None)
+        bot._sc_del_confirms.pop(OWNER, None)
+        u = self._command(bot.cmd_cancel)
+        u.message.reply_text.assert_not_called()
+
+    def test_clear_scheduler_state_only_touches_own_user(self):
+        bot._sc_del_confirms[OTHER] = {"rule_id": 1, "token": "x", "ts": 0}
+        bot._sc_new_draft(OTHER)
+        bot._sc_new_draft(OWNER)
+        self.assertTrue(bot.clear_scheduler_state(OWNER))
+        self.assertFalse(bot.clear_scheduler_state(OWNER))
+        self.assertIn(OTHER, bot._sc_drafts)
+        self.assertIn(OTHER, bot._sc_del_confirms)
+        bot.clear_scheduler_state(OTHER)
+
     def test_delete_confirmation_cannot_be_reused_or_forged(self):
         self.create()
         rid = db.list_schedule_rules(OWNER)[0]["id"]
