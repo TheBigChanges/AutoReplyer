@@ -53,7 +53,8 @@ class Base(unittest.TestCase):
         bot._bot_sent_ids.clear()
 
     def flow(self, update=None, owner=OWNER, settings=None, answer="Salom! Narx 100$.", quota=True,
-             paused=False, configured=True, history=None, send_side_effect=None, paused_after_generate=False):
+             paused=False, configured=True, history=None, send_side_effect=None, paused_after_generate=False,
+             history_error=None, add_error=None, gen_error=None):
         update = update or _update()
         settings = settings or _settings()
         sent = MagicMock(message_id=555)
@@ -72,11 +73,11 @@ class Base(unittest.TestCase):
             "paused": patch.object(db, "is_ai_paused", side_effect=(lambda o, c, _n=[0]: (_n.__setitem__(0, _n[0] + 1) or _n[0] >= 3))
                                    if paused_after_generate else None, return_value=paused),
             "pause": patch.object(db, "pause_ai_chat"),
-            "hist": patch.object(db, "get_ai_history", return_value=history or []),
-            "add": patch.object(db, "add_ai_messages"),
+            "hist": patch.object(db, "get_ai_history", side_effect=history_error, return_value=history or []),
+            "add": patch.object(db, "add_ai_messages", side_effect=add_error),
             "user": patch.object(db, "get_user", return_value={"full_name": "Dilshod"}),
             "conf": patch.object(ai, "is_configured", return_value=configured),
-            "gen": patch.object(ai, "generate_reply", new=AsyncMock(return_value=answer)),
+            "gen": patch.object(ai, "generate_reply", new=AsyncMock(return_value=answer, side_effect=gen_error)),
         }
         started = {k: p.start() for k, p in patches.items()}
         for p in patches.values():
@@ -116,6 +117,53 @@ class AiPauseRecheckTests(Base):
     def test_no_pause_still_sends(self):
         send, _ = self.flow()
         self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+
+
+class AiQuotaSafetyNetTests(Base):
+    """Kutilmagan xato bo'lsa band qilingan kunlik limit qaytariladi; yuborilgan javob uchun esa qaytarilmaydi."""
+
+    def test_postgres_error_after_consuming_refunds_quota(self):
+        send, m = self.flow(history_error=RuntimeError("connection lost"))
+        self.assertEqual(self.texts(send), [])
+        m["quota"].assert_called_once()
+        m["refund"].assert_called_once()
+
+    def test_unexpected_error_in_generation_refunds_quota(self):
+        send, m = self.flow(gen_error=ValueError("boom"))
+        self.assertEqual(self.texts(send), [])
+        m["refund"].assert_called_once()
+
+    def test_non_telegram_error_while_sending_refunds_quota(self):
+        send, m = self.flow(send_side_effect=OSError("socket"))
+        m["refund"].assert_called_once()
+
+    def test_error_after_successful_send_does_not_refund(self):
+        """Javob mijozga ketdi, keyin tarixni yozishda xato — limit sarflanganicha qoladi."""
+        send, m = self.flow(add_error=RuntimeError("db down"))
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+        m["refund"].assert_not_called()
+
+    def test_successful_reply_does_not_refund(self):
+        _, m = self.flow()
+        m["refund"].assert_not_called()
+
+    def test_refund_happens_only_once_on_handled_failures(self):
+        _, m = self.flow(answer=None)  # AI javob bermadi: mavjud yo'l qaytaradi
+        self.assertEqual(m["refund"].call_count, 1)
+        _, m = self.flow(send_side_effect=__import__("telegram.error", fromlist=["TelegramError"]).TelegramError("x"))
+        self.assertEqual(m["refund"].call_count, 1)
+        _, m = self.flow(paused_after_generate=True)
+        self.assertEqual(m["refund"].call_count, 1)
+
+    def test_admin_never_consumes_or_refunds_on_error(self):
+        _, m = self.flow(owner=ADMIN, history_error=RuntimeError("x"))
+        m["quota"].assert_not_called()
+        m["refund"].assert_not_called()
+
+    def test_failing_refund_does_not_crash_the_flow(self):
+        with patch.object(db, "refund_ai_quota", side_effect=RuntimeError("db")):
+            send, _ = self.flow(history_error=RuntimeError("x"))
+        self.assertEqual(self.texts(send), [])
 
 
 class AiReplyTests(Base):
