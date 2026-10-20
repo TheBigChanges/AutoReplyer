@@ -1707,11 +1707,12 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
     business_connection_id = bm.business_connection_id
     day = str(today_tashkent())
     unlimited = bool(ADMIN_ID) and owner_id == ADMIN_ID
+    consumed = False   # kunlik limitdan bitta foydalanish band qilinganmi (hali qaytarilmagan)
+    delivered = False  # AI javobi mijozga muvaffaqiyatli yuborildimi
     try:
         async with _chat_lock(owner_id, chat_id):
             if db.is_ai_paused(owner_id, chat_id):
                 return  # navbat kutayotganda egasi chatga o'zi yozgan: AI ham, zaxira matn ham ketmaydi
-            consumed = False
             if not unlimited:
                 if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT):
                     await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-limit")
@@ -1732,11 +1733,13 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
             # matn yuboriladi — egasi suhbatni o'zi olib bormoqda. Sarflangan kunlik limit qaytariladi.
             if db.is_ai_paused(owner_id, chat_id):
                 if consumed:
+                    consumed = False
                     db.refund_ai_quota(owner_id, day)
                 logger.info("AI javobi bekor qilindi: egasi chatga yozgan (owner=%s, chat=%s)", owner_id, chat_id)
                 return
             if not answer:
                 if consumed:
+                    consumed = False
                     db.refund_ai_quota(owner_id, day)
                 await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-failed")
                 return
@@ -1746,15 +1749,25 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 )
             except TelegramError as e:
                 if consumed:
+                    consumed = False
                     db.refund_ai_quota(owner_id, day)
                 logger.warning("AI javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
                 return
+            delivered = True  # javob ketdi: bundan keyingi xatolar limitni qaytarmaydi
             _remember_sent(chat_id, sent)
             track_analytics(owner_id, "ai")
             db.add_ai_messages(owner_id, chat_id, [("user", text), ("model", answer)], keep=AI_HISTORY_MESSAGES)
             logger.info("ai reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
     except Exception:
         logger.exception("AI javob oqimida kutilmagan xato (owner=%s, chat=%s)", owner_id, chat_id)
+    finally:
+        # Kutilmagan xato (Python/PostgreSQL), bekor qilish yoki boshqa chiqish yo'li: javob yuborilmagan bo'lsa,
+        # band qilingan kunlik limit qaytariladi. Allaqachon qaytarilgan bo'lsa (`consumed` False) — ikki marta emas.
+        if consumed and not delivered:
+            try:
+                db.refund_ai_quota(owner_id, day)
+            except Exception:
+                logger.exception("AI limitini qaytarib bo'lmadi (owner=%s)", owner_id)
 
 
 async def ai_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1965,7 +1978,14 @@ async def send_analytics_charts(bot, owner_id: int, chat_id: int, days: int) -> 
 # ---------------------------------------------------------------------------
 # O'chirish tasdig'i: {owner_id: {"rule_id", "token", "ts"}} — «Ha, o'chirish» faqat HOZIRGI tasdiq oynasidan ishlaydi
 _sc_del_confirms: dict[int, dict] = {}
-_sc_drafts: dict[int, dict] = {}  # {owner_id: {"id", "days": set, "start", "end", "text", "edit_id", "edit", "stage", "ts"}}
+_sc_drafts: dict[int, dict] = {}
+
+
+def clear_scheduler_state(owner_id: int) -> bool:
+    """Scheduler'ning vaqtinchalik holatlarini (qoralama va o'chirish tasdig'i) tozalaydi. Biror narsa bekor bo'lsa True."""
+    had_draft = _sc_drafts.pop(owner_id, None) is not None
+    had_confirm = _sc_del_confirms.pop(owner_id, None) is not None
+    return had_draft or had_confirm  # {owner_id: {"id", "days": set, "start", "end", "text", "edit_id", "edit", "stage", "ts"}}
 # Qaysi tugma qoralamaning qaysi bosqichida ma'noga ega (eski xabardagi tugma boshqa bosqichda ishlamasligi uchun)
 _SC_STAGE_FOR = {"sc_dnext": "days", "sc_allday": "time", "sc_deftext": "text", "sc_save": "confirm"}
 SC_PREVIEW_CHARS = 60
@@ -2847,6 +2867,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     track_user(update.effective_user)
     clear_pending_action(owner_id)  # /start har doim tugallanmagan amalni tozalaydi
+    clear_scheduler_state(owner_id)  # ... shu jumladan jadval qoralamasi va o'chirish tasdig'ini
 
     inviter_id = parse_referral_arg(context.args)
 
@@ -3762,7 +3783,8 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     cleared_admin = clear_pending_admin_action(owner_id)
     cleared_panel = clear_pending_action(owner_id)
-    if cleared_admin or cleared_panel:
+    cleared_scheduler = clear_scheduler_state(owner_id)
+    if cleared_admin or cleared_panel or cleared_scheduler:
         await update.message.reply_text(t(get_lang(owner_id), "cancelled"))
 
 
