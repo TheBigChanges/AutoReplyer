@@ -76,12 +76,23 @@ def summarize(rows, days: int, tz, now: datetime | None = None) -> dict:
 
 
 def busiest_window(hourly, width: int = 2):
-    """Eng ko'p xabar kelgan ketma-ket `width` soatlik oyna: barcha oraliqlar yig'indisi solishtiriladi.
-    Teng bo'lsa — faol soatdan boshlanadigani, so'ng eng erta oyna. Natija: (boshlanish, tugash) yoki None."""
+    """Eng ko'p xabar kelgan ketma-ket `width` soatlik oyna: barcha oraliqlar yig'indisi solishtiriladi, shu jumladan
+    yarim tundan o'tadigani (23:00-01:00: oxirgi soat + keyingi kunning birinchi soati).
+    Teng bo'lsa — faol soatdan boshlanadigani, so'ng eng erta oyna. Natija: (boshlanish, tugash) yoki None;
+    tugash soati 24 ga modul olinadi, ya'ni oyna yarim tundan o'tsa tugash < boshlanish (masalan (23, 1))."""
     if not any(hourly):
         return None
-    start = max(range(0, 24 - width + 1), key=lambda h: (sum(hourly[h:h + width]), hourly[h], -h))
-    return start, start + width
+    n = len(hourly)
+    start = max(range(n), key=lambda h: (sum(hourly[(h + i) % n] for i in range(width)), hourly[h], -h))
+    return start, (start + width) % n
+
+
+def peak_contains(peak, hour: int) -> bool:
+    """Soat `peak` oynasiga kiradimi (yarim tundan o'tadigan oynani ham to'g'ri hisoblaydi)."""
+    if not peak:
+        return False
+    start, end = peak
+    return start <= hour < end if start < end else (hour >= start or hour < end)
 
 
 def is_empty(summary: dict) -> bool:
@@ -164,7 +175,7 @@ def render_bar_chart(summary: dict, labels: dict) -> bytes:
     hours = list(range(24))
     values = summary["hourly"]
     peak = summary["peak"]
-    colors = [_COLORS["faq"] if peak and peak[0] <= h < peak[1] else _COLORS["incoming"] for h in hours]
+    colors = [_COLORS["faq"] if peak_contains(peak, h) else _COLORS["incoming"] for h in hours]
     ax.bar(hours, values, color=colors)
     ax.set_xticks(hours)
     ax.set_xticklabels([f"{h:02d}" for h in hours], fontsize=8)
