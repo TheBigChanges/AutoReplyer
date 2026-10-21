@@ -73,7 +73,7 @@ class SummarizeTests(unittest.TestCase):
         self.assertIsNone(analytics.busiest_window([0] * 24))
         h = [0] * 24
         h[23] = 5
-        self.assertEqual(analytics.busiest_window(h), (22, 24))
+        self.assertEqual(analytics.busiest_window(h), (23, 1))  # faol soatdan boshlanadigan oyna
 
     def test_busiest_window_compares_all_two_hour_sums(self):
         h = [0] * 24
@@ -82,6 +82,41 @@ class SummarizeTests(unittest.TestCase):
         h = [0] * 24
         h[5], h[6] = 3, 3
         self.assertEqual(analytics.busiest_window(h), (5, 7))
+
+    def test_busiest_window_wraps_around_midnight(self):
+        """Xabarlar asosan 23:00 va 00:00 da kelsa — eng faol oyna 23:00-01:00."""
+        h = [0] * 24
+        h[23], h[0] = 9, 8
+        h[12], h[13] = 10, 5  # kunduzgi oyna: 15 ta < 17 ta
+        self.assertEqual(analytics.busiest_window(h), (23, 1))
+        self.assertEqual(analytics.busiest_window([0] * 22 + [4, 4]), (22, 0))  # 22:00-24:00 ham yarim tun chegarasi
+
+    def test_wrap_window_does_not_beat_larger_regular_window(self):
+        h = [0] * 24
+        h[23], h[0] = 3, 3
+        h[10], h[11] = 5, 5
+        self.assertEqual(analytics.busiest_window(h), (10, 12))
+
+    def test_wrap_window_in_summary_and_text(self):
+        rows = [(hour_ts(1, 23), "incoming", 6), (hour_ts(0, 0), "incoming", 5), (hour_ts(0, 12), "incoming", 4)]
+        s = analytics.summarize(rows, 7, TZ)
+        self.assertEqual(s["peak"], (23, 1))
+        self.assertEqual(bot._an_peak_text("uz", s["peak"]), "23:00\u201301:00")
+
+    def test_peak_contains_handles_wrap(self):
+        self.assertTrue(all(analytics.peak_contains((23, 1), h) for h in (23, 0)))
+        self.assertFalse(any(analytics.peak_contains((23, 1), h) for h in (1, 2, 12, 22)))
+        self.assertTrue(analytics.peak_contains((9, 11), 10))
+        self.assertFalse(analytics.peak_contains((9, 11), 11))
+        self.assertFalse(analytics.peak_contains(None, 3))
+
+    def test_bar_chart_highlights_wrapping_peak_hours(self):
+        s = analytics.summarize([(hour_ts(1, 23), "incoming", 6), (hour_ts(0, 0), "incoming", 5)], 7, TZ)
+        with patch.object(analytics, "_fig_to_png", lambda fig: [p.get_facecolor() for p in fig.axes[0].patches]):
+            colors = analytics.render_bar_chart(s, bot.analytics_chart_labels("uz", "bar"))
+        import matplotlib.colors as mc
+        hi = mc.to_rgba(analytics._COLORS["faq"])
+        self.assertEqual([i for i, c in enumerate(colors) if tuple(c) == hi], [0, 23])
 
     def test_today_has_hourly_sent_series(self):
         s = analytics.summarize(self.rows(), 1, TZ)
