@@ -54,16 +54,23 @@ class Base(unittest.TestCase):
 
     def flow(self, update=None, owner=OWNER, settings=None, answer="Salom! Narx 100$.", quota=True,
              paused=False, configured=True, history=None, send_side_effect=None, paused_after_generate=False,
-             history_error=None, add_error=None, gen_error=None):
+             history_error=None, add_error=None, gen_error=None, during_generate=None):
         update = update or _update()
-        settings = settings or _settings()
+        state = dict(settings or _settings())  # joriy sozlamalar (so'rov davomida o'zgartirilishi mumkin)
         sent = MagicMock(message_id=555)
         ctx = MagicMock()
         ctx.bot.send_message = AsyncMock(side_effect=send_side_effect, return_value=sent)
         conn = {"owner_user_id": owner, "is_enabled": True, "can_reply": True}
+        async def generate(*a, **k):
+            if during_generate:
+                during_generate(state)  # Gemini ishlayotgan paytda egasi sozlamani o'zgartiradi
+            if gen_error:
+                raise gen_error
+            return answer
+
         patches = {
             "conn": patch.object(db, "get_connection_by_business_id", return_value=conn),
-            "settings": patch.object(db, "get_settings", return_value=settings),
+            "settings": patch.object(db, "get_settings", side_effect=lambda o: dict(state)),
             "claim": patch.object(db, "try_claim_reply", return_value=123.0),
             "release": patch.object(db, "release_reply_claim"),
             "quota": patch.object(db, "try_consume_ai_quota", return_value=quota),
@@ -77,7 +84,7 @@ class Base(unittest.TestCase):
             "add": patch.object(db, "add_ai_messages", side_effect=add_error),
             "user": patch.object(db, "get_user", return_value={"full_name": "Dilshod"}),
             "conf": patch.object(ai, "is_configured", return_value=configured),
-            "gen": patch.object(ai, "generate_reply", new=AsyncMock(return_value=answer, side_effect=gen_error)),
+            "gen": patch.object(ai, "generate_reply", new=AsyncMock(side_effect=generate)),
         }
         started = {k: p.start() for k, p in patches.items()}
         for p in patches.values():
@@ -117,6 +124,68 @@ class AiPauseRecheckTests(Base):
     def test_no_pause_still_sends(self):
         send, _ = self.flow()
         self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+
+
+class AiSettingsRecheckTests(Base):
+    """Gemini ishlayotgan paytda sozlama o'zgarsa — eski so'rov javobi yuborilmaydi (limit qaytariladi)."""
+
+    def assert_dropped(self, mutate, **kw):
+        send, m = self.flow(during_generate=mutate, **kw)
+        self.assertEqual(self.texts(send), [])
+        m["gen"].assert_awaited_once()
+        m["add"].assert_not_called()
+        m["refund"].assert_called_once()
+        m["claim"].assert_not_called()  # zaxira matn ham ketmaydi
+
+    def test_ai_turned_off_during_generation(self):
+        self.assert_dropped(lambda st: st.update(ai_enabled=False))
+
+    def test_owner_went_online_during_generation(self):
+        self.assert_dropped(lambda st: st.update(offline=False))
+
+    def test_sleep_mode_started_during_generation(self):
+        with patch.object(bot, "is_within_sleep_window", return_value=True):
+            def start_sleep(st):
+                st.update(sleep_mode_enabled=True)
+            self.assert_dropped(start_sleep)
+
+    def test_plan_lost_ai_during_generation(self):
+        state = {"ai": True}
+
+        def revoke(st):
+            state["ai"] = False
+
+        with patch.object(bot, "has_feature", lambda uid, f: state["ai"] if f == "ai" else True):
+            self.assert_dropped(revoke)
+
+    def test_fallback_text_also_dropped_when_ai_failed_and_setting_changed(self):
+        send, m = self.flow(answer=None, during_generate=lambda st: st.update(offline=False))
+        self.assertEqual(self.texts(send), [])
+        m["claim"].assert_not_called()
+
+    def test_unchanged_settings_still_send(self):
+        send, m = self.flow(during_generate=lambda st: st.update(auto_reply_text="boshqa matn"))
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+        m["refund"].assert_not_called()
+
+    def test_settings_changed_while_waiting_for_chat_lock_never_consumes_quota(self):
+        with patch.object(bot, "ai_reply_still_allowed", return_value=False):
+            send, m = self.flow()
+        self.assertEqual(self.texts(send), [])
+        m["quota"].assert_not_called()
+        m["gen"].assert_not_awaited()
+
+    def test_schedule_window_keeps_ai_allowed_when_owner_online(self):
+        with patch.object(bot, "current_schedule_rule", lambda owner, st, now=None: {"id": 1}):
+            send, _ = self.flow(settings=_settings(offline=False), during_generate=lambda st: None)
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+
+    def test_schedule_window_closing_during_generation_drops_reply(self):
+        window = {"open": True}
+        with patch.object(bot, "current_schedule_rule", lambda owner, st, now=None: {"id": 1} if window["open"] else None):
+            send, m = self.flow(settings=_settings(offline=False), during_generate=lambda st: window.update(open=False))
+        self.assertEqual(self.texts(send), [])
+        m["refund"].assert_called_once()
 
 
 class AiQuotaSafetyNetTests(Base):
