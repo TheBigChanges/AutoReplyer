@@ -1711,8 +1711,8 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
     delivered = False  # AI javobi mijozga muvaffaqiyatli yuborildimi
     try:
         async with _chat_lock(owner_id, chat_id):
-            if db.is_ai_paused(owner_id, chat_id):
-                return  # navbat kutayotganda egasi chatga o'zi yozgan: AI ham, zaxira matn ham ketmaydi
+            if db.is_ai_paused(owner_id, chat_id) or not ai_reply_still_allowed(owner_id):
+                return  # navbat kutayotganda egasi chatga yozgan yoki sozlamalar o'zgargan: AI ham, zaxira matn ham ketmaydi
             if not unlimited:
                 if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT):
                     await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-limit")
@@ -1731,11 +1731,13 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
             )
             # Javob tayyorlanayotganda egasi chatga o'zi yozgan bo'lishi mumkin (AI pauzasi yoqilgan): na AI javobi, na zaxira
             # matn yuboriladi — egasi suhbatni o'zi olib bormoqda. Sarflangan kunlik limit qaytariladi.
-            if db.is_ai_paused(owner_id, chat_id):
+            # Shuningdek, so'rov davomida AI o'chirilgan, holat Onlayn qilingan, jadval oynasi tugagan yoki uxlash vaqti
+            # boshlangan bo'lishi mumkin: joriy sozlamalar bo'yicha qayta tekshiramiz (eski so'rov yangi sozlamani buzmaydi).
+            if db.is_ai_paused(owner_id, chat_id) or not ai_reply_still_allowed(owner_id):
                 if consumed:
                     consumed = False
                     db.refund_ai_quota(owner_id, day)
-                logger.info("AI javobi bekor qilindi: egasi chatga yozgan (owner=%s, chat=%s)", owner_id, chat_id)
+                logger.info("AI javobi bekor qilindi: egasi yozgan yoki sozlamalar o'zgargan (owner=%s, chat=%s)", owner_id, chat_id)
                 return
             if not answer:
                 if consumed:
@@ -1786,6 +1788,7 @@ def build_panel(owner_id: int):
     s = db.get_settings(owner_id)
     status_line = t(lang, "panel_offline" if s["offline"] else "panel_online")
     toggle_label = t(lang, "panel_go_online" if s["offline"] else "panel_go_offline")
+    toggle_data = "status_online" if s["offline"] else "status_offline"  # aniq amal: eski tugma qayta bosilsa holat teskarilanmaydi
     sleep_line = t(lang, "panel_sleep_on" if s.get("sleep_mode_enabled") else "panel_sleep_off")
 
     ai_on = bool(s.get("ai_enabled"))
@@ -1801,7 +1804,7 @@ def build_panel(owner_id: int):
     )
     plan = plan_of(owner_id)
     keyboard = [
-        [InlineKeyboardButton(toggle_label, callback_data="toggle_status")],
+        [InlineKeyboardButton(toggle_label, callback_data=toggle_data)],
         [InlineKeyboardButton(t(lang, "btn_edit_cooldown"), callback_data="edit_cooldown")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_edit_text"), plan_allows(owner_id, plan, "custom_text")), callback_data="edit_text")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_bio"), plan_allows(owner_id, plan, "bio")), callback_data="bio_menu")],
@@ -2057,6 +2060,28 @@ def _sc_rule_lines(lang: str, n: int, r: dict) -> str:
     days = format_day_set(r["days"], _sc_day_names(lang), t(lang, "sched_everyday"))
     head = f"{n}. {days}" + ("" if r["is_enabled"] else f" ({t(lang, 'sched_paused')})")
     return f"{head}\n{icon} {time_text}\n\U0001F4AC {_sc_text_preview(lang, r['text'])}"
+
+
+def reply_state(owner_id: int, settings: dict):
+    """Avtojavob holati: (uxlayaptimi, faol jadval qoidasi yoki None). Sleep Mode va Jadval BIR XIL vaqt zonasi va
+    BIR XIL «hozir» bilan hisoblanadi; Sleep Mode jadvaldan ustun. on_raw_update va AI javobini yuborishdan oldingi
+    qayta tekshiruv shu funksiyadan foydalanadi."""
+    now = datetime.now(tz_from_settings(settings, owner_id))
+    now_minutes = now.hour * 60 + now.minute
+    sleeping = bool(settings.get("sleep_mode_enabled")) and is_within_sleep_window(
+        now_minutes, settings.get("sleep_start_minutes", 0), settings.get("sleep_end_minutes", 0)
+    )
+    return sleeping, (None if sleeping else current_schedule_rule(owner_id, settings, now))
+
+
+def ai_reply_still_allowed(owner_id: int) -> bool:
+    """AI so'rovi ishlayotgan paytda sozlamalar o'zgargan bo'lishi mumkin (AI o'chirilgan, Onlayn qilingan, tarif tugagan,
+    uxlash vaqti boshlangan). Joriy sozlamalar bo'yicha AI hozir javob yuborishi mumkinmi."""
+    s = db.get_settings(owner_id)
+    if not s.get("ai_enabled") or not has_feature(owner_id, "ai"):
+        return False
+    sleeping, rule = reply_state(owner_id, s)
+    return not sleeping and (bool(s.get("offline")) or rule is not None)
 
 
 def schedule_text_for(owner_id: int, rule: dict, settings: dict, lang: str) -> str:
@@ -2799,7 +2824,7 @@ def build_sleep_menu(owner_id: int):
         text=sleep_text_for(s, lang),
     ) + "\n\n" + t(lang, "sleep_tz_note", tz=str(tz_from_settings(s, owner_id)))
     keyboard = [
-        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="sleep_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="sleep_disable" if enabled else "sleep_enable")],
         [InlineKeyboardButton(t(lang, "btn_sleep_time"), callback_data="sleep_edit_time")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_edit_text"), has_feature(owner_id, "custom_text")), callback_data="sleep_edit_text")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
@@ -3099,9 +3124,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data == "toggle_status":
-        s = db.get_settings(owner_id)
-        db.update_settings(owner_id, offline=not s["offline"])
+    if data in ("status_online", "status_offline", "toggle_status"):
+        # Aniq (idempotent) amallar. Eski «toggle_status» tugmalari (yangilashdan oldingi xabarlar) holatni o'zgartirmaydi,
+        # faqat panelni yangilaydi.
+        if data != "toggle_status":
+            db.update_settings(owner_id, offline=(data == "status_offline"))
 
     elif data == "edit_cooldown":
         set_pending_action(owner_id, "cooldown")
@@ -3416,9 +3443,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data == "sleep_toggle":
-        s = db.get_settings(owner_id)
-        db.update_settings(owner_id, sleep_mode_enabled=not s.get("sleep_mode_enabled", False))
+    if data in ("sleep_enable", "sleep_disable", "sleep_toggle"):
+        # Aniq (idempotent) amallar; eski «sleep_toggle» tugmasi holatni o'zgartirmaydi.
+        if data != "sleep_toggle":
+            db.update_settings(owner_id, sleep_mode_enabled=(data == "sleep_enable"))
         text, markup = build_sleep_menu(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return
@@ -4852,16 +4880,11 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         settings = db.get_settings(owner_id)
 
         # Uxlash rejimi va Jadval BIR XIL vaqt zonasi bilan hisoblanadi: egasining zonasi (Ism soati sozlamasi), yo'q bo'lsa Toshkent
-        now = datetime.now(tz_from_settings(settings, owner_id))
-        now_minutes = now.hour * 60 + now.minute
-        sleeping = settings.get("sleep_mode_enabled") and is_within_sleep_window(
-            now_minutes, settings.get("sleep_start_minutes", 0), settings.get("sleep_end_minutes", 0)
-        )
+        sleeping, schedule_rule = reply_state(owner_id, settings)
 
         owner_lang = get_lang(owner_id)
         # Ustuvorlik: Sleep Mode -> Jadval -> (FAQ -> AI ->) oddiy avtojavob. Jadval oynasida bot Oflayn kabi ishlaydi,
         # lekin foydalanuvchining sozlamalari o'zgartirilmaydi.
-        schedule_rule = None if sleeping else current_schedule_rule(owner_id, settings, now)
         if sleeping:
             reply_text = sleep_text_for(settings, owner_lang)
         elif schedule_rule is not None:
