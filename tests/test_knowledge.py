@@ -612,6 +612,7 @@ class AiIntegrationTests(unittest.TestCase):
             patch.object(db, "get_user", return_value={"full_name": "Dilshod"}),
             patch.object(ai, "generate_reply", gen),
             patch.object(bot, "find_kb_context", MagicMock(return_value=kb_entries)),
+            patch.object(bot, "ai_reply_still_allowed", return_value=True),  # bu testlar sozlamalarni qayta tekshirishni sinamaydi
         ]
         for p in patches:
             p.start()
