@@ -519,6 +519,7 @@ class AiLimitTests(Base):
         ctx = MagicMock()
         ctx.bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
         with patch.object(db, "try_consume_ai_quota", return_value=quota_ok) as quota, patch.object(db, "refund_ai_quota"), \
+             patch.object(bot, "ai_reply_still_allowed", return_value=True), \
              patch.object(db, "get_ai_history", return_value=[]), patch.object(db, "get_user", return_value={"full_name": "Ali"}), \
              patch.object(db, "add_ai_messages"), patch.object(bot.ai, "generate_reply", AsyncMock(return_value="Hi")):
             for _ in range(times):
