@@ -1644,7 +1644,7 @@ def build_ai_menu(owner_id: int, notice: str | None = None):
     if notice:
         text += f"\n\n{notice}"
     keyboard = [
-        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="ai_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="ai_off" if enabled else "ai_on")],
         [InlineKeyboardButton(t(lang, "btn_ai_roles"), callback_data="ai_roles")],
         [InlineKeyboardButton(t(lang, "btn_ai_info"), callback_data="ai_edit_info")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
@@ -1995,10 +1995,12 @@ _sc_drafts: dict[int, dict] = {}
 
 
 def clear_scheduler_state(owner_id: int) -> bool:
-    """Scheduler'ning vaqtinchalik holatlarini (qoralama va o'chirish tasdig'i) tozalaydi. Biror narsa bekor bo'lsa True."""
+    """Scheduler'ning vaqtinchalik holatlarini (qoralama va o'chirish tasdig'i) tozalaydi; Bilimlar bazasining
+    ochiq o'chirish tasdig'i ham shu yerda tozalanadi (/start, /cancel). Biror narsa bekor bo'lsa True."""
     had_draft = _sc_drafts.pop(owner_id, None) is not None
     had_confirm = _sc_del_confirms.pop(owner_id, None) is not None
-    return had_draft or had_confirm  # {owner_id: {"id", "days": set, "start", "end", "text", "edit_id", "edit", "stage", "ts"}}
+    had_kb_confirm = _kb_del_confirms.pop(owner_id, None) is not None
+    return had_draft or had_confirm or had_kb_confirm  # {owner_id: {"id", "days": set, "start", "end", "text", "edit_id", "edit", "stage", "ts"}}
 # Qaysi tugma qoralamaning qaysi bosqichida ma'noga ega (eski xabardagi tugma boshqa bosqichda ishlamasligi uchun)
 _SC_STAGE_FOR = {"sc_dnext": "days", "sc_allday": "time", "sc_deftext": "text", "sc_save": "confirm"}
 SC_PREVIEW_CHARS = 60
@@ -2026,6 +2028,35 @@ def sc_button_is_stale(owner_id: int, data: str) -> bool:
     if base not in _SC_STAGE_FOR and base not in ("sc_d", "sc_dp"):
         return False
     return d is None or d.get("id") != token or d.get("stage") != _SC_STAGE_FOR.get(base, "days")
+
+
+def stale_confirm_button(owner_id: int, data: str) -> bool:
+    """Qoralama/tasdiqqa bog'liq tugma eskirganmi (joriy qoralama yoki tasdiqning ID'si bilan mos kelmaydi).
+    Eskirgan tugma HECH NARSANI o'zgartirmaydi: joriy qoralama, tasdiq va kutilayotgan kiritish saqlanadi.
+      - sc_del_yes:ID:TOKEN  — joriy jadval o'chirish tasdig'iga mos bo'lishi shart;
+      - kb_del_yes:ID:TOKEN  — joriy bilim o'chirish tasdig'iga mos bo'lishi shart;
+      - faq_save:TOKEN / kb_save:TOKEN — joriy qoralamaning ID'si;
+      - faq_cancel:TOKEN / kb_cancel:TOKEN — qoralama bor bo'lsa, o'zinikiga mos (qoralama yo'q bo'lsa — zararsiz)."""
+    base, *rest = data.split(":")
+    if base in ("sc_del_yes", "kb_del_yes"):
+        confirms = _sc_del_confirms if base == "sc_del_yes" else _kb_del_confirms
+        id_key = "rule_id" if base == "sc_del_yes" else "entry_id"
+        confirm = confirms.get(owner_id)
+        try:
+            item_id, token = int(rest[0]), (rest[1] if len(rest) > 1 else None)
+        except (ValueError, IndexError):
+            return True
+        return (
+            confirm is None or confirm[id_key] != item_id or confirm["token"] != token
+            or time.time() - confirm["ts"] > PENDING_ACTION_TTL_SECONDS
+        )
+    if base in ("faq_save", "faq_cancel", "kb_save", "kb_cancel"):
+        d = (_faq_draft if base.startswith("faq") else _kb_draft)(owner_id)
+        token = rest[0] if rest else None
+        if base.endswith("cancel"):
+            return d is not None and d.get("id") != token
+        return d is None or d.get("id") != token
+    return False
 
 
 def _sc_cb(prefix: str, d: dict) -> str:
@@ -2375,18 +2406,13 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
 
     if data.startswith("sc_del_yes:"):
         parts = data.split(":")
-        confirm = _sc_del_confirms.pop(owner_id, None)  # bir martalik: ikkinchi bosish ham o'chirmaydi
-        try:
-            rule_id, token = int(parts[1]), (parts[2] if len(parts) > 2 else None)
-        except (ValueError, IndexError):
-            rule_id, token = None, None
-        if (
-            confirm is None or rule_id is None or confirm["rule_id"] != rule_id or confirm["token"] != token
-            or time.time() - confirm["ts"] > PENDING_ACTION_TTL_SECONDS
-        ):
+        if stale_confirm_button(owner_id, data):
+            # Eski/soxta tugma: joriy (yangi ochilgan) tasdiqni ham, kiritilayotgan vaqt/matnni ham BEKOR QILMAYDI
             text, markup = build_sched_menu(owner_id, t(lang, "sc_stale_button"))
             await query.edit_message_text(text, reply_markup=markup)
             return True
+        _sc_del_confirms.pop(owner_id, None)  # bir martalik: ikkinchi bosish ham o'chirmaydi
+        rule_id = int(parts[1])
         gone = not db.delete_schedule_rule(owner_id, rule_id)
         text, markup = build_sched_menu(owner_id, t(lang, "sc_gone" if gone else "sc_deleted"))
         await query.edit_message_text(text, reply_markup=markup)
@@ -2662,7 +2688,7 @@ def build_faq_settings(owner_id: int):
     enabled = db.get_settings(owner_id).get("faq_enabled", True)
     text = t(lang, "faq_settings", status=t(lang, "status_on" if enabled else "status_off"))
     keyboard = [
-        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="faq_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="faq_off" if enabled else "faq_on")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="faq_menu")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
@@ -2700,7 +2726,7 @@ def build_faq_entry(owner_id: int, entry_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_faq_edit_q"), callback_data=f"faq_edit:q:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_faq_edit_kw"), callback_data=f"faq_edit:kw:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_faq_edit_ans"), callback_data=f"faq_edit:ans:{e['id']}")],
-        [InlineKeyboardButton(t(lang, "btn_faq_entry_off" if e["is_enabled"] else "btn_faq_entry_on"), callback_data=f"faq_entry_toggle:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_faq_entry_off" if e["is_enabled"] else "btn_faq_entry_on"), callback_data=f"faq_entry_{'off' if e['is_enabled'] else 'on'}:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_faq_delete"), callback_data=f"faq_del:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="faq_list")],
     ]
@@ -2726,6 +2752,7 @@ def find_faq_answer(owner_id: int, text: str) -> str | None:
 # AI Bilimlar bazasi (Knowledge Base)
 # ---------------------------------------------------------------------------
 _kb_edit_target: dict[int, dict] = {}  # {owner_id: {"id", "ts"}} — qaysi yozuv tahrirlanmoqda
+_kb_del_confirms: dict[int, dict] = {}  # {owner_id: {"entry_id","token","ts"}} — bir martalik o'chirish tasdig'i (RAM)
 _kb_drafts: dict[int, dict] = {}  # {owner_id: {"title","content","kw","ts"}} — saqlashdan oldingi qoralama (RAM)
 
 
@@ -2764,7 +2791,7 @@ def build_kb_settings(owner_id: int):
     enabled = db.get_settings(owner_id).get("kb_enabled", True)
     text = t(lang, "kb_settings", status=t(lang, "status_on" if enabled else "status_off"))
     keyboard = [
-        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="kb_toggle")],
+        [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="kb_off" if enabled else "kb_on")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="kb_menu")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
@@ -2802,7 +2829,7 @@ def build_kb_entry(owner_id: int, entry_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_kb_edit_t"), callback_data=f"kb_edit:t:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_kb_edit_c"), callback_data=f"kb_edit:c:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_kb_edit_kw"), callback_data=f"kb_edit:kw:{e['id']}")],
-        [InlineKeyboardButton(t(lang, "btn_kb_entry_off" if e["is_enabled"] else "btn_kb_entry_on"), callback_data=f"kb_entry_toggle:{e['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_kb_entry_off" if e["is_enabled"] else "btn_kb_entry_on"), callback_data=f"kb_entry_{'off' if e['is_enabled'] else 'on'}:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_kb_delete"), callback_data=f"kb_del:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="kb_list")],
     ]
@@ -3069,11 +3096,15 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # yuboring") bekor bo'ladi; yangi amal boshlaydigan tugmalar pastda uni qayta o'rnatadi.
     # Istisno: jadval qoralamasiga bog'liq ESKIRGAN tugma hech narsani bekor qilmaydi — foydalanuvchining
     # hozirgi kiritishi (vaqt/matn) davom etaveradi.
-    if not (data.startswith("sc_") and sc_button_is_stale(owner_id, data)):
+    # Xuddi shu qoida FAQ/Bilimlar bazasi qoralamalari va o'chirish tasdiqlari uchun ham: eskirgan tugma
+    # (boshqa/eski qoralama yoki tasdiqniki) hech narsani bekor qilmaydi.
+    stale_button = (data.startswith("sc_") and sc_button_is_stale(owner_id, data)) or stale_confirm_button(owner_id, data)
+    if not stale_button:
         clear_pending_action(owner_id)
     # Har qanday boshqa tugma (o'chirishni tasdiqlashdan tashqari) ochiq o'chirish tasdig'ini bekor qiladi
-    if not data.startswith("sc_del_yes:"):
+    if not stale_button and not data.startswith(("sc_del_yes:", "kb_del_yes:")):
         _sc_del_confirms.pop(owner_id, None)
+        _kb_del_confirms.pop(owner_id, None)
 
     lang = get_lang(owner_id)
 
@@ -3081,6 +3112,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if feature and not has_feature(owner_id, feature):
         text, markup = build_locked_view(owner_id, feature)
         await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith(("faq_", "kb_")) and stale_confirm_button(owner_id, data):
+        back = "faq_menu" if data.startswith("faq_") else "kb_menu"
+        await query.edit_message_text(
+            t(lang, "sc_stale_button"),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data=back)]]),
+        )
         return
 
     if data == "lang_menu":
@@ -3205,9 +3244,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data == "faq_toggle":
-        enabled = db.get_settings(owner_id).get("faq_enabled", True)
-        db.update_settings(owner_id, faq_enabled=not enabled)
+    if data in ("faq_on", "faq_off", "faq_toggle"):
+        # Aniq (idempotent) amallar; eski «faq_toggle» tugmasi holatni o'zgartirmaydi, faqat joriy holatni ko'rsatadi.
+        if data != "faq_toggle":
+            db.update_settings(owner_id, faq_enabled=(data == "faq_on"))
         text, markup = build_faq_settings(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return
@@ -3217,7 +3257,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data.startswith(("faq_view:", "faq_del:", "faq_entry_toggle:")):
+    if data.startswith(("faq_view:", "faq_del:", "faq_entry_toggle:", "faq_entry_on:", "faq_entry_off:")):
         action, _, raw_id = data.partition(":")
         entry_id = int(raw_id) if raw_id.isdigit() else -1
         notice = None
@@ -3226,8 +3266,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, markup = build_faq_list(owner_id)
             await query.edit_message_text(f"{notice}\n\n{text}", reply_markup=markup)
             return
-        if action == "faq_entry_toggle":
-            db.toggle_faq_entry(owner_id, entry_id)
+        if action in ("faq_entry_on", "faq_entry_off"):  # eski «faq_entry_toggle» holatni o'zgartirmaydi
+            db.set_faq_entry_enabled(owner_id, entry_id, action == "faq_entry_on")
         view = build_faq_entry(owner_id, entry_id)
         if view is None:
             text, markup = build_faq_list(owner_id)
@@ -3259,18 +3299,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, markup = build_faq_menu(owner_id, t(lang, "faq_limit", max=limit))
             await query.edit_message_text(text, reply_markup=markup)
             return
-        _faq_drafts[owner_id] = {"ts": time.time()}
+        _faq_drafts[owner_id] = {"ts": time.time(), "id": secrets.token_hex(3)}
         set_pending_action(owner_id, "faq_q")
         await query.message.reply_text(t(lang, "faq_q_prompt"))
         return
 
-    if data == "faq_cancel":
+    if data.split(":")[0] == "faq_cancel":
         _faq_drafts.pop(owner_id, None)
         text, markup = build_faq_menu(owner_id, t(lang, "faq_cancelled"))
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data == "faq_save":
+    if data.split(":")[0] == "faq_save":
         d = _faq_draft(owner_id)
         _faq_drafts.pop(owner_id, None)
         if d is None or not all(k in d for k in ("q", "kw", "ans")):
@@ -3324,9 +3364,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data == "kb_toggle":
-        enabled = db.get_settings(owner_id).get("kb_enabled", True)
-        db.update_settings(owner_id, kb_enabled=not enabled)
+    if data in ("kb_on", "kb_off", "kb_toggle"):
+        if data != "kb_toggle":
+            db.update_settings(owner_id, kb_enabled=(data == "kb_on"))
         text, markup = build_kb_settings(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return
@@ -3336,8 +3376,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data.startswith(("kb_view:", "kb_del:", "kb_del_yes:", "kb_entry_toggle:")):
+    if data.startswith(("kb_view:", "kb_del:", "kb_del_yes:", "kb_entry_toggle:", "kb_entry_on:", "kb_entry_off:")):
         action, _, raw_id = data.partition(":")
+        if action == "kb_del_yes":
+            raw_id = raw_id.split(":")[0]  # kb_del_yes:ID:TOKEN — ID birinchi qism
         entry_id = int(raw_id) if raw_id.isdigit() else -1
         if action == "kb_del":
             # Tasodifan bosib yuborishdan himoya: avval tasdiqlash so'raladi
@@ -3346,19 +3388,23 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text, markup = build_kb_list(owner_id)
                 await query.edit_message_text(f"{t(lang, 'kb_entry_gone')}\n\n{text}", reply_markup=markup)
                 return
+            token = secrets.token_hex(3)
+            _kb_del_confirms[owner_id] = {"entry_id": entry_id, "token": token, "ts": time.time()}
             markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton(t(lang, "btn_kb_del_yes"), callback_data=f"kb_del_yes:{entry_id}"),
+                InlineKeyboardButton(t(lang, "btn_kb_del_yes"), callback_data=f"kb_del_yes:{entry_id}:{token}"),
                 InlineKeyboardButton(t(lang, "btn_kb_cancel"), callback_data=f"kb_view:{entry_id}"),
             ]])
             await query.edit_message_text(t(lang, "kb_del_confirm", title=_faq_short(entry["title"], 80)), reply_markup=markup)
             return
         if action == "kb_del_yes":
+            # Eskirgan/soxta tugma yuqorida (stale_draft_button) to'xtatilgan; bu yerga faqat joriy tasdiq yetib keladi.
+            _kb_del_confirms.pop(owner_id, None)  # bir martalik
             notice = t(lang, "kb_deleted") if db.delete_kb_entry(owner_id, entry_id) else t(lang, "kb_entry_gone")
             text, markup = build_kb_list(owner_id)
             await query.edit_message_text(f"{notice}\n\n{text}", reply_markup=markup)
             return
-        if action == "kb_entry_toggle":
-            db.toggle_kb_entry(owner_id, entry_id)
+        if action in ("kb_entry_on", "kb_entry_off"):  # eski «kb_entry_toggle» holatni o'zgartirmaydi
+            db.set_kb_entry_enabled(owner_id, entry_id, action == "kb_entry_on")
         view = build_kb_entry(owner_id, entry_id)
         if view is None:
             text, markup = build_kb_list(owner_id)
@@ -3390,19 +3436,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, markup = build_kb_menu(owner_id, t(lang, "kb_limit", max=limit))
             await query.edit_message_text(text, reply_markup=markup)
             return
-        _kb_drafts[owner_id] = {"ts": time.time()}
+        _kb_drafts[owner_id] = {"ts": time.time(), "id": secrets.token_hex(3)}
         set_pending_action(owner_id, "kb_title")
         await query.message.reply_text(t(lang, "kb_title_prompt", max=KB_MAX_TITLE))
         return
 
-    if data == "kb_cancel":
+    if data.split(":")[0] == "kb_cancel":
         _kb_drafts.pop(owner_id, None)
         clear_pending_action(owner_id)
         text, markup = build_kb_menu(owner_id, t(lang, "kb_cancelled"))
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data == "kb_save":
+    if data.split(":")[0] == "kb_save":
         d = _kb_draft(owner_id)
         _kb_drafts.pop(owner_id, None)
         clear_pending_action(owner_id)
@@ -3420,15 +3466,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data == "ai_toggle":
-        s = db.get_settings(owner_id)
+    if data in ("ai_on", "ai_off", "ai_toggle"):
         notice = None
-        if s.get("ai_enabled"):
+        if data == "ai_off":
             db.update_settings(owner_id, ai_enabled=False)
-        elif not ai.is_configured():
-            notice = t(lang, "ai_not_configured")
-        else:
-            db.update_settings(owner_id, ai_enabled=True)
+        elif data == "ai_on":
+            if not ai.is_configured():
+                notice = t(lang, "ai_not_configured")
+            else:
+                db.update_settings(owner_id, ai_enabled=True)
+        # eski «ai_toggle» tugmasi holatni o'zgartirmaydi
         text, markup = build_ai_menu(owner_id, notice)
         await query.edit_message_text(text, reply_markup=markup)
         return
@@ -3611,8 +3658,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d["ts"] = time.time()
         set_pending_action(owner_id, "faq_confirm")
         markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(t(lang, "btn_faq_save"), callback_data="faq_save"),
-            InlineKeyboardButton(t(lang, "btn_faq_cancel"), callback_data="faq_cancel"),
+            InlineKeyboardButton(t(lang, "btn_faq_save"), callback_data=f"faq_save:{d['id']}"),
+            InlineKeyboardButton(t(lang, "btn_faq_cancel"), callback_data=f"faq_cancel:{d['id']}"),
         ]])
         await update.message.reply_text(
             t(lang, "faq_confirm", q=d["q"], kw=", ".join(d["kw"]), a=value), reply_markup=markup
@@ -3687,8 +3734,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d["ts"] = time.time()
         set_pending_action(owner_id, "kb_confirm")
         markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(t(lang, "btn_kb_save"), callback_data="kb_save"),
-            InlineKeyboardButton(t(lang, "btn_kb_cancel"), callback_data="kb_cancel"),
+            InlineKeyboardButton(t(lang, "btn_kb_save"), callback_data=f"kb_save:{d['id']}"),
+            InlineKeyboardButton(t(lang, "btn_kb_cancel"), callback_data=f"kb_cancel:{d['id']}"),
         ]])
         await update.message.reply_text(
             t(lang, "kb_confirm", title=d["title"], content=d["content"], kw=_kb_kw_text(lang, keywords)),
