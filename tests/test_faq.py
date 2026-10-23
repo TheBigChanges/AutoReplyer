@@ -256,6 +256,12 @@ class FakeFaqDb:
             r["is_enabled"] = not r["is_enabled"]
         return r["is_enabled"] if r else None
 
+    def set_enabled(self, owner, i, enabled):
+        r = self.get(owner, i)
+        if r:
+            r["is_enabled"] = bool(enabled)
+        return bool(r)
+
     def update(self, owner, i, **fields):
         r = self.get(owner, i)
         if r:
@@ -266,7 +272,7 @@ class FakeFaqDb:
         for name, fn in (
             ("update_faq_entry", self.update),
             ("add_faq_entry", self.add), ("list_faq_entries", self.mine), ("get_faq_entry", self.get),
-            ("delete_faq_entry", self.delete), ("toggle_faq_entry", self.toggle),
+            ("delete_faq_entry", self.delete), ("toggle_faq_entry", self.toggle), ("set_faq_entry_enabled", self.set_enabled),
             ("count_faq_entries", lambda o: len(self.mine(o))),
             ("get_enabled_faq_entries", lambda o: [r for r in self.mine(o) if r["is_enabled"]]),
         ):
@@ -322,6 +328,11 @@ class PanelFlowTests(unittest.TestCase):
             run(bot.on_button(u, MagicMock()))
         return q
 
+    def tok(self, base, user=OWNER):
+        """Tugma ma'lumoti: joriy qoralamaning ID'si bilan (qoralama bo'lmasa — tokensiz, ya'ni eskirgan tugma)."""
+        d = bot._faq_drafts.get(user)
+        return f"{base}:{d['id']}" if d else base
+
     def say(self, text, user=OWNER):
         u = MagicMock()
         u.effective_user = MagicMock(id=user, is_bot=False)
@@ -336,7 +347,7 @@ class PanelFlowTests(unittest.TestCase):
         self.say(q, user)
         self.say(kw, user)
         self.say(a, user)
-        return self.press("faq_save", user)
+        return self.press(self.tok("faq_save", user), user)
 
     def test_panel_has_faq_button_and_menu_shows_counter(self):
         _, markup = bot.build_panel(OWNER)
@@ -361,9 +372,10 @@ class PanelFlowTests(unittest.TestCase):
         for part in ("Yetkazib berish bormi?", "dostavka, delivery, yetkazish", "Ha, O'zbekiston bo'ylab."):
             self.assertIn(part, confirm)
         datas = [b.callback_data for row in r.call_args.kwargs["reply_markup"].inline_keyboard for b in row]
-        self.assertEqual(datas, ["faq_save", "faq_cancel"])
+        draft_id = bot._faq_drafts[OWNER]["id"]
+        self.assertEqual(datas, [f"faq_save:{draft_id}", f"faq_cancel:{draft_id}"])
         self.assertEqual(self.fake.mine(OWNER), [])  # tasdiqlashdan oldin saqlanmaydi
-        q = self.press("faq_save")
+        q = self.press(self.tok("faq_save"))
         self.assertEqual(len(self.fake.mine(OWNER)), 1)
         self.assertEqual(self.fake.mine(OWNER)[0]["keywords"], ["dostavka", "delivery", "yetkazish"])
         self.assertIn("saqlandi", q.edit_message_text.call_args.args[0])
@@ -375,11 +387,11 @@ class PanelFlowTests(unittest.TestCase):
         self.say("Savol?")
         self.say("kalit")
         self.say("Javob")
-        self.press("faq_cancel")
+        self.press(self.tok("faq_cancel"))
         self.assertEqual(self.fake.mine(OWNER), [])
-        q = self.press("faq_save")  # qoralama yo'q
+        q = self.press(self.tok("faq_save"))  # qoralama yo'q: eski «Saqlash» tugmasi hech narsa qilmaydi
         self.assertEqual(self.fake.mine(OWNER), [])
-        self.assertIn("Qoralama", q.edit_message_text.call_args.args[0])
+        self.assertIn("eskirgan", q.edit_message_text.call_args.args[0])
 
     def test_validation_keeps_step(self):
         self.press("faq_add")
@@ -403,7 +415,7 @@ class PanelFlowTests(unittest.TestCase):
         r = self.say("boshqa narsa")
         self.assertIn("tugma", r.call_args.args[0])
         self.assertEqual(bot.get_pending_action(OWNER), "faq_confirm")
-        self.press("faq_save")
+        self.press(self.tok("faq_save"))
         self.assertEqual(self.fake.mine(OWNER)[0]["answer"], "Javob")
 
     def test_expired_draft(self):
@@ -438,7 +450,7 @@ class PanelFlowTests(unittest.TestCase):
         self.say("Javob")
         for n in range(15):
             self.fake.add(OWNER, f"q{n}", ["k"], "a", 999)
-        q = self.press("faq_save")
+        q = self.press(self.tok("faq_save"))
         self.assertEqual(len(self.fake.mine(OWNER)), 15)
         self.assertIn("limiti", q.edit_message_text.call_args.args[0])
 
@@ -469,7 +481,7 @@ class PanelFlowTests(unittest.TestCase):
         self.say("kalit")
         self.say("Javob")
         self.plan_name = "free"
-        self.press("faq_save")
+        self.press(self.tok("faq_save"))
         self.assertEqual(self.fake.rows, [])
 
     def test_admin_gets_top_limit(self):
@@ -485,7 +497,7 @@ class PanelFlowTests(unittest.TestCase):
         entry_id = self.fake.mine(OWNER)[0]["id"]
         q = self.press(f"faq_view:{entry_id}")
         self.assertIn("dostavka, delivery", q.edit_message_text.call_args.args[0])
-        self.press(f"faq_entry_toggle:{entry_id}")
+        self.press(f"faq_entry_off:{entry_id}")
         self.assertFalse(self.fake.mine(OWNER)[0]["is_enabled"])
         q = self.press("faq_list")
         self.assertTrue([b.text for r in q.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard for b in r][0].startswith("⏸"))
@@ -530,7 +542,7 @@ class PanelFlowTests(unittest.TestCase):
     def test_edit_keeps_disabled_state(self):
         self.add_entry()
         eid = self.fake.mine(OWNER)[0]["id"]
-        self.press(f"faq_entry_toggle:{eid}")
+        self.press(f"faq_entry_off:{eid}")
         self._edit("ans", "Boshqa javob")
         self.assertFalse(self.fake.get(OWNER, eid)["is_enabled"])
 
@@ -615,19 +627,19 @@ class PanelFlowTests(unittest.TestCase):
         entry_id = self.fake.mine(OWNER)[0]["id"]
         q = self.press(f"faq_view:{entry_id}", user=OTHER)
         self.assertNotIn("dostavka", q.edit_message_text.call_args.args[0])
-        self.press(f"faq_entry_toggle:{entry_id}", user=OTHER)
+        self.press(f"faq_entry_off:{entry_id}", user=OTHER)
         self.press(f"faq_del:{entry_id}", user=OTHER)
         self.assertEqual(len(self.fake.mine(OWNER)), 1)
         self.assertTrue(self.fake.mine(OWNER)[0]["is_enabled"])
 
     def test_bad_ids_do_not_crash(self):
-        for data in ("faq_view:abc", "faq_del:", "faq_entry_toggle:-5", "faq_view:999999"):
+        for data in ("faq_view:abc", "faq_del:", "faq_entry_off:-5", "faq_entry_toggle:-5", "faq_view:999999"):
             self.press(data)
 
     def test_settings_toggle(self):
         q = self.press("faq_settings")
         self.assertIn("Yoqilgan", q.edit_message_text.call_args.args[0])
-        self.press("faq_toggle")
+        self.press("faq_off")
         self.assertEqual(self.settings_extra["faq_enabled"], False)
 
     def test_all_screens_in_three_languages(self):
