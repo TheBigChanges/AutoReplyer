@@ -91,7 +91,7 @@ class TableTests(Base):
         self.assertIsNone(f("bio_disable"))  # o'chirish har doim mumkin
         for d in ("edit_text", "sleep_edit_text"):
             self.assertEqual(f(d), "custom_text")
-        for d in ("ai_menu", "ai_toggle", "ai_roles", "ai_role:friend", "ai_edit_info"):
+        for d in ("ai_menu", "ai_on", "ai_off", "ai_toggle", "ai_roles", "ai_role:friend", "ai_edit_info"):
             self.assertEqual(f(d), "ai")
         for d in ("edit_cooldown", "sleep_menu", "nc_menu", "open_panel", "plans"):
             self.assertIsNone(f(d))
@@ -126,12 +126,12 @@ class ButtonGateTests(Base):
         return q
 
     def test_free_user_blocked_from_locked_features(self):
-        for data in ("bio_menu", "bio_set_navroz", "edit_text", "sleep_edit_text", "ai_menu", "ai_toggle", "ai_role:friend"):
+        for data in ("bio_menu", "bio_set_navroz", "edit_text", "sleep_edit_text", "ai_menu", "ai_on", "ai_off", "ai_toggle", "ai_role:friend"):
             q = self._press_as("free", data)
             text = q.edit_message_text.call_args.args[0]
             self.assertIn("\U0001F512", text, data)
         with patch.object(db, "update_settings") as upd:
-            self._press_as("free", "ai_toggle")
+            self._press_as("free", "ai_on")
             self._press_as("free", "bio_set_navroz")
             upd.assert_not_called()
 
