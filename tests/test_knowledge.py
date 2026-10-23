@@ -292,6 +292,16 @@ class PanelFlowTests(unittest.TestCase):
             run(bot.on_button(u, MagicMock()))
         return q
 
+    def tok(self, base, user=None):
+        """Tugma ma'lumoti: joriy qoralamaning ID'si bilan (qoralama bo'lmasa — tokensiz, ya'ni eskirgan tugma)."""
+        d = bot._kb_drafts.get(user or self.u)
+        return f"{base}:{d['id']}" if d else base
+
+    def del_yes(self, entry_id, user=None):
+        """«Ha, o'chirish» tugmasi: joriy tasdiqning bir martalik tokeni bilan."""
+        confirm = bot._kb_del_confirms.get(user or self.u)
+        return f"kb_del_yes:{entry_id}:{confirm['token']}" if confirm else f"kb_del_yes:{entry_id}"
+
     def say(self, text, user=None):
         u = MagicMock()
         u.effective_user = MagicMock(id=user or self.u, is_bot=False)
@@ -306,7 +316,7 @@ class PanelFlowTests(unittest.TestCase):
         self.say(title)
         self.say(content)
         self.say(kw)
-        return self.press("kb_save")
+        return self.press(self.tok("kb_save"))
 
     def entries(self):
         return db.list_kb_entries(self.u)
@@ -362,7 +372,8 @@ class PanelFlowTests(unittest.TestCase):
         text = reply.call_args.args[0]
         self.assertIn("T", text)
         datas = [b.callback_data for r in reply.call_args.kwargs["reply_markup"].inline_keyboard for b in r]
-        self.assertEqual(datas, ["kb_save", "kb_cancel"])
+        draft_id = bot._kb_drafts[self.u]["id"]
+        self.assertEqual(datas, [f"kb_save:{draft_id}", f"kb_cancel:{draft_id}"])
         self.assertEqual(bot.get_pending_action(self.u), "kb_confirm")
         self.assertEqual(self.entries(), [])  # hali saqlanmagan
 
@@ -398,14 +409,14 @@ class PanelFlowTests(unittest.TestCase):
         self.say("T")
         self.say("C")
         self.say("-")
-        q = self.press("kb_cancel")
+        q = self.press(self.tok("kb_cancel"))
         self.assertEqual(self.entries(), [])
         self.assertIsNone(bot.get_pending_action(self.u))
         self.assertIn(i18n.t("uz", "kb_cancelled"), q.edit_message_text.call_args.args[0])
 
     def test_lost_draft(self):
-        q = self.press("kb_save")
-        self.assertIn(i18n.t("uz", "kb_draft_lost"), q.edit_message_text.call_args.args[0])
+        q = self.press(self.tok("kb_save"))  # qoralama yo'q: eski «Saqlash» tugmasi eskirgan
+        self.assertIn(i18n.t("uz", "sc_stale_button"), q.edit_message_text.call_args.args[0])
         self.press("kb_add")
         bot._kb_drafts[self.u]["ts"] -= bot.PENDING_ACTION_TTL_SECONDS + 5
         reply = self.say("T")
@@ -426,7 +437,7 @@ class PanelFlowTests(unittest.TestCase):
         self.say("-")
         for n in range(55):
             db.add_kb_entry(self.u, f"T{n}", "C", [], 55)
-        q = self.press("kb_save")
+        q = self.press(self.tok("kb_save"))
         self.assertIn(i18n.t("uz", "kb_limit", max=55), q.edit_message_text.call_args.args[0])
         self.assertEqual(db.count_kb_entries(self.u), 55)
 
@@ -439,15 +450,18 @@ class PanelFlowTests(unittest.TestCase):
         self.assertIn(i18n.t("uz", "kb_del_confirm", title="O'chiriladigan"), q.edit_message_text.call_args.args[0])
         rows = q.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard
         datas = [b.callback_data for r in rows for b in r]
-        self.assertEqual(datas, [f"kb_del_yes:{e['id']}", f"kb_view:{e['id']}"])
+        token = bot._kb_del_confirms[self.u]["token"]
+        self.assertEqual(datas, [f"kb_del_yes:{e['id']}:{token}", f"kb_view:{e['id']}"])
         q = self.press(f"kb_view:{e['id']}")  # "Bekor qilish" -> yozuv ko'rinishiga qaytadi
         self.assertIn("O'chiriladigan", q.edit_message_text.call_args.args[0])
         self.assertEqual(len(self.entries()), 1)
-        q = self.press(f"kb_del_yes:{e['id']}")
+        self.assertNotIn(self.u, bot._kb_del_confirms)  # boshqa tugma tasdiqni bekor qildi
+        self.press(f"kb_del:{e['id']}")
+        q = self.press(self.del_yes(e["id"]))
         self.assertEqual(self.entries(), [])
         self.assertIn(i18n.t("uz", "kb_deleted"), q.edit_message_text.call_args.args[0])
-        q = self.press(f"kb_del_yes:{e['id']}")  # ikkinchi marta bosilsa — yiqilmaydi
-        self.assertIn(i18n.t("uz", "kb_entry_gone"), q.edit_message_text.call_args.args[0])
+        q = self.press(f"kb_del_yes:{e['id']}:{token}")  # ikkinchi marta bosilsa — tasdiq ishlatilgan, yiqilmaydi
+        self.assertIn(i18n.t("uz", "sc_stale_button"), q.edit_message_text.call_args.args[0])
         q = self.press(f"kb_del:{e['id']}")  # yo'q yozuv uchun tasdiq so'ralmaydi
         self.assertIn(i18n.t("uz", "kb_entry_gone"), q.edit_message_text.call_args.args[0])
 
@@ -485,10 +499,10 @@ class PanelFlowTests(unittest.TestCase):
         self.assertIn(f"kb_view:{e['id']}", datas)
         q = self.press(f"kb_view:{e['id']}")
         self.assertIn("Birinchi", q.edit_message_text.call_args.args[0])
-        self.press(f"kb_entry_toggle:{e['id']}")
+        self.press(f"kb_entry_off:{e['id']}")
         self.assertFalse(self.entries()[0]["is_enabled"])
         self.press(f"kb_del:{e['id']}")
-        q = self.press(f"kb_del_yes:{e['id']}")
+        q = self.press(self.del_yes(e["id"]))
         self.assertEqual(self.entries(), [])
         self.assertIn(i18n.t("uz", "kb_deleted"), q.edit_message_text.call_args.args[0])
 
@@ -498,7 +512,7 @@ class PanelFlowTests(unittest.TestCase):
         other = self.u + 1
         self.addCleanup(lambda: bot._lang_cache.pop(other, None))
         with patch.object(db, "get_user_plan", return_value="ultra"):
-            for data in (f"kb_view:{e['id']}", f"kb_edit:t:{e['id']}", f"kb_del:{e['id']}", f"kb_del_yes:{e['id']}", f"kb_entry_toggle:{e['id']}"):
+            for data in (f"kb_view:{e['id']}", f"kb_edit:t:{e['id']}", f"kb_del:{e['id']}", f"kb_entry_on:{e['id']}", f"kb_entry_off:{e['id']}"):
                 q = self.press(data, user=other)
                 self.assertIn(i18n.t("uz", "kb_entry_gone"), q.edit_message_text.call_args.args[0] if q.edit_message_text.called else "", data)
         self.assertEqual(len(self.entries()), 1)
@@ -534,9 +548,9 @@ class PanelFlowTests(unittest.TestCase):
     def test_settings_toggle(self):
         q = self.press("kb_settings")
         self.assertIn("AI Shaxsiy Bilimlar sozlamalari", q.edit_message_text.call_args.args[0])
-        self.press("kb_toggle")
+        self.press("kb_off")
         self.assertFalse(db.get_settings(self.u)["kb_enabled"])
-        self.press("kb_toggle")
+        self.press("kb_on")
         self.assertTrue(db.get_settings(self.u)["kb_enabled"])
 
     def test_feature_name_translated_in_every_language(self):
