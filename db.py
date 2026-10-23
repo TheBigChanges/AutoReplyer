@@ -1227,6 +1227,16 @@ def delete_faq_entry(owner_user_id: int, entry_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def set_faq_entry_enabled(owner_user_id: int, entry_id: int, enabled: bool) -> bool:
+    """Yozuvni ANIQ holatga o'rnatadi (idempotent: eski tugma qayta bosilsa holat teskarilanmaydi). Yozuv topilmasa — False."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE faq_entries SET is_enabled = %s WHERE owner_user_id = %s AND id = %s",
+            (bool(enabled), owner_user_id, entry_id),
+        )
+        return cur.rowcount > 0
+
+
 def toggle_faq_entry(owner_user_id: int, entry_id: int) -> bool | None:
     """Yozuvni yoqadi/o'chiradi; yangi holatni qaytaradi (yozuv topilmasa — None)."""
     with get_conn() as conn, conn.cursor() as cur:
@@ -1321,6 +1331,16 @@ def count_kb_entries(owner_user_id: int) -> int:
 def delete_kb_entry(owner_user_id: int, entry_id: int) -> bool:
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM knowledge_entries WHERE owner_user_id = %s AND id = %s", (owner_user_id, entry_id))
+        return cur.rowcount > 0
+
+
+def set_kb_entry_enabled(owner_user_id: int, entry_id: int, enabled: bool) -> bool:
+    """Yozuvni ANIQ holatga o'rnatadi (idempotent). Yozuv topilmasa — False."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE knowledge_entries SET is_enabled = %s WHERE owner_user_id = %s AND id = %s",
+            (bool(enabled), owner_user_id, entry_id),
+        )
         return cur.rowcount > 0
 
 
