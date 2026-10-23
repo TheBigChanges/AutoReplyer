@@ -491,10 +491,12 @@ def parse_referral_arg(args) -> int | None:
     arg = args[0]
     if not arg.startswith("ref_"):
         return None
-    try:
-        inviter_id = int(arg[4:])
-    except ValueError:
+    digits = arg[4:]
+    # Faqat oddiy ASCII raqamlar, real Telegram ID uzunligida: aks holda juda uzun ID tugma
+    # ma'lumotini (64 bayt) oshirib yoki BIGINT'dan toshib, /start'ni yiqitardi.
+    if not re.fullmatch(r"[0-9]{1,15}", digits):
         return None
+    inviter_id = int(digits)
     return inviter_id if inviter_id > 0 else None
 
 
@@ -568,7 +570,7 @@ def build_onboarding_view(owner_id: int, step: str, welcome: bool = False):
     elif step == "configure":
         st = _ob_state(owner_id)
         plan_note = t(lang, "ob_plan_paid" if has_feature(owner_id, "custom_text") else "ob_plan_free")
-        text = t(lang, "ob_configure", text=auto_reply_text_for(st["settings"], lang), plan_note=plan_note)
+        text = t(lang, "ob_configure", text=auto_reply_text_for(st["settings"], lang)[:MENU_TEXT_PREVIEW_CHARS], plan_note=plan_note)
         rows = [[InlineKeyboardButton(t(lang, "btn_ob_enable"), callback_data="ob_enable")], _ob_skip_row(lang)]
     else:  # verify
         text = t(lang, "ob_verify", checks=_ob_checks_text(lang, _ob_state(owner_id)))
@@ -1104,8 +1106,12 @@ def build_referral_view(owner_id: int):
     return text, InlineKeyboardMarkup(keyboard)
 
 
+ADMIN_REFERRALS_LIMIT = 30
+
+
 async def build_admin_referrals_view(bot):
-    rows = db.get_all_referral_counts()
+    all_rows = db.get_all_referral_counts()
+    rows = all_rows[:ADMIN_REFERRALS_LIMIT]  # xabar 4096 belgidan oshmasin va har biri uchun get_chat chaqirilmasin
     if not rows:
         body = "Hozircha hech kim hech kimni taklif qilmagan."
     else:
@@ -1113,6 +1119,8 @@ async def build_admin_referrals_view(bot):
         for i, (inviter_id, cnt) in enumerate(rows):
             label = await _display_name_for(bot, inviter_id)
             lines.append(f"{i + 1}. {label} — {cnt} ta do'st")
+        if len(all_rows) > len(rows):
+            lines.append(f"\n... va yana {len(all_rows) - len(rows)} ta (eng ko'p taklif qilgan {len(rows)} tasi ko'rsatildi)")
         body = "\n".join(lines)
 
     text = f"\U0001F4CA Referral statistikasi\n\n{body}"
@@ -1136,6 +1144,8 @@ async def _display_name_for(bot, user_id: int) -> str:
 AI_DAILY_LIMIT = 50  # Ultra tarifida kuniga AI javoblar soni (admin uchun limit yo'q)
 AI_HISTORY_MESSAGES = 10
 AI_INFO_MAX_LENGTH = 1000
+AUTO_REPLY_MAX_TEXT = 1000  # avtojavob va uxlash xabari matni uzunligi (menyu 4096 belgidan oshmasligi uchun)
+MENU_TEXT_PREVIEW_CHARS = 1000  # eski (cheklovdan oldin saqlangan) uzun matnlar menyuni buzmasin
 AI_TAKEOVER_PAUSE_SECONDS = 2 * 3600  # egasi chatga o'zi yozsa, AI shu chatda shuncha vaqt jim turadi
 
 # Botning o'zi yuborgan xabarlar (chat_id, message_id): agar Telegram ularni "egasi yozdi"
@@ -1793,7 +1803,7 @@ def build_panel(owner_id: int):
 
     ai_on = bool(s.get("ai_enabled"))
     ai_line = t(lang, "panel_ai_on" if ai_on else "panel_ai_off")
-    message_line = t(lang, "panel_ai_message") if ai_on else auto_reply_text_for(s, lang)
+    message_line = t(lang, "panel_ai_message") if ai_on else auto_reply_text_for(s, lang)[:MENU_TEXT_PREVIEW_CHARS]
     text = t(
         lang, "panel",
         status=status_line,
@@ -2538,6 +2548,9 @@ async def _sc_after_time(message, owner_id: int, lang: str, start: int, end: int
     if d["edit_id"] is not None:
         status, n = db.update_schedule_rule(owner_id, d["edit_id"], start_min=start, end_min=end)
         if status == "conflict":
+            # Tugma bosilganda (masalan "Kun bo'yi") kutilayotgan amal tozalangan bo'lishi mumkin — yangi vaqt
+            # yozilsa qabul qilinishi uchun qayta yoqamiz, aks holda kiritilgan vaqt jimgina e'tiborsiz qolardi.
+            set_pending_action(owner_id, "sc_time")
             await _sc_reply(message, edit_message, f"{_sc_conflict_notice(lang, n)}\n\n{t(lang, 'sc_time_prompt')}", _sc_time_markup(lang, d))
             return
         clear_pending_action(owner_id)
@@ -2821,7 +2834,7 @@ def build_sleep_menu(owner_id: int):
         lang, "sleep_menu",
         status=t(lang, "sleep_status_on" if enabled else "status_off"),
         range=format_time_range(start_minutes, end_minutes),
-        text=sleep_text_for(s, lang),
+        text=sleep_text_for(s, lang)[:MENU_TEXT_PREVIEW_CHARS],
     ) + "\n\n" + t(lang, "sleep_tz_note", tz=str(tz_from_settings(s, owner_id)))
     keyboard = [
         [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="sleep_disable" if enabled else "sleep_enable")],
@@ -3683,6 +3696,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if action in ("text", "sleep_text") and len(value) > AUTO_REPLY_MAX_TEXT:
+        # Cheksiz uzun matn panel/uxlash menyusini 4096 belgidan oshirib, menyuni ochib bo'lmas qilardi
+        await update.message.reply_text(t(lang, "ai_info_too_long", n=len(value), max=AUTO_REPLY_MAX_TEXT))
+        return  # amal saqlanadi — foydalanuvchi qisqartirib qayta yuboradi
+
     if action == "cooldown":
         hours = parse_cooldown_input(value)
         if hours is None or hours <= 0:
@@ -3798,6 +3816,8 @@ async def cmd_reklama(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await _reject_if_broadcast_already_running(update.message):
         return
+    # Admin panelda boshqa amal (masalan "fikr yozish") kutayotgan bo'lsa, keyingi xabar ikkalasiga ham ketmasin
+    clear_pending_action(update.effective_user.id)
     set_pending_admin_action(update.effective_user.id, "broadcast")
     await update.message.reply_text(
         "Reklama sifatida barcha foydalanuvchilarga yuboriladigan xabarni yuboring "
@@ -4037,18 +4057,22 @@ async def run_broadcast_job(
         sent, failed = await _broadcast_loop(
             bot, job_id, source_chat_id, source_message_id, retry_of_job_id, start_after_user_id
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Reklama job#%d kutilmagan xato bilan to'xtadi", job_id)
         db.set_broadcast_status(job_id, "failed")
         if reply_to_chat_id is not None:
-            try:
-                await bot.send_message(
-                    chat_id=reply_to_chat_id,
-                    text=(
-                        f"\u26A0\uFE0F Reklama job#{job_id} kutilmagan xato bilan to'xtadi.\n"
-                        "Qaytadan boshlash uchun /reklama yozing."
-                    ),
+            if isinstance(exc, BroadcastSourceError):
+                message = (
+                    f"\u26A0\uFE0F Reklama job#{job_id} to'xtatildi: reklama xabari topilmadi yoki ko'chirib bo'lmaydi "
+                    "(o'chirib yuborilgan bo'lishi mumkin).\nYangi xabar bilan qaytadan boshlash uchun /reklama yozing."
                 )
+            else:
+                message = (
+                    f"\u26A0\uFE0F Reklama job#{job_id} kutilmagan xato bilan to'xtadi.\n"
+                    "Qaytadan boshlash uchun /reklama yozing."
+                )
+            try:
+                await bot.send_message(chat_id=reply_to_chat_id, text=message)
             except TelegramError:
                 pass
         return
@@ -4057,17 +4081,39 @@ async def run_broadcast_job(
     logger.info("Reklama job#%d tugadi: %d muvaffaqiyatli, %d xato", job_id, sent, failed)
 
     if reply_to_chat_id is not None:
+        retryable = 0
+        if failed:
+            try:  # botni bloklaganlar qayta urinishga kirmaydi — maslahat faqat foydasi bo'lsa chiqadi
+                retryable = len(db.get_broadcast_failed_user_ids(job_id))
+            except Exception:
+                logger.exception("Reklama job#%d: qayta uriniladiganlar sonini o'qib bo'lmadi", job_id)
+                retryable = failed
         try:
             await bot.send_message(
                 chat_id=reply_to_chat_id,
                 text=(
                     f"\u2705 Reklama tugadi (job#{job_id}).\n"
                     f"Muvaffaqiyatli: {sent}\nYuborib bo'lmadi: {failed}"
-                    + ("\nQayta urinish uchun: /reklama_retry" if failed else "")
+                    + (f"\n(shundan {failed - retryable} tasi botni bloklagan/akkaunti o'chgan)" if failed and retryable < failed else "")
+                    + ("\nQayta urinish uchun: /reklama_retry" if retryable else "")
                 ),
             )
         except TelegramError:
             pass
+
+
+class BroadcastSourceError(Exception):
+    """Reklama qilinayotgan xabarning o'zi Telegramda topilmadi (masalan admin o'chirib yuborgan)."""
+
+
+BROADCAST_MAX_SOURCE_ERRORS = 5
+_SOURCE_ERROR_MARKERS = ("message to copy not found", "message_id_invalid", "message can't be copied", "message not found")
+
+
+def _is_broadcast_source_error(e: Exception) -> bool:
+    """copy_message xatosi foydalanuvchiga emas, reklama xabarining o'ziga tegishlimi."""
+    text = str(e).lower()
+    return any(marker in text for marker in _SOURCE_ERROR_MARKERS)
 
 
 async def _broadcast_loop(
@@ -4093,6 +4139,7 @@ async def _broadcast_loop(
     umuman olmay qolishidan ko'ra, kamdan-kam holatda ikki marta olgani yaxshiroq."""
     logger.info("Reklama job#%d boshlandi (last_user_id=%d)", job_id, start_after_user_id)
     sent, failed = 0, 0
+    source_errors = 0  # ketma-ket "xabar topilmadi" xatolari
     last_user_id = start_after_user_id
 
     while True:
@@ -4134,14 +4181,25 @@ async def _broadcast_loop(
                 # Foydalanuvchi botni bloklagan/o'chirgan — kutilgan holat
                 failed += 1
                 failed_delta = 1
-                db.record_broadcast_failure(job_id, user_id, "blocked/deleted")
+                db.record_broadcast_failure(job_id, user_id, db.NON_RETRYABLE_FAILURE)
             except TelegramError as e:
                 failed += 1
                 failed_delta = 1
                 db.record_broadcast_failure(job_id, user_id, str(e))
+                if isinstance(e, BadRequest) and _is_broadcast_source_error(e):
+                    source_errors += 1
+                else:
+                    source_errors = 0
+            else:
+                source_errors = 0
 
             db.update_broadcast_progress(job_id, last_user_id, sent_delta=sent_delta, failed_delta=failed_delta)
             await asyncio.sleep(0.05)  # ~20 xabar/soniya — Telegram limitidan pastroq
+
+            if source_errors >= BROADCAST_MAX_SOURCE_ERRORS:
+                # Reklama xabarining o'zi yo'q (admin o'chirib yuborgan): hammaga "xato" yozib, ishni
+                # "tugadi" deb ko'rsatish o'rniga to'xtatamiz — admin aniq sababni bilsin.
+                raise BroadcastSourceError("reklama xabari topilmadi yoki ko'chirib bo'lmaydi")
 
     return sent, failed
 
@@ -4211,7 +4269,7 @@ async def _try_send(bot, chat_id: int, text: str, reply_markup=None) -> bool:
 async def resolve_target_user(bot, raw: str) -> tuple[int | None, str | None]:
     """'@username' yoki raqamli ID'dan user_id topadi. (user_id, None) yoki (None, xato_matni)."""
     raw = raw.strip()
-    if raw.isdigit():
+    if re.fullmatch(r"[0-9]{1,15}", raw):  # ASCII raqamlar, real ID uzunligi (isdigit() "²" kabilarni ham o'tkazardi)
         user_id = int(raw)
         if user_id <= 0:
             return None, "Noto'g'ri ID."
@@ -4464,6 +4522,27 @@ async def profile_backfill_job(context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Profillarni to'ldirish xatosi")
 
 
+def split_for_telegram(text: str, limit: int = 4000) -> list[str]:
+    """Uzun matnni qator chegarasida `limit` belgidan oshmaydigan bo'laklarga ajratadi (Telegram limiti 4096)."""
+    chunks, current = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:  # bitta qatorning o'zi limitdan uzun bo'lsa — qattiq kesamiz
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = line if not current else current + "\n" + line
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current or not chunks:
+        chunks.append(current)
+    return chunks
+
+
 def _short(text: str | None) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= USER_NAME_MAX_LENGTH else text[: USER_NAME_MAX_LENGTH - 1] + "…"
@@ -4542,17 +4621,24 @@ async def handle_users_page(query, context: ContextTypes.DEFAULT_TYPE, data: str
         logger.info("/users sahifasi yangilanmadi: %s", e)
 
 
+BOTS_LIST_LIMIT = 30  # xabar 4096 belgidan oshmasligi uchun
+BOTS_CONFIRM_TTL_SECONDS = 15 * 60
+_bots_listed: dict[int, tuple[list[int], float]] = {}  # admin_id -> (ko'rsatilgan user_id'lar, vaqt)
+
+
 async def cmd_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    rows = db.list_bot_like_users(50)
+    rows = db.list_bot_like_users(BOTS_LIST_LIMIT)
     if not rows:
         await update.message.reply_text("Bazada bot-ga o'xshash yozuv topilmadi.")
         return
     lines = [
-        f"{i}. {html.escape(format_user_label(r['user_id'], r.get('username'), _short(r.get('full_name'))))}"
+        f"{i}. {format_user_label(r['user_id'], r.get('username'), _short(r.get('full_name')))}"
         for i, r in enumerate(rows, 1)
     ]
+    # Faqat admin KO'RGAN ro'yxat o'chiriladi: bazada ko'proq mos yozuv bo'lsa ham, ko'rilmaganlarga tegilmaydi
+    _bots_listed[update.effective_user.id] = ([r["user_id"] for r in rows], time.time())
     text = (
         f"\U0001F916 Username'i \"bot\" bilan tugaydigan yozuvlar ({len(rows)} ta):\n\n"
         + "\n".join(lines)
@@ -4562,7 +4648,7 @@ async def cmd_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [[InlineKeyboardButton("\U0001F5D1 Hammasini o'chirish", callback_data="rmbots:yes"),
           InlineKeyboardButton("Bekor qilish", callback_data="rmbots:no")]]
     )
-    await update.message.reply_text(text, reply_markup=markup)
+    await update.message.reply_text(text[:4096], reply_markup=markup)
 
 
 async def handle_rmbots(query, context: ContextTypes.DEFAULT_TYPE, data: str):
@@ -4570,9 +4656,15 @@ async def handle_rmbots(query, context: ContextTypes.DEFAULT_TYPE, data: str):
         await query.answer(t(get_lang(query.from_user.id), "no_permission"), show_alert=True)
         return
     if data == "rmbots:yes":
-        count = db.delete_bot_like_users()
-        await query.answer(f"{count} ta yozuv o'chirildi.", show_alert=True)
-        result = f"✅ {count} ta bot yozuvi bazadan o'chirildi."
+        listed = _bots_listed.pop(query.from_user.id, None)
+        if listed is None or time.time() - listed[1] > BOTS_CONFIRM_TTL_SECONDS:
+            # Ro'yxat eskirgan yoki bot qayta ishga tushgan: nima o'chirilishini admin ko'rmagan — o'chirmaymiz
+            await query.answer("Ro'yxat eskirgan. /bots ni qaytadan yuboring.", show_alert=True)
+            result = "Ro'yxat eskirgan. Qaytadan /bots yuboring."
+        else:
+            count = db.delete_bot_like_users(listed[0])
+            await query.answer(f"{count} ta yozuv o'chirildi.", show_alert=True)
+            result = f"✅ {count} ta bot yozuvi bazadan o'chirildi."
     else:
         await query.answer()
         result = "Bekor qilindi."
@@ -4600,11 +4692,16 @@ async def cmd_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, row in enumerate(rows, 1):
         when = datetime.fromtimestamp(row["blocked_at"], TASHKENT_TZ).strftime("%d.%m.%Y") if row.get("blocked_at") else "?"
         label = format_user_label(row["user_id"], row.get("username"), row.get("full_name"))
-        lines.append(f"{i}. {label} — {row.get('reason') or 'sababsiz'} ({when})")
+        reason = " ".join((row.get("reason") or "").split()) or "sababsiz"
+        if len(reason) > 100:
+            reason = reason[:99] + "…"
+        lines.append(f"{i}. {label} — {reason} ({when})")
     text = f"\U0001F6AB Bloklanganlar ({total} ta):\n\n" + "\n".join(lines)
     if total > len(rows):
         text += f"\n\n... va yana {total - len(rows)} ta (eng oxirgi {limit} tasi ko'rsatildi)"
-    await update.message.reply_text(text)
+    # Sabablar uzun bo'lsa matn 4096 belgidan oshib, buyruq javobsiz qolardi — bo'lib yuboramiz
+    for chunk in split_for_telegram(text):
+        await update.message.reply_text(chunk)
 
 
 async def _begin_appeal(bot, user_id: int):
@@ -4614,6 +4711,9 @@ async def _begin_appeal(bot, user_id: int):
     if used >= APPEAL_MAX_PER_DAY:
         await _try_send(bot, user_id, t(lang, "appeal_limit", used=used))
         return
+    started = pending_appeal.get(user_id)
+    if started is not None and time.time() - started < APPEAL_PENDING_TTL_SECONDS:
+        return  # so'rov allaqachon yuborilgan va kutilmoqda — tugmani qayta bosib spam qilib bo'lmaydi
     pending_appeal[user_id] = time.time()
     await _try_send(bot, user_id, t(lang, "appeal_prompt", max=APPEAL_MAX_LENGTH))
 
@@ -4931,6 +5031,15 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_auto_reply(context.bot, bm, owner_id, chat_id, reply_text, settings["cooldown_hours"], label)
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Handlerlarda ushlanmagan xatolar: "Message is not modified" (tugma ikki marta bosilgan) — zararsiz,
+    jim o'tkaziladi; qolganlari to'liq traceback bilan loglanadi (aks holda PTB "No error handlers" deb yozardi)."""
+    err = context.error
+    if isinstance(err, BadRequest) and "not modified" in str(err).lower():
+        return
+    logger.error("Handlerda ushlanmagan xato", exc_info=err)
+
+
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
 
@@ -4939,6 +5048,8 @@ def build_app() -> Application:
     # tushmasligi uchun. Aks holda har bir mijoz "foydalanuvchi" bo'lib bazaga yozilib,
     # reklama ro'yxatiga kirib qolardi.
     only_messages = filters.UpdateType.MESSAGE
+
+    app.add_error_handler(on_error)
 
     # Bloklangan foydalanuvchini eng birinchi to'xtatadi (qolgan hamma handlerdan oldin)
     app.add_handler(TypeHandler(Update, block_gate), group=-3)
