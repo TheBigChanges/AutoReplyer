@@ -918,6 +918,9 @@ def mark_user_info_checked(user_id: int):
         cur.execute("UPDATE users SET info_checked_at = %s WHERE user_id = %s", (time.time(), user_id))
 
 
+# Reklama: foydalanuvchi botni bloklagan/akkaunti o'chgan — qayta urinish foydasiz (har safar yana shunday bo'ladi)
+NON_RETRYABLE_FAILURE = "blocked/deleted"
+
 _BOT_LIKE_WHERE = """
     lower(username) LIKE '%%bot'
     AND NOT EXISTS (SELECT 1 FROM connections c WHERE c.owner_user_id = users.user_id)
@@ -936,10 +939,19 @@ def list_bot_like_users(limit: int = 50):
         return [dict(r) for r in cur.fetchall()]
 
 
-def delete_bot_like_users() -> int:
-    """list_bot_like_users() bilan bir xil shart bo'yicha o'chiradi. O'chirilganlar sonini qaytaradi."""
+def delete_bot_like_users(user_ids=None) -> int:
+    """list_bot_like_users() bilan bir xil shart bo'yicha o'chiradi. O'chirilganlar sonini qaytaradi.
+
+    `user_ids` berilsa — FAQAT shu ID'lar (va ular hamon shartga mos bo'lsa) o'chiriladi: admin /bots
+    ro'yxatida ko'rgan yozuvlardan boshqasiga tegilmaydi. Berilmasa — shartga mos hammasi (eski xatti-harakat)."""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(f"DELETE FROM users WHERE {_BOT_LIKE_WHERE}")
+        if user_ids is None:
+            cur.execute(f"DELETE FROM users WHERE {_BOT_LIKE_WHERE}")
+        else:
+            cur.execute(
+                f"DELETE FROM users WHERE {_BOT_LIKE_WHERE} AND user_id = ANY(%s)",
+                (list(user_ids),),
+            )
         return cur.rowcount
 
 
@@ -991,11 +1003,12 @@ def get_failed_user_ids_after(source_job_id: int, last_user_id: int, limit: int 
             """
             SELECT user_id FROM broadcast_failures f
             WHERE job_id = %s AND user_id > %s
+              AND error_text IS DISTINCT FROM %s
               AND NOT EXISTS (SELECT 1 FROM blocked_users b WHERE b.user_id = f.user_id)
             ORDER BY user_id
             LIMIT %s
             """,
-            (source_job_id, last_user_id, limit),
+            (source_job_id, last_user_id, NON_RETRYABLE_FAILURE, limit),
         )
         return [row[0] for row in cur.fetchall()]
 
@@ -1092,8 +1105,12 @@ def get_running_broadcast_jobs():
 
 
 def get_broadcast_failed_user_ids(job_id: int):
+    """Qayta urinishga arziydigan muvaffaqiyatsizlar (botni bloklagan/akkaunti o'chganlar kirmaydi)."""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT user_id FROM broadcast_failures WHERE job_id = %s", (job_id,))
+        cur.execute(
+            "SELECT user_id FROM broadcast_failures WHERE job_id = %s AND error_text IS DISTINCT FROM %s",
+            (job_id, NON_RETRYABLE_FAILURE),
+        )
         return [row[0] for row in cur.fetchall()]
 
 
