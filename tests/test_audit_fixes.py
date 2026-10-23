@@ -24,6 +24,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://fake/fake")
 
 import bot  # noqa: E402
 import db  # noqa: E402
+import i18n  # noqa: E402
 from telegram.error import BadRequest, Forbidden  # noqa: E402
 
 TEST_DB_URL = os.environ.get("TEST_DATABASE_URL")
@@ -327,6 +328,309 @@ class TestErrorHandler(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Eskirgan tugmalar: Bilimlar bazasi o'chirish, FAQ/KB qoralamalari, jadval o'chirish tasdig'i
+# ---------------------------------------------------------------------------
+class _PanelBase(_Base):
+    def setUp(self):
+        super().setUp()
+        bot._kb_del_confirms.clear()
+        bot._sc_del_confirms.clear()
+        bot._faq_drafts.clear()
+        bot._kb_drafts.clear()
+        self.addCleanup(bot._kb_del_confirms.clear)
+        self.addCleanup(bot._sc_del_confirms.clear)
+        self.addCleanup(bot._faq_drafts.clear)
+        self.addCleanup(bot._kb_drafts.clear)
+        self.settings = dict(SETTINGS, faq_enabled=True, kb_enabled=True)
+        self.mocks = {}
+        for name, kwargs in (
+            ("get_settings", {"side_effect": lambda owner: dict(self.settings)}),
+            ("update_settings", {}),
+            ("count_faq_entries", {"return_value": 0}),
+            ("count_kb_entries", {"return_value": 0}),
+            ("list_faq_entries", {"return_value": []}),
+            ("list_kb_entries", {"return_value": []}),
+            ("add_faq_entry", {"return_value": 1}),
+            ("add_kb_entry", {"return_value": 1}),
+            ("delete_kb_entry", {"return_value": True}),
+            ("get_kb_entry", {"side_effect": lambda owner, i: {
+                "id": i, "owner_user_id": owner, "title": f"T{i}", "content": "C", "keywords": [], "is_enabled": True}}),
+            ("get_faq_entry", {"side_effect": lambda owner, i: {
+                "id": i, "owner_user_id": owner, "question": "Q", "keywords": ["k"], "answer": "A", "is_enabled": True}}),
+            ("set_faq_entry_enabled", {"return_value": True}),
+            ("set_kb_entry_enabled", {"return_value": True}),
+            ("toggle_faq_entry", {"return_value": True}),
+            ("toggle_kb_entry", {"return_value": True}),
+        ):
+            patcher = patch.object(db, name, **kwargs)
+            self.mocks[name] = patcher.start()
+            self.addCleanup(patcher.stop)
+        for patcher in (patch.object(bot, "track_user"), patch.object(bot.ai, "is_configured", return_value=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def press(self, data, user=USER):
+        q = MagicMock()
+        q.data = data
+        q.from_user.id = user
+        q.answer = AsyncMock()
+        q.edit_message_text = AsyncMock()
+        q.message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = q
+        asyncio.run(bot.on_button(update, MagicMock()))
+        return q
+
+    def say(self, text, user=USER):
+        update = _text_update(text, user)
+        asyncio.run(bot.on_text(update, MagicMock()))
+        return update.message.reply_text
+
+    @staticmethod
+    def shown(q):
+        return q.edit_message_text.await_args.args[0]
+
+    @staticmethod
+    def datas(markup):
+        return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+
+class TestKnowledgeDeleteConfirmationIsOneTime(_PanelBase):
+    STALE = "eskirgan"
+
+    def _open_confirm(self, entry_id=5):
+        q = self.press(f"kb_del:{entry_id}")
+        return self.datas(q.edit_message_text.await_args.kwargs["reply_markup"])[0]
+
+    def test_fresh_confirmation_deletes_once_and_cannot_be_replayed(self):
+        yes = self._open_confirm()
+        self.assertRegex(yes, r"^kb_del_yes:5:[0-9a-f]{6}$")
+        self.press(yes)
+        self.mocks["delete_kb_entry"].assert_called_once_with(USER, 5)
+        q = self.press(yes)  # ikkinchi bosish
+        self.mocks["delete_kb_entry"].assert_called_once()
+        self.assertIn(self.STALE, self.shown(q))
+
+    def test_legacy_button_without_token_does_nothing(self):
+        self._open_confirm()
+        q = self.press("kb_del_yes:5")
+        self.mocks["delete_kb_entry"].assert_not_called()
+        self.assertIn(self.STALE, self.shown(q))
+
+    def test_old_confirmation_is_dead_after_user_goes_to_edit(self):
+        yes = self._open_confirm()
+        self.press("kb_edit:t:5")  # fikridan qaytib tahrirlashga o'tdi
+        self.press("kb_view:5")
+        q = self.press(yes)  # eski «Ha, o'chirish»
+        self.mocks["delete_kb_entry"].assert_not_called()
+        self.assertIn(self.STALE, self.shown(q))
+
+    def test_token_of_one_entry_cannot_delete_another(self):
+        yes = self._open_confirm(5)
+        self.press(yes.replace("kb_del_yes:5:", "kb_del_yes:6:"))
+        self.mocks["delete_kb_entry"].assert_not_called()
+
+    def test_expired_confirmation_does_nothing(self):
+        yes = self._open_confirm()
+        bot._kb_del_confirms[USER]["ts"] -= bot.PENDING_ACTION_TTL_SECONDS + 1
+        self.press(yes)
+        self.mocks["delete_kb_entry"].assert_not_called()
+
+    def test_stale_press_keeps_the_live_confirmation(self):
+        old_yes = self._open_confirm(5)
+        new_yes = self._open_confirm(5)  # yangi tasdiq eskisini almashtiradi
+        self.assertNotEqual(old_yes, new_yes)
+        self.press(old_yes)
+        self.mocks["delete_kb_entry"].assert_not_called()
+        self.press(new_yes)  # joriy tasdiq hamon ishlaydi
+        self.mocks["delete_kb_entry"].assert_called_once_with(USER, 5)
+
+    def test_start_and_cancel_clear_a_pending_confirmation(self):
+        yes = self._open_confirm()
+        self.assertTrue(bot.clear_scheduler_state(USER))
+        self.press(yes)
+        self.mocks["delete_kb_entry"].assert_not_called()
+
+
+class TestSchedulerDeleteConfirmationStaleButton(_PanelBase):
+    def setUp(self):
+        super().setUp()
+        for patcher in (
+            patch.object(bot, "_sc_entry_text", side_effect=lambda owner, rid: ("1", "Jadval", {"id": rid})),
+            patch.object(bot, "build_sched_menu", side_effect=lambda owner, notice=None, page=0: (notice or "menu", None)),
+            patch.object(db, "delete_schedule_rule", return_value=True),
+        ):
+            self.addCleanup(patcher.stop)
+            patcher.start()
+
+    def _open(self, rule_id):
+        q = self.press(f"sc_del:{rule_id}")
+        return self.datas(q.edit_message_text.await_args.kwargs["reply_markup"])[0]
+
+    def test_stale_yes_does_not_cancel_the_new_confirmation(self):
+        old_yes = self._open(1)
+        new_yes = self._open(2)  # yangi tasdiq eskisining o'rniga ochildi
+        q = self.press(old_yes)
+        self.assertIn("eskirgan", self.shown(q))
+        self.assertEqual(bot._sc_del_confirms[USER]["rule_id"], 2)  # yangisi tirik
+        self.press(new_yes)
+        db.delete_schedule_rule.assert_called_once_with(USER, 2)
+
+    def test_stale_yes_does_not_interrupt_typing_a_schedule_time_or_text(self):
+        old_yes = self._open(1)
+        self._open(2)
+        bot.set_pending_action(USER, "sc_text")
+        self.press(old_yes)
+        self.assertEqual(bot.get_pending_action(USER), "sc_text")
+
+    def test_forged_yes_buttons_delete_nothing(self):
+        self._open(1)
+        for forged in ("sc_del_yes:1", "sc_del_yes:1:zzzzzz", "sc_del_yes:abc:zzzzzz", "sc_del_yes:", "sc_del_yes:1:2:3"):
+            self.press(forged)
+        db.delete_schedule_rule.assert_not_called()
+        self.assertIn(USER, bot._sc_del_confirms)  # haqiqiy tasdiq buzilmadi
+
+
+class TestDraftSaveCancelAreBoundToTheirDraft(_PanelBase):
+    def _faq_confirm_buttons(self, q="Savol?", kw="kalit", ans="Javob"):
+        self.press("faq_add")
+        self.say(q)
+        self.say(kw)
+        reply = self.say(ans)
+        return self.datas(reply.await_args.kwargs["reply_markup"])  # [save, cancel]
+
+    def _kb_confirm_buttons(self, title="Sarlavha", content="Matn", kw="-"):
+        self.press("kb_add")
+        self.say(title)
+        self.say(content)
+        reply = self.say(kw)
+        return self.datas(reply.await_args.kwargs["reply_markup"])
+
+    def test_faq_old_save_cannot_save_or_destroy_the_new_draft(self):
+        old_save, old_cancel = self._faq_confirm_buttons("Eski savol?", "eski", "Eski javob")
+        new_save, new_cancel = self._faq_confirm_buttons("Yangi savol?", "yangi", "Yangi javob")
+        self.assertNotEqual(old_save, new_save)
+        q = self.press(old_save)
+        self.mocks["add_faq_entry"].assert_not_called()
+        self.assertIn("eskirgan", self.shown(q))
+        self.assertEqual(bot._faq_drafts[USER]["q"], "Yangi savol?")      # yangi qoralama joyida
+        self.assertEqual(bot.get_pending_action(USER), "faq_confirm")     # kutilayotgan holat buzilmadi
+        self.press(old_cancel)
+        self.assertIn(USER, bot._faq_drafts)                               # eski «Bekor qilish» yangisini o'chirmaydi
+        self.press(new_save)
+        self.mocks["add_faq_entry"].assert_called_once()
+        self.assertEqual(self.mocks["add_faq_entry"].call_args.args[1], "Yangi savol?")
+
+    def test_faq_own_cancel_discards_and_then_save_is_dead(self):
+        save, cancel = self._faq_confirm_buttons()
+        self.press(cancel)
+        self.assertNotIn(USER, bot._faq_drafts)
+        self.press(save)
+        self.mocks["add_faq_entry"].assert_not_called()
+
+    def test_kb_old_save_cannot_save_or_destroy_the_new_draft(self):
+        old_save, old_cancel = self._kb_confirm_buttons("Eski", "Eski matn")
+        new_save, new_cancel = self._kb_confirm_buttons("Yangi", "Yangi matn")
+        self.assertNotEqual(old_save, new_save)
+        q = self.press(old_save)
+        self.mocks["add_kb_entry"].assert_not_called()
+        self.assertIn("eskirgan", self.shown(q))
+        self.assertEqual(bot._kb_drafts[USER]["title"], "Yangi")
+        self.assertEqual(bot.get_pending_action(USER), "kb_confirm")
+        self.press(old_cancel)
+        self.assertIn(USER, bot._kb_drafts)
+        self.press(new_save)
+        self.mocks["add_kb_entry"].assert_called_once()
+        self.assertEqual(self.mocks["add_kb_entry"].call_args.args[1], "Yangi")
+
+    def test_legacy_tokenless_buttons_are_stale(self):
+        self._faq_confirm_buttons()
+        self._kb_confirm_buttons()
+        for data in ("faq_save", "kb_save", "faq_cancel", "kb_cancel"):
+            self.press(data)
+        self.mocks["add_faq_entry"].assert_not_called()
+        self.mocks["add_kb_entry"].assert_not_called()
+        self.assertIn(USER, bot._faq_drafts)
+        self.assertIn(USER, bot._kb_drafts)
+
+    def test_cancel_without_any_draft_is_harmless(self):
+        q = self.press("faq_cancel")  # menyuga qaytadi, yiqilmaydi
+        self.assertIn(i18n.t("uz", "faq_cancelled"), self.shown(q))
+
+
+class TestExplicitOnOffButtons(_PanelBase):
+    def test_settings_buttons_are_explicit_and_idempotent(self):
+        for off, on, field in (("faq_off", "faq_on", "faq_enabled"), ("kb_off", "kb_on", "kb_enabled")):
+            self.mocks["update_settings"].reset_mock()
+            self.press(off)
+            self.press(off)  # eski xabardagi tugma qayta bosildi
+            self.assertEqual(self.mocks["update_settings"].call_args_list, [((USER,), {field: False})] * 2)
+            self.mocks["update_settings"].reset_mock()
+            self.press(on)
+            self.press(on)
+            self.assertEqual(self.mocks["update_settings"].call_args_list, [((USER,), {field: True})] * 2)
+
+    def test_ai_buttons_are_explicit_and_idempotent(self):
+        self.press("ai_off")
+        self.press("ai_off")
+        self.press("ai_on")
+        self.press("ai_on")
+        self.assertEqual(
+            [c.kwargs for c in self.mocks["update_settings"].call_args_list],
+            [{"ai_enabled": False}, {"ai_enabled": False}, {"ai_enabled": True}, {"ai_enabled": True}],
+        )
+
+    def test_ai_on_still_requires_configuration(self):
+        with patch.object(bot.ai, "is_configured", return_value=False):
+            q = self.press("ai_on")
+        self.mocks["update_settings"].assert_not_called()
+        self.assertIn("GEMINI_API_KEY", self.shown(q))
+
+    def test_entry_buttons_are_explicit_and_idempotent(self):
+        for off, on, mock in (
+            ("faq_entry_off", "faq_entry_on", self.mocks["set_faq_entry_enabled"]),
+            ("kb_entry_off", "kb_entry_on", self.mocks["set_kb_entry_enabled"]),
+        ):
+            self.press(f"{off}:7")
+            self.press(f"{off}:7")
+            self.press(f"{on}:7")
+            self.assertEqual(mock.call_args_list, [((USER, 7, False),), ((USER, 7, False),), ((USER, 7, True),)])
+
+    def test_legacy_toggle_buttons_change_nothing(self):
+        for data in ("faq_toggle", "kb_toggle", "ai_toggle", "faq_entry_toggle:7", "kb_entry_toggle:7"):
+            q = self.press(data)
+            self.assertTrue(q.edit_message_text.await_count, data)  # joriy holatni ko'rsatadi, yiqilmaydi
+        self.mocks["update_settings"].assert_not_called()
+        for name in ("set_faq_entry_enabled", "set_kb_entry_enabled", "toggle_faq_entry", "toggle_kb_entry"):
+            self.mocks[name].assert_not_called()
+
+    def test_menus_carry_the_explicit_action_for_the_current_state(self):
+        for enabled, faq_expected, kb_expected in ((True, "faq_off", "kb_off"), (False, "faq_on", "kb_on")):
+            self.settings.update(faq_enabled=enabled, kb_enabled=enabled)
+            self.assertIn(faq_expected, self.datas(bot.build_faq_settings(USER)[1]))
+            self.assertIn(kb_expected, self.datas(bot.build_kb_settings(USER)[1]))
+        self.settings.update(ai_enabled=True)
+        self.assertIn("ai_off", self.datas(bot.build_ai_menu(USER)[1]))
+        self.settings.update(ai_enabled=False)
+        self.assertIn("ai_on", self.datas(bot.build_ai_menu(USER)[1]))
+        entry = {"id": 3, "owner_user_id": USER, "question": "Q", "keywords": ["k"], "answer": "A"}
+        self.mocks["get_faq_entry"].side_effect = lambda o, i: dict(entry, is_enabled=True)
+        self.assertIn("faq_entry_off:3", self.datas(bot.build_faq_entry(USER, 3)[1]))
+        self.mocks["get_faq_entry"].side_effect = lambda o, i: dict(entry, is_enabled=False)
+        self.assertIn("faq_entry_on:3", self.datas(bot.build_faq_entry(USER, 3)[1]))
+        kb = {"id": 4, "owner_user_id": USER, "title": "T", "content": "C", "keywords": []}
+        self.mocks["get_kb_entry"].side_effect = lambda o, i: dict(kb, is_enabled=True)
+        self.assertIn("kb_entry_off:4", self.datas(bot.build_kb_entry(USER, 4)[1]))
+        self.mocks["get_kb_entry"].side_effect = lambda o, i: dict(kb, is_enabled=False)
+        self.assertIn("kb_entry_on:4", self.datas(bot.build_kb_entry(USER, 4)[1]))
+
+    def test_new_buttons_are_plan_gated_like_the_old_ones(self):
+        for data in ("faq_on", "faq_off", "faq_entry_on:1", "faq_entry_off:1", "kb_on", "kb_off", "kb_entry_on:1",
+                     "kb_entry_off:1", "ai_on", "ai_off"):
+            self.assertIn(bot.locked_feature_for(data), ("faq", "kb", "ai"), data)
+
+
+# ---------------------------------------------------------------------------
 # HAQIQIY Postgres
 # ---------------------------------------------------------------------------
 @unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL o'rnatilmagan — haqiqiy Postgres testlari o'tkazib yuborildi")
@@ -360,6 +664,26 @@ class TestDbOnRealPostgres(unittest.TestCase):
         db.record_user(self.ids[0], username=f"zz{self.base}human", full_name="T")
         self.assertEqual(db.delete_bot_like_users([self.ids[0]]), 0)
         self.assertIsNotNone(db.get_user(self.ids[0]))
+
+    def test_entry_setters_are_idempotent_and_owner_scoped(self):
+        owner, other = self.ids[0], self.ids[1]
+        faq_id = db.add_faq_entry(owner, "Q", ["k"], "A", 20)
+        kb_id = db.add_kb_entry(owner, "T", "C", [], 55)
+        self.addCleanup(lambda: [db.delete_faq_entry(owner, faq_id), db.delete_kb_entry(owner, kb_id)])
+        for _ in range(2):
+            self.assertTrue(db.set_faq_entry_enabled(owner, faq_id, False))
+            self.assertFalse(db.get_faq_entry(owner, faq_id)["is_enabled"])
+            self.assertTrue(db.set_kb_entry_enabled(owner, kb_id, False))
+            self.assertFalse(db.get_kb_entry(owner, kb_id)["is_enabled"])
+        self.assertTrue(db.set_faq_entry_enabled(owner, faq_id, True))
+        self.assertTrue(db.set_kb_entry_enabled(owner, kb_id, True))
+        self.assertTrue(db.get_faq_entry(owner, faq_id)["is_enabled"])
+        self.assertTrue(db.get_kb_entry(owner, kb_id)["is_enabled"])
+        # boshqa egasining yozuviga tegib bo'lmaydi
+        self.assertFalse(db.set_faq_entry_enabled(other, faq_id, False))
+        self.assertFalse(db.set_kb_entry_enabled(other, kb_id, False))
+        self.assertTrue(db.get_faq_entry(owner, faq_id)["is_enabled"])
+        self.assertTrue(db.get_kb_entry(owner, kb_id)["is_enabled"])
 
     def test_retry_lists_skip_blocked_and_deleted_accounts(self):
         db.record_broadcast_failure(self.job_id, self.ids[0], db.NON_RETRYABLE_FAILURE)
