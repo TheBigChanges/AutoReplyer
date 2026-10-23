@@ -357,7 +357,7 @@ class PanelTests(Base):
             self.assertIn("cheklovsiz", bot.build_ai_menu(ADMIN)[0])
 
     def test_toggle_on_requires_configuration(self):
-        u, q = self._query("ai_toggle")
+        u, q = self._query("ai_on")
         with patch.object(bot, "track_user"), patch.object(db, "get_settings", return_value=_settings(ai_enabled=False)), \
              patch.object(db, "update_settings") as upd, \
              patch.object(ai, "is_configured", return_value=False):
@@ -367,8 +367,8 @@ class PanelTests(Base):
         q.answer.assert_awaited_once()
 
     def test_toggle_on_and_off(self):
-        for current, expected in ((False, True), (True, False)):
-            u, q = self._query("ai_toggle")
+        for data, current, expected in (("ai_on", False, True), ("ai_off", True, False)):
+            u, q = self._query(data)
             with patch.object(bot, "track_user"), \
                  patch.object(db, "get_settings", return_value=_settings(ai_enabled=current)), \
                  patch.object(db, "update_settings") as upd, \
