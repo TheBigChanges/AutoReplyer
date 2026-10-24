@@ -2030,6 +2030,28 @@ def sc_button_is_stale(owner_id: int, data: str) -> bool:
     return d is None or d.get("id") != token or d.get("stage") != _SC_STAGE_FOR.get(base, "days")
 
 
+def clear_flow_state(owner_id: int) -> bool:
+    """/start va /cancel uchun: barcha tugallanmagan jarayonlar — jadval qoralamasi va o'chirish tasdiqlari,
+    Bilimlar bazasi o'chirish tasdig'i, FAQ va Bilimlar bazasi qoralamalari va tahrirlash nishonlari — bekor qilinadi.
+    Aks holda "/cancel"dan keyin eski «Saqlash» tugmasi hamon tirik qoralamani saqlab yuborardi.
+    Biror narsa bekor bo'lsa True."""
+    cleared = clear_scheduler_state(owner_id)
+    for store in (_faq_drafts, _kb_drafts, _faq_edit_target, _kb_edit_target):
+        if store.pop(owner_id, None) is not None:
+            cleared = True
+    return cleared
+
+
+_CANCEL_DRAFT_OF = {"sc_cancel": "_sc_draft", "faq_cancel": "_faq_draft", "kb_cancel": "_kb_draft"}
+
+
+def cancel_without_own_draft(owner_id: int, data: str) -> bool:
+    """«Bekor qilish» tugmasi o'z qoralamasi yo'q paytda bosildimi (masalan boshqa funksiyaning eski oynasidan)?
+    Bunday tugma hech narsani bekor qilmaydi — ayniqsa boshqa funksiyada kutilayotgan matn kiritishni."""
+    draft_getter = _CANCEL_DRAFT_OF.get(data.split(":")[0])
+    return draft_getter is not None and globals()[draft_getter](owner_id) is None
+
+
 def stale_confirm_button(owner_id: int, data: str) -> bool:
     """Qoralama/tasdiqqa bog'liq tugma eskirganmi (joriy qoralama yoki tasdiqning ID'si bilan mos kelmaydi).
     Eskirgan tugma HECH NARSANI o'zgartirmaydi: joriy qoralama, tasdiq va kutilayotgan kiritish saqlanadi.
@@ -2425,8 +2447,8 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]]),
             )
             return True
-        _sc_drafts.pop(owner_id, None)
-        clear_pending_action(owner_id)
+        if _sc_drafts.pop(owner_id, None) is not None:
+            clear_pending_action(owner_id)  # faqat o'z qoralamasi bor bo'lsagina; aks holda boshqa jarayonga tegmaymiz
         text, markup = build_sched_menu(owner_id, t(lang, "sc_cancelled"))
         await query.edit_message_text(text, reply_markup=markup)
         return True
@@ -2932,7 +2954,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     track_user(update.effective_user)
     clear_pending_action(owner_id)  # /start har doim tugallanmagan amalni tozalaydi
-    clear_scheduler_state(owner_id)  # ... shu jumladan jadval qoralamasi va o'chirish tasdig'ini
+    clear_flow_state(owner_id)  # ... shu jumladan jadval/FAQ/Bilimlar bazasi qoralamalari va o'chirish tasdiqlarini
 
     inviter_id = parse_referral_arg(context.args)
 
@@ -3098,7 +3120,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # hozirgi kiritishi (vaqt/matn) davom etaveradi.
     # Xuddi shu qoida FAQ/Bilimlar bazasi qoralamalari va o'chirish tasdiqlari uchun ham: eskirgan tugma
     # (boshqa/eski qoralama yoki tasdiqniki) hech narsani bekor qilmaydi.
-    stale_button = (data.startswith("sc_") and sc_button_is_stale(owner_id, data)) or stale_confirm_button(owner_id, data)
+    stale_button = (
+        (data.startswith("sc_") and sc_button_is_stale(owner_id, data))
+        or stale_confirm_button(owner_id, data)
+        or cancel_without_own_draft(owner_id, data)  # o'z qoralamasi yo'q «Bekor qilish» boshqa jarayonga tegmaydi
+    )
     if not stale_button:
         clear_pending_action(owner_id)
     # Har qanday boshqa tugma (o'chirishni tasdiqlashdan tashqari) ochiq o'chirish tasdig'ini bekor qiladi
@@ -3442,8 +3468,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.split(":")[0] == "kb_cancel":
-        _kb_drafts.pop(owner_id, None)
-        clear_pending_action(owner_id)
+        if _kb_drafts.pop(owner_id, None) is not None:
+            clear_pending_action(owner_id)  # o'z qoralamasi yo'q bo'lsa, boshqa jarayonning kiritishiga tegmaymiz
         text, markup = build_kb_menu(owner_id, t(lang, "kb_cancelled"))
         await query.edit_message_text(text, reply_markup=markup)
         return
@@ -3878,7 +3904,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     cleared_admin = clear_pending_admin_action(owner_id)
     cleared_panel = clear_pending_action(owner_id)
-    cleared_scheduler = clear_scheduler_state(owner_id)
+    cleared_scheduler = clear_flow_state(owner_id)
     if cleared_admin or cleared_panel or cleared_scheduler:
         await update.message.reply_text(t(get_lang(owner_id), "cancelled"))
 
