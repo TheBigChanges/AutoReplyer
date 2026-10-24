@@ -755,6 +755,26 @@ def set_user_plan(user_id: int, plan: str, expires_at: float | None = None) -> N
         )
 
 
+def list_plan_subscribers():
+    """/userplans uchun: (pullik tarifdagi faol obunachilar, bepul tarifdagilar soni).
+    Obunachi: tarifi 'free' emas va muddati o'tmagan (muddati o'tgan, lekin fon job ulgurmagan — bepul hisoblanadi).
+    Har bir qator: user_id, username, full_name, plan, plan_expires_at. Tartib: tarif, so'ng muddat (yaqin tugaydigani oldin)."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT user_id, username, full_name, plan, plan_expires_at
+            FROM users
+            WHERE plan IS NOT NULL AND plan <> 'free'
+              AND (plan_expires_at IS NULL OR plan_expires_at > EXTRACT(EPOCH FROM now()))
+            ORDER BY plan, plan_expires_at ASC NULLS LAST, user_id
+            """
+        )
+        paid = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT COUNT(*) FROM users")
+        total = cur.fetchone()["count"]
+    return paid, total - len(paid)
+
+
 def expire_plans(now: float | None = None):
     """Muddati tugagan tariflarni bepulga qaytaradi (atomik). [(user_id, eski_tarif)] qaytaradi."""
     now = time.time() if now is None else now
@@ -1868,7 +1888,7 @@ def retry_on_disconnect(fn):
 
 for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
-    "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info",
+    "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
     "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "get_faq_entry", "count_faq_entries",
     "get_analytics_rows", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
