@@ -732,6 +732,39 @@ T: dict[str, dict] = {
         "⚠️ Could not determine your name. Try later or enter it via \"Change base name\".",
         "⚠️ Не удалось определить ваше имя. Повторите позже или введите его через \"Изменить исходное имя\".",
     ),
+    "nc_need_bio": _(
+        "⚠️ Bepul tarifda ism soati uchun \"Edit bio\" (BIO'ni tahrirlash) ruxsati ham yoqilgan bo'lishi shart — "
+        "soat bilan birga BIO'ga bot haqida qisqa yozuv qo'yiladi.\n\n"
+        "Telegram → Sozlamalar → My Profile → Chat Automations → botni bosing → \"Edit bio\" ni yoqing "
+        "va qayta urinib ko'ring.\n\nPullik tariflarda bu talab yo'q.",
+        "⚠️ On the Free plan the name clock also needs the \"Edit bio\" permission — "
+        "a short note about the bot is placed in your bio together with the clock.\n\n"
+        "Telegram → Settings → My Profile → Chat Automations → tap the bot → enable \"Edit bio\" "
+        "and try again.\n\nPaid plans do not have this requirement.",
+        "⚠️ На бесплатном тарифе для часов в имени нужно и разрешение \"Edit bio\" — "
+        "вместе с часами в BIO ставится короткая заметка о боте.\n\n"
+        "Telegram → Настройки → My Profile → Chat Automations → нажмите на бота → включите \"Edit bio\" "
+        "и попробуйте снова.\n\nНа платных тарифах это не требуется.",
+    ),
+    "nc_bio_stopped": _(
+        "⚠️ Ism soati to'xtatildi: \"Edit bio\" ruxsati yoqilmagan (Bepul tarifda soat uchun u shart). "
+        "Ismingiz asl holiga qaytariladi.\n\n"
+        "Telegram → Sozlamalar → My Profile → Chat Automations → botni bosing → \"Edit bio\" ni yoqing. "
+        "Ruxsat yoqilishi bilan soat o'zi qayta ishga tushadi.",
+        "⚠️ Name clock stopped: the \"Edit bio\" permission is not enabled (the Free plan requires it for the clock). "
+        "Your name will be restored.\n\n"
+        "Telegram → Settings → My Profile → Chat Automations → tap the bot → enable \"Edit bio\". "
+        "The clock restarts by itself as soon as the permission is on.",
+        "⚠️ Часы в имени остановлены: разрешение \"Edit bio\" не включено (на бесплатном тарифе оно обязательно). "
+        "Ваше имя будет возвращено.\n\n"
+        "Telegram → Настройки → My Profile → Chat Automations → нажмите на бота → включите \"Edit bio\". "
+        "Как только разрешение включится, часы запустятся сами.",
+    ),
+    "nc_bio_restored": _(
+        "✅ \"Edit bio\" ruxsati yoqildi — ism soati qayta ishga tushdi.",
+        "✅ The \"Edit bio\" permission is on — the name clock is running again.",
+        "✅ Разрешение \"Edit bio\" включено — часы в имени снова работают.",
+    ),
     "nc_enabled": _("✅ Yoqildi.", "✅ Turned on.", "✅ Включено."),
     "nc_auto_disabled": _(
         "⚠️ Ism soati o'chirildi: {reason}",
