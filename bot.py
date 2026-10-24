@@ -3055,6 +3055,7 @@ ADMIN_HELP_TEXT = (
     "/unblock @username — blokdan chiqarish\n"
     "/setplan @username plus 1oy — tarifni belgilash (muddat: 1oy, 2hafta, 30kun, 1yil; tugagach avtomatik Bepul; muddatsiz ham mumkin)\n"
     "/blocked — bloklanganlar ro'yxati\n"
+    "/userplans — tariflar va ularga obuna bo'lgan foydalanuvchilar\n"
     "/reklama — barcha foydalanuvchilarga xabar yuborish (yuborishdan oldin tasdiqlanadi)\n"
     "/reklama_status — oxirgi reklama holati\n"
     "/reklama_retry — oxirgi reklamani qayta urinish\n"
@@ -4826,6 +4827,33 @@ async def on_other_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     track_user(update.effective_user)
 
 
+async def cmd_userplans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: har bir tarif va unga obuna bo'lgan foydalanuvchilar (muddati bilan). Bepul tarif uchun faqat soni."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    paid, free_count = db.list_plan_subscribers()
+    by_plan: dict[str, list[dict]] = {}
+    for row in paid:
+        by_plan.setdefault(row["plan"], []).append(row)
+    blocks = []
+    for key, emoji, price in PLANS:
+        if key == "free":
+            blocks.append(f"{emoji} Free — {free_count} ta foydalanuvchi")
+            continue
+        rows = by_plan.get(key, [])
+        lines = [f"{emoji} {key.capitalize()} ({price} so'm) — {len(rows)} ta"]
+        for i, r in enumerate(rows, 1):
+            until = (
+                "muddatsiz" if r.get("plan_expires_at") is None
+                else "gacha " + datetime.fromtimestamp(r["plan_expires_at"], TASHKENT_TZ).strftime("%d.%m.%Y")
+            )
+            lines.append(f"{i}. {format_user_label(r['user_id'], r.get('username'), r.get('full_name'))} — {until}")
+        blocks.append("\n".join(lines))
+    text = "\U0001F4CB Tariflar va obunachilar:\n\n" + "\n\n".join(blocks)
+    for chunk in split_for_telegram(text):
+        await update.message.reply_text(chunk)
+
+
 async def cmd_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -5218,6 +5246,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("unblock", cmd_unblock, filters=only_messages))
     app.add_handler(CommandHandler("setplan", cmd_setplan, filters=only_messages))
     app.add_handler(CommandHandler("blocked", cmd_blocked, filters=only_messages))
+    app.add_handler(CommandHandler("userplans", cmd_userplans, filters=only_messages))
     app.add_handler(CommandHandler("users", cmd_users, filters=only_messages))
     app.add_handler(CommandHandler("bots", cmd_bots, filters=only_messages))
     app.add_handler(CommandHandler("reklama", cmd_reklama, filters=only_messages))
