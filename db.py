@@ -58,6 +58,7 @@ ALLOWED_SETTINGS_FIELDS = {
     "name_clock_last",
     "name_clock_applied",
     "clock_bio_ad",
+    "clock_bio_notified",
     "faq_enabled",
     "kb_enabled",
     "scheduler_enabled",
@@ -207,6 +208,8 @@ def init_db():
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_last TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS name_clock_applied TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS clock_bio_ad BOOLEAN NOT NULL DEFAULT FALSE")
+        # Bepul tarifda ism soati BIO ruxsatisiz ishlamaydi: egasiga "to'xtatildi" xabari yuborilganmi (qayta-qayta yubormaslik uchun)
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS clock_bio_notified BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS faq_enabled BOOLEAN NOT NULL DEFAULT TRUE")
         cur.execute(
             """
@@ -1775,7 +1778,7 @@ def get_name_clock_targets():
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT s.owner_user_id, c.business_connection_id,
+            SELECT s.owner_user_id, c.business_connection_id, c.can_edit_bio, s.clock_bio_notified,
                    s.name_clock_tz, s.name_clock_first, s.name_clock_last, s.name_clock_applied, s.name_clock_style,
                    CASE WHEN u.plan IS NULL OR (u.plan_expires_at IS NOT NULL AND u.plan_expires_at <= EXTRACT(EPOCH FROM now())) THEN 'free' ELSE u.plan END AS plan
             FROM settings s
@@ -1788,6 +1791,24 @@ def get_name_clock_targets():
             """
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def set_can_edit_bio(owner_user_id: int, value: bool) -> None:
+    """Telegramdan o'qilgan joriy "Edit bio" ruxsatini ulanishga yozadi (boshqa huquqlarga tegmaydi)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE connections SET can_edit_bio = %s WHERE owner_user_id = %s", (bool(value), owner_user_id))
+
+
+def set_bio_gate_flag(owner_user_id: int, value: bool) -> bool:
+    """`clock_bio_notified` belgisini ATOMIK o'zgartiradi: haqiqatan o'zgargan bo'lsa True (xabar yuborish huquqi
+    shu chaqiruvga tegadi), allaqachon shunday bo'lsa False — hodisa va 5 daqiqalik tekshiruv bir vaqtda ishlasa
+    ham foydalanuvchiga xabar ikki marta bormaydi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE settings SET clock_bio_notified = %s WHERE owner_user_id = %s AND clock_bio_notified IS DISTINCT FROM %s",
+            (bool(value), owner_user_id, bool(value)),
+        )
+        return cur.rowcount > 0
 
 
 def mark_name_clock_applied(owner_user_id: int, key: str):
