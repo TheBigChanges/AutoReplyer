@@ -1222,6 +1222,70 @@ def name_clock_allowed(user_id: int) -> bool:
     return NAME_CLOCK_PUBLIC or (bool(ADMIN_ID) and user_id == ADMIN_ID)
 
 
+def clock_requires_bio(user_id: int, plan: str | None = None) -> bool:
+    """Ism soati uchun "Edit bio" ruxsati shartmi: Bepul tarifda (reklama bilan chiqadigan, admin emas) — ha, chunki
+    soat bilan birga BIO'ga bot haqida yozuv qo'yiladi. Pullik tariflar va admin uchun talab yo'q."""
+    return shows_ads(user_id, plan)
+
+
+def bio_gate_ok(target: dict) -> bool:
+    """Soat yangilanishi mumkinmi: BIO ruxsati shart bo'lsa, u hozir yoqilgan bo'lishi kerak."""
+    return not clock_requires_bio(target["owner_user_id"], target.get("plan")) or bool(target.get("can_edit_bio"))
+
+
+async def apply_bio_gate(bot, owner_id: int, has_bio: bool) -> None:
+    """Bepul tarifdagi ism soati egasining "Edit bio" ruxsati holatiga qarab: ruxsat yo'q bo'lsa — soat to'xtaydi
+    (ism asl holiga qaytariladi) va egasiga BIR MARTA xabar boradi; ruxsat qaytsa — soat o'zi qayta ishga tushadi
+    va shu haqida xabar boradi. Belgi atomik: hodisa va davriy tekshiruv bir vaqtda ishlasa ham xabar takrorlanmaydi."""
+    lang = get_lang(owner_id)
+    if not has_bio:
+        if db.set_bio_gate_flag(owner_id, True):
+            try:
+                await restore_base_name(bot, owner_id)
+            except Exception:
+                logger.exception("BIO ruxsati yo'q: ismni qaytarishda xato (owner=%s)", owner_id)
+            await _notify_owner(bot, owner_id, t(lang, "nc_bio_stopped"))
+    elif db.set_bio_gate_flag(owner_id, False):
+        db.update_settings(owner_id, name_clock_applied=None)  # keyingi tick ismga soatni qayta yozadi
+        await _notify_owner(bot, owner_id, t(lang, "nc_bio_restored"))
+
+
+async def reconcile_bio_gate(bot) -> None:
+    """Har 5 daqiqada: ism soati yoqilgan Bepul egalarning "Edit bio" ruxsatini Telegramdan so'rab tekshiradi."""
+    try:
+        rows = db.get_name_clock_targets()
+    except Exception:
+        logger.exception("BIO ruxsati tekshiruvi: ro'yxat o'qilmadi")
+        return
+    for row in rows:
+        uid = row["owner_user_id"]
+        try:
+            if not clock_requires_bio(uid, row.get("plan")):
+                # Tarif ko'tarilgan (yoki admin): oldingi to'xtatish belgisi jimgina olib tashlanadi, soat davom etadi
+                if row.get("clock_bio_notified") and db.set_bio_gate_flag(uid, False):
+                    db.update_settings(uid, name_clock_applied=None)
+                continue
+            try:
+                live = await bot.get_business_connection(row["business_connection_id"])
+            except TelegramError as e:
+                logger.info("BIO ruxsati tekshirilmadi (owner=%s): %s", uid, e)
+                continue
+            rights = getattr(live, "rights", None)
+            if rights is None or not getattr(live, "is_enabled", True):
+                continue  # ruxsatni aniqlab bo'lmadi yoki ulanish uzilgan (uzilishni alohida hodisa hal qiladi)
+            has_bio = bool(getattr(rights, "can_edit_bio", False))
+            if has_bio != bool(row.get("can_edit_bio")):
+                db.set_can_edit_bio(uid, has_bio)
+            await apply_bio_gate(bot, uid, has_bio)
+        except Exception:
+            logger.exception("BIO ruxsati tekshiruvida xato (owner=%s)", uid)
+        await asyncio.sleep(0.05)
+
+
+async def bio_gate_check_job(context: ContextTypes.DEFAULT_TYPE):
+    await reconcile_bio_gate(context.bot)
+
+
 def clock_names_for(base_first: str, base_last: str | None, tz_name: str | None, at_ts: float, style: str | None = None):
     """(first, last, key): `at_ts` payti shu zonadagi soat bilan ism va "shu daqiqa" kaliti."""
     tz = ZoneInfo(tz_name if is_known_zone(tz_name) else DEFAULT_NAME_CLOCK_ZONE)
@@ -1306,7 +1370,8 @@ async def name_clock_tick(bot, at_ts: float):
     except Exception:
         logger.exception("Ism soati: ro'yxatni o'qib bo'lmadi")
         return
-    targets = [x for x in targets if sub_ok_sync(x["owner_user_id"])]
+    # Bepul tarifda "Edit bio" ruxsati yo'q bo'lsa, soat yangilanmaydi (to'xtatilgan: ruxsat qaytguncha)
+    targets = [x for x in targets if sub_ok_sync(x["owner_user_id"]) and bio_gate_ok(x)]
     global _name_clock_target_count
     _name_clock_target_count = len(targets)
     if not targets:
@@ -1595,19 +1660,27 @@ async def _enable_name_clock(bot, owner_id: int) -> str | None:
         live = await bot.get_business_connection(conn["business_connection_id"])
         rights = getattr(live, "rights", None)
         can_edit_name = bool(getattr(rights, "can_edit_name", False)) if rights is not None else False
+        can_edit_bio = bool(getattr(rights, "can_edit_bio", False)) if rights is not None else bool(conn.get("can_edit_bio"))
         db.upsert_connection(
             owner_user_id=owner_id,
             business_connection_id=conn["business_connection_id"],
             can_reply=conn["can_reply"],
             is_enabled=live.is_enabled,
-            can_edit_bio=conn["can_edit_bio"],
+            can_edit_bio=can_edit_bio,
             can_edit_name=can_edit_name,
         )
     except TelegramError as e:
         logger.info("Ulanish huquqlarini o'qib bo'lmadi (owner=%s): %s", owner_id, e)
         can_edit_name = bool(conn.get("can_edit_name"))
+        can_edit_bio = bool(conn.get("can_edit_bio"))
+    # Yetishmayotgan ruxsatlar BIR xabarda aytiladi (foydalanuvchi ikki marta qaytib kelmasligi uchun)
+    problems = []
     if not can_edit_name:
-        return t(lang, "nc_need_right")
+        problems.append(t(lang, "nc_need_right"))
+    if clock_requires_bio(owner_id) and not can_edit_bio:
+        problems.append(t(lang, "nc_need_bio"))
+    if problems:
+        return "\n\n".join(problems)
     names = await capture_base_name(bot, owner_id)
     if names is None:
         return t(lang, "nc_name_unknown")
@@ -1617,6 +1690,7 @@ async def _enable_name_clock(bot, owner_id: int) -> str | None:
         name_clock_first=names[0],
         name_clock_last=names[1],
         name_clock_applied=None,
+        clock_bio_notified=False,  # yangi yoqish: oldingi "BIO ruxsati yo'q" belgisi qolmasin
         name_clock_tz=db.get_settings(owner_id).get("name_clock_tz") or DEFAULT_NAME_CLOCK_ZONE,
     )
     _name_clock_failures.pop(owner_id, None)
@@ -4969,6 +5043,13 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await _try_send(context.bot, conn.user_chat_id, t(get_lang(conn.user.id), "nc_rights_lost"))
             except Exception:
                 logger.exception("Ism soatini o'chirishda xato (owner=%s)", conn.user.id)
+        if conn.is_enabled and can_edit_name and rights is not None:
+            # Bepul tarifda "Edit bio" ruxsati o'zgarsa — ism soati darhol to'xtaydi/qayta ishga tushadi (5 daqiqani kutmasdan)
+            try:
+                if db.get_settings(conn.user.id).get("name_clock_enabled") and clock_requires_bio(conn.user.id):
+                    await apply_bio_gate(context.bot, conn.user.id, can_edit_bio)
+            except Exception:
+                logger.exception("Ism soati: BIO ruxsatini qayta ishlashda xato (owner=%s)", conn.user.id)
         logger.info(
             "business account %s (owner=%s, can_reply=%s, can_edit_bio=%s)",
             "connected" if conn.is_enabled else "disconnected",
@@ -5176,6 +5257,8 @@ def build_app() -> Application:
         app.job_queue.run_repeating(plan_expiry_job, interval=600, first=30)
         # Ism soati/BIO egalarining kanal a'zoligini yangilab turish (har daqiqada, faqat eskirganlarni)
         app.job_queue.run_repeating(subscription_refresh_job, interval=60, first=45)
+        # Bepul tarifdagi ism soati egalarining "Edit bio" ruxsatini tekshirish (har 5 daqiqada)
+        app.job_queue.run_repeating(bio_gate_check_job, interval=300, first=90)
         # Bepul tarifdagi ism soati egalarining BIO'siga reklama qo'yish/olib tashlash
         app.job_queue.run_repeating(clock_bio_ad_job, interval=60, first=50)
     else:
