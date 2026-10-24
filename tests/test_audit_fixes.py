@@ -805,6 +805,16 @@ class TestDbOnRealPostgres(unittest.TestCase):
         self.assertEqual(sorted(db.get_broadcast_failed_user_ids(self.job_id)), [self.ids[1], self.ids[2]])
         self.assertEqual(db.get_failed_user_ids_after(self.job_id, 0, limit=50), [self.ids[1], self.ids[2]])
 
+    def test_bio_gate_flag_is_atomic_and_idempotent(self):
+        uid = self.ids[0]
+        db.record_user(uid, username=f"zz{self.base}", full_name="T")
+        db.update_settings(uid, name_clock_enabled=True)
+        self.assertTrue(db.set_bio_gate_flag(uid, True))    # o'zgardi -> bir marta xabar
+        self.assertFalse(db.set_bio_gate_flag(uid, True))   # takror -> o'zgarmadi
+        self.assertTrue(db.get_settings(uid)["clock_bio_notified"])
+        self.assertTrue(db.set_bio_gate_flag(uid, False))
+        self.assertFalse(db.set_bio_gate_flag(uid, False))
+
 
 if __name__ == "__main__":
     unittest.main()
