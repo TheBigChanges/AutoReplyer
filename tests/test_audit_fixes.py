@@ -630,6 +630,119 @@ class TestExplicitOnOffButtons(_PanelBase):
             self.assertIn(bot.locked_feature_for(data), ("faq", "kb", "ai"), data)
 
 
+class TestCancelAndStartDropEveryDraft(TestDraftSaveCancelAreBoundToTheirDraft):
+    """/cancel va /start FAQ/Bilimlar bazasi qoralamalarini ham bekor qiladi: eski «Saqlash» tugmasi keyin ishlamaydi."""
+
+    # (ota sinfning testlarini qayta ishga tushirmaymiz)
+    test_faq_old_save_cannot_save_or_destroy_the_new_draft = None
+    test_faq_own_cancel_discards_and_then_save_is_dead = None
+    test_kb_old_save_cannot_save_or_destroy_the_new_draft = None
+    test_legacy_tokenless_buttons_are_stale = None
+    test_cancel_without_any_draft_is_harmless = None
+
+    def _cancel(self):
+        update = _text_update("/cancel")
+        asyncio.run(bot.cmd_cancel(update, MagicMock()))
+        return update.message.reply_text
+
+    def _start(self):
+        update = _text_update("/start")
+        context = MagicMock()
+        context.args = []
+        with patch.object(bot, "run_start_flow", new=AsyncMock()), \
+                patch.object(bot, "is_subscribed", new=AsyncMock(return_value=True)):
+            asyncio.run(bot.cmd_start(update, context))
+
+    def test_cancel_kills_faq_draft_and_old_save_does_nothing(self):
+        save, _ = self._faq_confirm_buttons()
+        reply = self._cancel()
+        reply.assert_awaited_once()  # "bekor qilindi" deb javob beradi (faqat qoralama bo'lsa ham)
+        self.assertNotIn(USER, bot._faq_drafts)
+        self.assertIsNone(bot.get_pending_action(USER))
+        q = self.press(save)
+        self.mocks["add_faq_entry"].assert_not_called()
+        self.assertIn("eskirgan", self.shown(q))
+
+    def test_cancel_kills_kb_draft_and_old_save_does_nothing(self):
+        save, _ = self._kb_confirm_buttons()
+        self._cancel()
+        self.assertNotIn(USER, bot._kb_drafts)
+        self.press(save)
+        self.mocks["add_kb_entry"].assert_not_called()
+
+    def test_start_kills_every_draft_and_confirmation(self):
+        faq_save, _ = self._faq_confirm_buttons()
+        kb_save, _ = self._kb_confirm_buttons()
+        self.press("kb_del:5")
+        kb_yes = f"kb_del_yes:5:{bot._kb_del_confirms[USER]['token']}"
+        self._start()
+        for store in (bot._faq_drafts, bot._kb_drafts, bot._kb_del_confirms, bot._faq_edit_target, bot._kb_edit_target):
+            self.assertNotIn(USER, store)
+        for data in (faq_save, kb_save, kb_yes):
+            self.press(data)
+        self.mocks["add_faq_entry"].assert_not_called()
+        self.mocks["add_kb_entry"].assert_not_called()
+        self.mocks["delete_kb_entry"].assert_not_called()
+
+    def test_edit_targets_are_cleared_too(self):
+        bot._faq_edit_target[USER] = {"id": 1, "ts": time.time()}
+        bot._kb_edit_target[USER] = {"id": 2, "ts": time.time()}
+        self.assertTrue(bot.clear_flow_state(USER))
+        self.assertFalse(bot.clear_flow_state(USER))  # ikkinchi marta: bekor qilinadigan narsa yo'q
+
+    def test_cancel_with_nothing_to_cancel_stays_silent(self):
+        self._cancel().assert_not_awaited()
+
+
+class TestForeignCancelButtonsDoNotTouchOtherFlows(_PanelBase):
+    """Boshqa funksiyaning eski «Bekor qilish» tugmasi faol matn kiritishni va qoralamani buzmaydi."""
+
+    def test_old_scheduler_cancel_does_not_stop_knowledge_text_entry(self):
+        self.press("kb_add")
+        self.say("Sarlavha")
+        self.assertEqual(bot.get_pending_action(USER), "kb_content")
+        q = self.press("sc_cancel:abc123")  # Jadvalning eski oynasidagi tugma (Jadval qoralamasi yo'q)
+        self.assertEqual(bot.get_pending_action(USER), "kb_content")
+        self.assertEqual(bot._kb_drafts[USER]["title"], "Sarlavha")
+        self.assertTrue(q.edit_message_text.await_count)  # foydalanuvchi javob oladi, yiqilmaydi
+
+    def test_old_faq_cancel_does_not_stop_knowledge_text_entry(self):
+        self.press("kb_add")
+        self.press("faq_cancel:abc123")
+        self.assertEqual(bot.get_pending_action(USER), "kb_title")
+        self.assertIn(USER, bot._kb_drafts)
+
+    def test_old_kb_cancel_does_not_stop_faq_text_entry(self):
+        self.press("faq_add")
+        self.say("Savol?")
+        self.press("kb_cancel:abc123")
+        self.assertEqual(bot.get_pending_action(USER), "faq_kw")
+        self.assertIn(USER, bot._faq_drafts)
+
+    def test_old_cancel_does_not_stop_other_panel_inputs(self):
+        for pending in ("text", "cooldown", "ai_info", "sleep_time"):
+            bot.set_pending_action(USER, pending)
+            for data in ("sc_cancel:abc123", "faq_cancel:abc123", "kb_cancel:abc123", "sc_cancel", "faq_cancel", "kb_cancel"):
+                self.press(data)
+                self.assertEqual(bot.get_pending_action(USER), pending, (pending, data))
+
+    def test_own_cancel_still_stops_its_own_flow(self):
+        self.press("kb_add")
+        self.say("Sarlavha")
+        self.press(f"kb_cancel:{bot._kb_drafts[USER]['id']}")
+        self.assertNotIn(USER, bot._kb_drafts)
+        self.assertIsNone(bot.get_pending_action(USER))
+        self.press("faq_add")
+        self.press(f"faq_cancel:{bot._faq_drafts[USER]['id']}")
+        self.assertNotIn(USER, bot._faq_drafts)
+        self.assertIsNone(bot.get_pending_action(USER))
+
+    def test_cancel_without_draft_still_shows_a_menu(self):
+        for data, shown in (("faq_cancel", "faq_cancelled"), ("kb_cancel", "kb_cancelled"), ("sc_cancel", "sc_cancelled")):
+            q = self.press(data)
+            self.assertIn(i18n.t("uz", shown), self.shown(q), data)
+
+
 # ---------------------------------------------------------------------------
 # HAQIQIY Postgres
 # ---------------------------------------------------------------------------
