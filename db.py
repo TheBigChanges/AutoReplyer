@@ -1237,8 +1237,8 @@ def update_faq_entry(owner_user_id: int, entry_id: int, **fields) -> bool:
 _AUTOMATION_COLS = "id, owner_user_id, name, conditions, action, priority, is_enabled"
 
 
-def add_automation_rule(owner_user_id: int, name, conditions, action, priority: int, max_rules: int) -> int | None:
-    """Yangi qoida (O'CHIRILGAN holatda) qo'shadi va id qaytaradi; limit to'lgan bo'lsa — None.
+def add_automation_rule(owner_user_id: int, name, conditions, action, priority: int, max_rules: int, enabled: bool = False) -> int | None:
+    """Yangi qoida qo'shadi (sukut bo'yicha O'CHIRILGAN holatda; panel foydalanuvchi tasdiqlagach enabled=True beradi) va id qaytaradi; limit to'lgan bo'lsa — None.
     Ma'lumot avval automation.validate_automation'dan o'tadi (noto'g'ri bo'lsa AutomationError — bazaga yozilmaydi).
     Parallel so'rovlardan himoya: egasi uchun yozishlar advisory lock bilan ketma-ket (add_faq_entry kabi)."""
     clean = automation.validate_automation(name, conditions, action, priority)
@@ -1249,12 +1249,12 @@ def add_automation_rule(owner_user_id: int, name, conditions, action, priority: 
             cur.execute(
                 """
                 INSERT INTO automation_rules (owner_user_id, name, conditions, action, priority, is_enabled)
-                SELECT %s, %s, %s, %s, %s, FALSE
+                SELECT %s, %s, %s, %s, %s, %s
                 WHERE (SELECT COUNT(*) FROM automation_rules WHERE owner_user_id = %s) < %s
                 RETURNING id
                 """,
                 (owner_user_id, clean["name"], psycopg2.extras.Json(clean["conditions"]),
-                 psycopg2.extras.Json(clean["action"]), clean["priority"], owner_user_id, max_rules),
+                 psycopg2.extras.Json(clean["action"]), clean["priority"], bool(enabled), owner_user_id, max_rules),
             )
             row = cur.fetchone()
             cur.execute("COMMIT")
