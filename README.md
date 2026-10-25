@@ -2,7 +2,7 @@
 
 # 🤖 AutoReplyer
 
-### Smart Telegram Business auto-replies, weekly scheduling, personal AI knowledge and clear analytics.
+### Smart Telegram Business auto-replies, keyword automation rules, weekly scheduling, personal AI knowledge and clear analytics.
 
 **Built with Python · Telegram Business · PostgreSQL · Google Gemini · Matplotlib**
 
@@ -24,7 +24,7 @@
 
 **AutoReplyer** is a Telegram Business automation bot that helps account owners stay responsive when they are away. Connect it through Telegram's official Business bot interface, configure replies and schedules, and optionally enable Gemini-powered AI responses.
 
-It includes **Smart Onboarding**, **Smart FAQ**, **AI Personal Knowledge**, **Smart Scheduler**, and **AutoReply Analytics** — a built-in dashboard for incoming message counts, reply types and charts. Profile name clocks, BIO countdowns, subscription plans and administrator tools round out the experience.
+It includes **Smart Onboarding**, **Smart FAQ**, **Automation Engine v1.0**, **AI Personal Knowledge**, **Smart Scheduler**, and **AutoReply Analytics** — a built-in dashboard for incoming message counts, reply types and charts. Profile name clocks, BIO countdowns, subscription plans and administrator tools round out the experience.
 
 **The goal is an auto-reply assistant, not an online shop or order-management system.** You can store information about yourself, your work, availability, services, or even prices as ordinary notes — no product catalogue is required.
 
@@ -35,6 +35,7 @@ It includes **Smart Onboarding**, **Smart FAQ**, **AI Personal Knowledge**, **Sm
 - [Features](#-features)
 - [Smart Onboarding (first-time setup)](#-smart-onboarding-first-time-setup)
 - [Smart FAQ guide](#-smart-faq-guide)
+- [Automation Engine v1.0 guide](#-automation-engine-v10-guide)
 - [AI Personal Knowledge guide](#-ai-personal-knowledge-guide)
 - [AutoReply Analytics guide](#-autoreply-analytics-guide)
 - [Smart Auto-Reply Scheduler guide](#-smart-auto-reply-scheduler-guide)
@@ -58,6 +59,7 @@ It includes **Smart Onboarding**, **Smart FAQ**, **AI Personal Knowledge**, **Sm
 |---|---|
 | 🧭 **Smart Onboarding** | Optional three-step first-time setup: connect Telegram, enable auto-reply, and test it, with resumable progress. |
 | 📚 **Smart FAQ** | Keyword-based answers for frequently asked Business-chat questions, without a Gemini API call; owner-managed entries and plan-based limits. |
+| 🧩 **Automation Engine v1.0** | Custom keyword-to-reply rules for Telegram Business chats, without Gemini; Plus, Pro and Ultra currently allow up to 20 rules each. |
 | 🧠 **AI Personal Knowledge** | Owner-written facts, keywords and notes help Gemini reply with more relevant information; individual notes can be edited, paused, or deleted. **Ultra only**. |
 | 📊 **AutoReply Analytics** | Per-owner counts of incoming Business messages and sent replies, time windows and activity charts; **today on Free**, richer views on paid plans. |
 | 📅 **Smart Scheduler** | Weekly recurring day/time windows, overnight and all-day schedules, rule management and plan-based limits. |
@@ -113,8 +115,8 @@ When a Business-chat message clearly matches a configured question or keyword ph
 
 **Important behavior:**
 
-- FAQ responses are evaluated **only when Offline mode is active and Sleep Mode is not currently taking precedence**.
-- A confident FAQ match takes priority over Gemini AI; unmatched messages can continue to AI (when enabled and available) or the normal static reply.
+- FAQ responds in **Offline mode or during an active Scheduler window**, provided Sleep Mode is not taking precedence.
+- During ordinary Offline mode, **Automation Engine is checked before Smart FAQ**. In a Scheduler window, Automation Engine is skipped; Smart FAQ can still match. A confident FAQ match takes priority over Gemini AI; unmatched messages continue to AI (when available) or to scheduled/standard fallback.
 - In ordinary static-reply mode, FAQ uses the configured per-chat cooldown. When AI mode is available, FAQ follows the AI-style reply path rather than the static cooldown.
 - FAQ answers are stored in PostgreSQL under the account owner's ID; owner-scoped lookups and updates prevent cross-account editing via the application.
 - There is a **global FAQ on/off switch** and a separate enable/disable switch for each entry.
@@ -122,6 +124,41 @@ When a Business-chat message clearly matches a configured question or keyword ph
 - The maximum size of an entry is **200 characters for the question, 10 keywords/phrases (40 characters each), and 1,000 characters for the answer**. Incoming messages exceeding 60 normalized tokens are not matched as FAQ.
 
 **Privacy note:** FAQ answers are configured by the account owner and are sent automatically to relevant Business contacts. Avoid placing secrets or sensitive personal information in FAQ entries. Always review business-critical statements such as prices and availability.
+
+### 🧩 Automation Engine v1.0 guide
+
+**Automation Engine v1.0** adds customizable **IF keyword → THEN fixed reply** rules for authorized incoming Telegram Business messages. The rule engine works without a Gemini API request. Unlike Smart FAQ, which avoids an answer when its best matches tie, Automation picks the highest-priority matching rule (then the lowest ID).
+
+**Current access and limits:** **Free — locked; Plus — 20 rules; Pro — 20 rules; Ultra — 20 rules.** The code currently uses one `AUTOMATION_RULE_LIMIT = 20` for all eligible paid plans; proposed different per-plan limits have **not** been shipped. Existing rules remain stored if an account falls back to Free, but they will no longer run while Automation is unavailable.
+
+#### Create and manage a rule
+
+1. Send `/start` to [@autoreplyer_dbot](https://t.me/autoreplyer_dbot) and open **Control panel → 🧩 Automation / Avtomatlashtirish**. On Free the feature is visible but locked.
+2. Select **Add a rule** and send a keyword or phrase, such as `narx*`.
+3. Send your custom reply (up to **500 characters**).
+4. Review the confirmation and tap **Save**. **Rules created in this panel are enabled immediately.**
+5. Under **My rules**, review, pause/resume or delete rules. Deleting requires a **one-time, expiring confirmation token**; obsolete confirmation buttons are rejected.
+
+**Example:**
+
+~~~text
+Rule keyword:     narx*
+Customer message: "Salom, telefon narxi qancha?"
+Reply:            "Assalomu alaykum! Narxlar haqida ma'lumot beraman."
+~~~
+
+**Keyword matching:** Exact words and consecutive phrases are normalized case-insensitively using the same tokenization as Smart FAQ. `narx` matches the word `narx`, **not** `narxi`. A final `*` enables prefix matching on the last word: `narx*` can match `narx`, `narxi` and `narxlar`, but not `unarxon`. The star is allowed only at the end, after a last word of at least **3 normalized characters**. A keyword may contain at most **50 characters** and **5 tokens**. Messages containing recognized negations (such as `emas` or `yo'q`) are not matched, to avoid ambiguous replies.
+
+**Where Automation fits:**
+- The account needs an active, authorized **Telegram Business** connection, an eligible plan, and **Offline mode enabled**. Automation is **not** evaluated while **Sleep Mode or a Scheduler rule** is active, nor for an owner's own messages, bot messages, or messages without text/caption.
+- In ordinary Offline mode the order is **Automation → Smart FAQ → Gemini AI (if available) → standard reply**. A matched Automation rule attempts **one** fixed response; it does not also trigger FAQ or AI.
+- Automation uses the existing **static-reply per-chat cooldown**, Telegram permissions, and (when AI is enabled) the owner's manual-chat takeover pause.
+- Only enabled rules match. The **lowest priority number** wins; ties use **lowest rule ID**. The Telegram panel uses priority `100` and does **not** expose priority editing in v1.0, so earlier panel rules normally win on ties.
+- Rules are scoped to the account owner and stored in PostgreSQL `automation_rules` as structured `JSONB` conditions/actions. Unfinished rule drafts and delete confirmations are temporary in-memory data.
+
+**Admin-only text commands:** The configured administrator can run `/automation` to list their own rules, `/automation add narx* | Reply text` to create a **disabled** rule, `/automation on ID`, `/automation off ID`, and `/automation del ID`. Regular eligible subscribers manage rules through the inline **Control panel**.
+
+**v1.0 limitations:** A rule has exactly **one** `keyword_contains` condition and one `send_reply` action. Time/day conditions, AND/OR combinations, ignore actions, visual drag-and-drop editing, and an Automation Web App editor are **not implemented yet**. Successful Automation replies currently contribute to **standard/static reply** analytics rather than a separate Automation category. Do not put secrets or private customer data into fixed replies.
 
 ### 🧠 AI Personal Knowledge guide
 
@@ -253,7 +290,7 @@ From the Scheduler menu, **edit a rule's days, time or eligible custom text**, *
 
 - **Sleep Mode takes priority** over Scheduler. During sleeping hours the sleep reply is used.
 - During an active schedule, the bot can reply **even when the owner is Online**. **Smart FAQ** has priority for matching questions; if configured, eligible **Gemini AI** may respond next. Otherwise the scheduled text (or standard text fallback) is sent. Per-chat cooldown and Telegram Business permissions still apply.
-- **Outside an active schedule**, the owner's ordinary settings apply: Online gives no automatic reply; Offline follows the usual FAQ → AI → standard fallback behavior.
+- **Outside an active schedule**, the owner's ordinary settings apply: Online gives no automatic reply; Offline follows **Automation → FAQ → AI → standard fallback**, with Automation gated by the current paid plan.
 - **Time zone:** Scheduler and Sleep Mode share the Name Clock time-zone setting if configured, otherwise **Asia/Tashkent**. The effective zone is shown in the Scheduler settings; access to extra selectable zones depends on the plan.
 - When a plan expires or is downgraded, existing saved rules remain in PostgreSQL, but only the **earliest rules within the new plan's limit** run. Per-rule custom reply text requires eligible access at reply time.
 - Owner-specific rules are persisted in the `schedule_rules` table. Reads use a **60-second in-memory cache** invalidated on local changes; on multi-worker deployments, another worker may briefly see old data until its cache expires. Unsaved editing drafts are temporary and may be lost on restart.
@@ -264,34 +301,28 @@ When Telegram allows the bot to respond to a Business message, the code checks t
 
 ~~~text
 Incoming authorized Business message
-              │
-              ▼
-  Sleep Mode active? ── yes ──► Sleep reply
-              │ no
-              ▼
-  Active Scheduler rule?
-     │ yes            │ no
-     ▼                ▼
- Reply allowed      Offline enabled?
- even if Online      │ yes      │ no
-     │              │          ▼
-     └──────────────┘     No auto-reply
-              │
-              ▼
-    Smart FAQ match? ── yes ──► FAQ answer
-              │ no
-              ▼
-   Gemini AI enabled/available?
-        │ yes             │ no
-        ▼                 ▼
-   Personal Knowledge  Scheduled or standard
-   + Gemini reply      text fallback
-        │
-        ▼
-  Static fallback if AI fails
+                  |
+                  v
+       Sleep Mode active? ---- yes ---> Sleep reply
+                  | no
+                  v
+       Scheduler rule active?
+          | yes                         | no
+          v                             v
+    Smart FAQ -> AI             Offline mode enabled?
+    -> scheduled fallback           | yes          | no
+    (no Automation)                 v              v
+                            Automation match?   No auto-reply
+                               | yes    | no
+                               v        v
+                           Rule reply  Smart FAQ match?
+                                         | yes   | no
+                                         v       v
+                                    FAQ reply   Gemini AI (if enabled)
+                                                or standard reply
 ~~~
 
-The diagram is a simplified overview: **Sleep Mode outranks Scheduler**; cooldown/claim rules, manual-owner takeover pauses, account permissions and chat scope still apply. Smart FAQ takes priority over AI on a confident match. When AI is enabled, **Personal Knowledge provides context to Gemini — it doesn't autonomously send a second message**. AI replies remain subject to the configured daily quota and external provider availability.
+This diagram is simplified. **Sleep Mode takes precedence**; active Scheduler windows can send replies even when Online, with **Smart FAQ → eligible Gemini AI → scheduled-text fallback**. Automation is evaluated **only** outside Sleep/Scheduler windows while Offline, and **before Smart FAQ and Gemini AI**. Automation uses the existing static per-chat cooldown. Telegram Business permissions, account owner takeover pauses, AI usage quotas, and other delivery restrictions still apply. Personal Knowledge only supplies context to Gemini; it does not send another message.
 
 ### AI assistant roles
 
@@ -306,6 +337,7 @@ AI-generated replies can be wrong. Never rely on them to commit to prices, appoi
 - Ordinary static replies support per-chat cooldowns; AI replies use a separate reply flow.
 - **AutoReply Analytics** collects hourly counters for supported incoming/reply events and produces statistics without an AI API key.
 - **Smart Scheduler** controls recurring reply windows without AI requests and supports custom rule text on eligible plans.
+- **Automation Engine v1.0** sends fixed keyword-based responses (no Gemini needed) in ordinary Offline mode, outside active Scheduler/Sleep windows.
 - The name clock updates periodically, subject to Telegram Business permissions and API rate limits.
 - Free-tier accounts may see a promotional footer in auto-replies and a promotional BIO message when using the profile clock. Paid plans are configured as ad-free.
 
@@ -326,6 +358,7 @@ Prices below are **the currently configured public bot prices for one month**, i
 | Custom auto-reply and sleep text | — | ✅ | ✅ | ✅ |
 | BIO countdown | — | — | ✅ | ✅ |
 | Smart FAQ entries | — | **15** | **30** | **65** |
+| 🧩 Automation Engine v1.0 — saved rules | 🔒 | **20** | **20** | **20** |
 | Gemini AI assistant (50 replies/day*) | — | — | — | ✅ |
 | AI Personal Knowledge (55 entries) | — | — | — | ✅ |
 | AutoReply Analytics — Today | ✅ | ✅ | ✅ | ✅ |
@@ -353,7 +386,7 @@ Prices below are **the currently configured public bot prices for one month**, i
 5. Return to AutoReplyer and tap **Check connection**. If Telegram already sent a connection update, the wizard may have advanced automatically.
 6. Review the auto-reply text and tap **Turn on Auto-Reply** to enable it with your consent.
 7. Send a test message **from another Telegram account** in a chat you authorized; select **Reply arrived** only if you actually receive a reply, or **No reply** for troubleshooting.
-8. Use the control panel for **Sleep Mode**, **Smart FAQ** (Plus/Pro/Ultra), **AI Personal Knowledge** (Ultra), **📅 Smart Scheduler** (weekly reply windows), **📊 Analytics** (today on Free; 7/30-day views and charts on paid plans), the **profile clock**, **BIO countdown**, and other plan-specific features.
+8. Use the control panel for **Sleep Mode**, **Smart FAQ** (Plus/Pro/Ultra), **🧩 Automation Engine** (Plus/Pro/Ultra), **AI Personal Knowledge** (Ultra), **📅 Smart Scheduler** (weekly reply windows), **📊 Analytics** (today on Free; 7/30-day views and charts on paid plans), the **profile clock**, **BIO countdown**, and other plan-specific features.
 
 **Want to set it up later?** Use **Skip** at any step. A **Continue setup** button appears in the main menu for users who skipped. Existing accounts are not forced into a new setup wizard.
 
@@ -371,10 +404,11 @@ For feature announcements, visit **[@AutoReplyer_News](https://t.me/AutoReplyer_
 4. **Smart FAQ** — kalit so‘zga mos tayyor javob; **AI Shaxsiy Bilimlar** (Ultra) — Gemini javob berayotganda foydalanadigan siz kiritgan ma’lumotlar.
 5. AI Shaxsiy Bilimlar bo‘limiga **sarlavha + ma’lumot + ixtiyoriy kalit so‘zlar** qo‘shing. Mahsulot va narxlar uchun alohida savdo tizimi **shart emas**.
 6. **📅 Smart Jadval** orqali kun va vaqtni tanlang, masalan, ish kunlari `09:00-18:00`. Jadval tugagach avvalgi Online/Offline sozlamalari ishlaydi. Free — 1 ta, Plus — 3 ta, Pro — 10 ta, Ultra — 30 ta jadval.
-7. **📊 Statistika** tugmasi orqali kelgan xabarlar, javoblar va eng faol vaqtni kuzating. **Free — bugun; Plus — 7 kun; Pro/Ultra — 30 kun**. Grafiklar Plus'dan, batafsil hisobot Ultra'dan boshlanadi.
-8. **Parol, karta yoki pasport ma’lumotlarini kiritmang.** AI javoblari xato qilishi mumkin.
+7. **🧩 Avtomatlashtirish (Automation Engine v1.0)** — Plus/Pro/Ultra tariflarida boshqaruv panelidan kalit so‘z va 500 belgigacha javob qo‘shing; barcha pullik tariflar hozircha **20 tadan** qoida yaratishi mumkin, Free’da funksiya yopiq. `narx*` kalit so‘zi `narx`, `narxi`, `narxlar` so‘zlariga mos tushadi. Qoida oddiy Oflayn rejimda, Sleep Mode va faol Smart Jadvaldan tashqarida ishlaydi.
+8. **📊 Statistika** tugmasi orqali kelgan xabarlar, javoblar va eng faol vaqtni kuzating. **Free — bugun; Plus — 7 kun; Pro/Ultra — 30 kun**. Grafiklar Plus'dan, batafsil hisobot Ultra'dan boshlanadi.
+9. **Parol, karta yoki pasport ma’lumotlarini kiritmang.** AI javoblari xato qilishi mumkin.
 
-Ilova menyulari Telegram versiyasiga qarab farq qilishi mumkin. Batafsil ma’lumot: [Smart Onboarding](#-smart-onboarding-first-time-setup) · [Smart FAQ](#-smart-faq-guide) · [AI Shaxsiy Bilimlar](#-ai-personal-knowledge-guide) · [AutoReply Analytics](#-autoreply-analytics-guide) · [Smart Scheduler](#-smart-auto-reply-scheduler-guide).
+Ilova menyulari Telegram versiyasiga qarab farq qilishi mumkin. Batafsil ma’lumot: [Smart Onboarding](#-smart-onboarding-first-time-setup) · [Smart FAQ](#-smart-faq-guide) · [AI Shaxsiy Bilimlar](#-ai-personal-knowledge-guide) · [AutoReply Analytics](#-autoreply-analytics-guide) · [Smart Scheduler](#-smart-auto-reply-scheduler-guide) · [Automation Engine](#-automation-engine-v10-guide).
 
 ## 🛠️ Run your own instance
 
@@ -528,14 +562,16 @@ Telegram users / Business messages
   handlers/jobs      optional AI replies + selected notes
        │
        ├── logic.py      (FAQ rules and knowledge retrieval)
+       ├── automation.py (keyword validation and deterministic rule matching)
        ├── i18n.py       (Uzbek / English / Russian)
        ├── analytics.py  (statistics and Matplotlib charts)
-        ├── Scheduler     (weekly rules in bot.py / logic.py)
+       ├── Scheduler     (weekly rules in bot.py / logic.py)
        │
        ▼
      db.py ───────────────► PostgreSQL / Supabase
        │                      settings, plans, connections,
        │                      FAQ and knowledge_entries,
+       │                      automation_rules (JSONB conditions/actions),
        │                      analytics_hourly counters,
        │                      broadcasts, conversation history
        ▼
@@ -544,19 +580,21 @@ Telegram users / Business messages
 
 | File | Responsibility |
 |---|---|
-| [`bot.py`](bot.py) | Telegram handlers, Business updates, onboarding, Smart FAQ and AI Personal Knowledge panels, **Analytics and Scheduler menus**, AI reply routing, plans, scheduling, broadcasts, name clock, and health server |
-| [`db.py`](db.py) | PostgreSQL access and schema initialization, onboarding progress, owner-scoped FAQ/knowledge CRUD, **analytics_hourly UPSERTs and cleanup**, owner-scoped schedule rules and cache invalidation, settings, AI conversation history, plans, and job persistence |
+| [`bot.py`](bot.py) | Telegram handlers, Business updates, onboarding, Smart FAQ and AI Personal Knowledge panels, **Automation, Analytics and Scheduler menus**, AI reply routing, plans, scheduling, broadcasts, name clock, and health server |
+| [`db.py`](db.py) | PostgreSQL access and schema initialization, onboarding progress, owner-scoped FAQ/knowledge/Automation CRUD, **analytics_hourly UPSERTs and cleanup**, owner-scoped schedule rules and cache invalidation, settings, AI conversation history, plans, and job persistence |
+| [`automation.py`](automation.py) | Pure keyword matching, rule validation, one-rule selection by priority/ID (no Telegram or PostgreSQL dependency) |
 | [`ai.py`](ai.py) | Gemini requests, role presets, prompting with selected AI Personal Knowledge facts, and reply extraction |
 | [`analytics.py`](analytics.py) | Time-window aggregation, busiest-hour calculation, line/pie/bar PNG chart rendering and short-lived chart caching |
 | [`logic.py`](logic.py) | Cooldown/time handling, weekly schedule overlap and midnight-wrap calculation, countdowns, name formatting, FAQ matching, Personal Knowledge parsing and relevance ranking |
 | [`i18n.py`](i18n.py) | User-facing strings in three languages, including onboarding and Telegram connection instructions |
 | [`tests/`](tests/) | Unit and behavior tests, including [`test_analytics.py`](tests/test_analytics.py) for charts and [`test_scheduler.py`](tests/test_scheduler.py) for scheduling, cache consistency and reply priority |
+| [`tests/test_automation.py`](tests/test_automation.py) and [`tests/test_automation_panel.py`](tests/test_automation_panel.py) | Automation engine, PostgreSQL, plan gates, menu flows and stale-confirmation regression tests |
 | [`requirements.txt`](requirements.txt) | Python runtime dependencies |
 
 **Operational notes:**
 
-- PostgreSQL keeps account settings, onboarding progress, FAQ entries, Personal Knowledge entries, Analytics counters, saved Scheduler rules, and jobs across Render restarts.
-- On startup, `db.init_db()` adds missing onboarding columns and creates `knowledge_entries`, `analytics_hourly`, `schedule_rules`, and feature columns (including `scheduler_enabled`) where needed. Existing users initially receive the `legacy` onboarding status; newly inserted users default to `welcome`.
+- PostgreSQL keeps account settings, onboarding progress, FAQ entries, Personal Knowledge entries, Analytics counters, saved Scheduler rules, **Automation rules**, and jobs across Render restarts.
+- On startup, `db.init_db()` adds missing onboarding columns and creates `knowledge_entries`, `automation_rules`, `analytics_hourly`, `schedule_rules`, and feature columns (including `scheduler_enabled`) where needed. Existing users initially receive the `legacy` onboarding status; newly inserted users default to `welcome`.
 - Analytics uses atomic per-hour PostgreSQL UPSERT counters with a thread-safe connection pool and a limited number of concurrent Analytics writes. Retention cleanup is scheduled through the existing AI cleanup job.
 - Broadcasts persist progress, have a one-active-job database constraint, support recovery and retry, and handle Telegram rate limits.
 - Exactly-once broadcast delivery is **not guaranteed**: an interruption between Telegram accepting a message and database progress being saved can produce a duplicate.
@@ -573,6 +611,7 @@ Regular users use the **inline control panel** reached through `/start`.
 | `/help` | Everyone | Help and available commands |
 | `/stats` | Admin | Summary statistics |
 | `/onboarding` | Admin | Started, connected, auto-reply-enabled, completed, skipped, and in-progress onboarding counts |
+| `/automation` | Admin | List/create/enable/disable/delete the administrator's own keyword rules; eligible other users use the inline control panel |
 | `/setplan` | Admin | Assign a user plan, optionally with an expiry |
 | `/reklama` | Admin | Prepare a broadcast for confirmation |
 | `/reklama_status` | Admin | View latest broadcast progress |
@@ -592,7 +631,7 @@ This assigns a time-limited plan to the specified user ID; use the bot's help te
 
 ## 🧪 Testing
 
-The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ, translations, **Smart Onboarding**, **AI Personal Knowledge**, **AutoReply Analytics**, **Smart Scheduler**, and **test database safety guards**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
+The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ, translations, **Smart Onboarding**, **AI Personal Knowledge**, **AutoReply Analytics**, **Smart Scheduler**, **Automation Engine v1.0**, and **test database safety guards**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
 
 Install the development-only test runner and run the suite:
 
@@ -601,17 +640,17 @@ python -m pip install pytest
 python -m pytest -q
 ```
 
-**Onboarding, AI Personal Knowledge, Analytics and Scheduler database tests require `TEST_DATABASE_URL`.** Without it, their database-backed classes are skipped (other unit tests can still run). **Run the suite with pytest**, which loads `tests/conftest.py` *before test modules are imported* and overrides `DATABASE_URL` with the provided test URL, or a fake URL when none is set. Use a **dedicated disposable PostgreSQL test database**; never production:
+**Onboarding, AI Personal Knowledge, Analytics, Scheduler and Automation database tests require `TEST_DATABASE_URL`.** Without it, their database-backed classes are skipped (other unit tests can still run). **Run the suite with pytest**, which loads `tests/conftest.py` *before test modules are imported* and overrides `DATABASE_URL` with the provided test URL, or a fake URL when none is set. Use a **dedicated disposable PostgreSQL test database**; never production:
 
 ```bash
 # Example: PostgreSQL running locally on your development machine.
 # Replace with YOUR disposable local test database:
 export TEST_DATABASE_URL='postgresql://TEST_USER:TEST_PASSWORD@localhost:5432/autoreplyer_test'
-python -m pytest tests/test_scheduler.py tests/test_analytics.py tests/test_knowledge.py tests/test_onboarding.py tests/test_db_guard.py -v
+python -m pytest tests/test_automation.py tests/test_automation_panel.py tests/test_scheduler.py tests/test_analytics.py tests/test_knowledge.py tests/test_onboarding.py tests/test_db_guard.py -v
 python -m pytest -q
 ```
 
-Database integration suites call `db.init_db()` and create/update/delete records. The Analytics suite includes **parallel database writes**, per-owner counters, date periods, chart rendering in Uzbek/English/Russian, and plan-gate tests. Scheduler tests cover owner isolation, weekday and overnight boundaries, stale draft buttons, concurrency, cache invalidation and reply priority. Do not run them against real user data. The pytest guard accepts local hosts by default and **refuses remote test database hosts** unless `ALLOW_REMOTE_TEST_DB=1` is explicitly set. **That opt-in is not proof a remote database is safe**; use it only for a separately provisioned throwaway test database.
+Database integration suites call `db.init_db()` and create/update/delete records. The Analytics suite includes **parallel database writes**, per-owner counters, date periods, chart rendering in Uzbek/English/Russian, and plan-gate tests. Scheduler tests cover owner isolation, weekday and overnight boundaries, stale draft buttons, concurrency, cache invalidation and reply priority. Automation tests cover matching, input validation, plan gating, owner isolation, concurrent rule-limit protection, menu interactions and expired/stale deletion confirmations. Do not run them against real user data. The pytest guard accepts local hosts by default and **refuses remote test database hosts** unless `ALLOW_REMOTE_TEST_DB=1` is explicitly set. **That opt-in is not proof a remote database is safe**; use it only for a separately provisioned throwaway test database.
 
 **Important limitation:** the database guard is implemented in `tests/conftest.py`, which **pytest** loads. Running test modules directly with `unittest` bypasses this protection; do not do so with any production credentials or `DATABASE_URL`. A skipped test is **not** a passed test.
 
@@ -623,10 +662,11 @@ Database integration suites call `db.init_db()` and create/update/delete records
 
 - **Official permissions only:** use the Telegram Business connection flow. The bot should never request Telegram passwords or authentication codes.
 - **AI message processing:** incoming text and relevant chat context may be sent to Google's Gemini API when AI replies are enabled. **Relevant owner-authored Personal Knowledge entries are also sent to Gemini** when retrieved. Don't store information you aren't willing to disclose to a chat contact and the AI provider.
-- **Stored data:** PostgreSQL stores settings, Business connections, **onboarding state/timestamps**, **Smart FAQ entries**, **AI Personal Knowledge titles, texts and keywords**, **owner-scoped hourly Analytics counters (without message text/chat IDs)**, **owner-scoped saved Scheduler days/hours and reply text**, AI conversation history, referrals, broadcasts, and related metadata. AI history retrieval is limited to recent messages and a background cleanup job purges old history; verify retention and deletion behavior in [`db.py`](db.py) for your own deployment.
+- **Stored data:** PostgreSQL stores settings, Business connections, **onboarding state/timestamps**, **Smart FAQ entries**, **Automation rule names, keywords, custom reply text, priority and enabled flags (owner-scoped JSONB rules)**, **AI Personal Knowledge titles, texts and keywords**, **owner-scoped hourly Analytics counters (without message text/chat IDs)**, **owner-scoped saved Scheduler days/hours and reply text**, AI conversation history, referrals, broadcasts, and related metadata. AI history retrieval is limited to recent messages and a background cleanup job purges old history; verify retention and deletion behavior in [`db.py`](db.py) for your own deployment.
 - **Secrets:** never commit `.env`, API keys, database URLs, Telegram tokens, or customer information. Rotate any exposed secrets immediately.
 - **Analytics limitations:** counters are best-effort, begin only after the feature is running, and cannot recover past chat activity. Charts may be cached briefly.
 - **Scheduler limitations:** saved rules persist in PostgreSQL but unfinished drafts are temporary in-memory data. Replies require Telegram Business permissions, and separate worker instances can briefly see older rule data until cache expiry. Analytics and Gemini AI chat-history storage are separate.
+- **Automation Engine limitations:** v1.0 supports one keyword condition and one fixed reply action only, without time/day/AND rules or a visual Web App editor. Rules persist in PostgreSQL, but unfinished drafts and deletion confirmations are kept only in memory. Automation keyword matching itself does not send chat text to Gemini.
 - **AI limitations:** the model may be inaccurate, unavailable, or rate-limited. Knowledge Base retrieval is heuristic, and even an instruction to avoid invented or confidential details **cannot guarantee** a safe or correct generated response. Static reply fallback is available, but delivery is not guaranteed under every failure mode.
 - **Telegram restrictions:** Business rights, flood limits, profile editing privileges, and availability of features are controlled by Telegram.
 - **Commercial use:** payment verification in the current code is manual; the repository does not provide a full automated billing provider integration.
