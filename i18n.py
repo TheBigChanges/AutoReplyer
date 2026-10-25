@@ -1010,6 +1010,112 @@ T: dict[str, dict] = {
     "feature_fonts": _("Soat shriftlari", "Clock fonts", "Шрифты часов"),
     "feature_zones": _("Soat uchun boshqa vaqt zonalari", "Other time zones for the clock", "Другие часовые пояса для часов"),
     "feature_faq": _("Smart FAQ", "Smart FAQ", "Smart FAQ"),
+    "btn_automation": _("\U0001F9E9 Avtomatlashtirish", "\U0001F9E9 Automation", "\U0001F9E9 Автоматизация"),
+    "au_menu": _(
+        "\U0001F9E9 Avtomatlashtirish\n\n"
+        "Mijoz xabarida siz belgilagan so'z bo'lsa, bot unga maxsus javob yuboradi.\n\n"
+        "Qoidalar: {count}/{max}\n\n"
+        "Qoida faqat Oflayn rejimda ishlaydi (Uxlash rejimi va Jadval oynasida emas) va Smart FAQ hamda AI'dan oldin tekshiriladi. "
+        "Matnli xabarlargagina javob beradi.",
+        "\U0001F9E9 Automation\n\n"
+        "If a customer's message contains a word you set, the bot sends them a custom reply.\n\n"
+        "Rules: {count}/{max}\n\n"
+        "A rule works only in Offline mode (not during Sleep Mode or a Schedule window) and is checked before Smart FAQ and AI. "
+        "It answers text messages only.",
+        "\U0001F9E9 Автоматизация\n\n"
+        "Если в сообщении клиента есть заданное вами слово, бот отправит ему особый ответ.\n\n"
+        "Правил: {count}/{max}\n\n"
+        "Правило работает только в режиме «Офлайн» (не во время режима сна и окна расписания) и проверяется раньше Smart FAQ и AI. "
+        "Отвечает только на текстовые сообщения.",
+    ),
+    "btn_au_add": _("➕ Qoida qo'shish", "➕ Add a rule", "➕ Добавить правило"),
+    "btn_au_list": _("\U0001F4CB Qoidalarim", "\U0001F4CB My rules", "\U0001F4CB Мои правила"),
+    "au_kw_prompt": _(
+        "1/2. Kalit so'zni yuboring.\n\n"
+        "• Butun so'z: narx — faqat «narx» so'zi mos keladi.\n"
+        "• So'z boshi: narx* — «narxi», «narxlar» ham mos keladi.\n"
+        "• Ibora ham mumkin: narx qancha\n\n"
+        "Katta-kichik harf farq qilmaydi. «emas», «yo'q» kabi inkor so'zi bor xabarlarga javob berilmaydi.",
+        "Step 1/2. Send the keyword.\n\n"
+        "• Whole word: price — only the word “price” matches.\n"
+        "• Word start: price* — “prices”, “pricey” match too.\n"
+        "• A phrase works too: how much\n\n"
+        "Upper/lower case doesn't matter. Messages with a negation like “not” or “no” get no reply.",
+        "Шаг 1/2. Отправьте ключевое слово.\n\n"
+        "• Целое слово: цена — подходит только слово «цена».\n"
+        "• Начало слова: цен* — подойдут и «цены», «ценами».\n"
+        "• Можно фразу: сколько стоит\n\n"
+        "Регистр не важен. На сообщения с отрицанием («не», «нет») ответ не отправляется.",
+    ),
+    "au_kw_bad": _(
+        "❌ Kalit so'z noto'g'ri. U bo'sh bo'lmasligi, {max} belgidan oshmasligi va ko'pi bilan {words} so'zdan iborat bo'lishi kerak. "
+        "* belgisi faqat oxirida va kamida {prefix} harfdan keyin bo'ladi. Qayta yuboring.",
+        "❌ Invalid keyword. It must not be empty, up to {max} characters and up to {words} words. "
+        "The * sign is allowed only at the end and after at least {prefix} letters. Send it again.",
+        "❌ Некорректное ключевое слово. Оно не должно быть пустым, длиной до {max} символов и не более {words} слов. "
+        "Знак * допускается только в конце и после минимум {prefix} букв. Отправьте ещё раз.",
+    ),
+    "au_ans_prompt": _(
+        "2/2. Mijozga yuboriladigan javob matnini yuboring (ko'pi bilan {max} belgi).",
+        "Step 2/2. Send the reply text for the customer (up to {max} characters).",
+        "Шаг 2/2. Отправьте текст ответа для клиента (до {max} символов).",
+    ),
+    "au_too_long": _(
+        "❌ Matn juda uzun: {n} belgi (ko'pi bilan {max}). Qisqartirib qayta yuboring.",
+        "❌ The text is too long: {n} characters (max {max}). Shorten it and send again.",
+        "❌ Текст слишком длинный: {n} символов (максимум {max}). Сократите и отправьте ещё раз.",
+    ),
+    "au_empty_text": _("❌ Matn bo'sh bo'lmasligi kerak.", "❌ The text must not be empty.", "❌ Текст не должен быть пустым."),
+    "au_confirm_hint": _(
+        "Yuqoridagi xabardagi «Saqlash» yoki «Bekor qilish» tugmasini bosing.",
+        "Press “Save” or “Cancel” in the message above.",
+        "Нажмите «Сохранить» или «Отмена» в сообщении выше.",
+    ),
+    "au_confirm": _(
+        "Qoidani tekshiring:\n\nKalit so'z: {kw}\n\nJavob:\n{a}",
+        "Check the rule:\n\nKeyword: {kw}\n\nReply:\n{a}",
+        "Проверьте правило:\n\nКлючевое слово: {kw}\n\nОтвет:\n{a}",
+    ),
+    "btn_au_save": _("✅ Saqlash", "✅ Save", "✅ Сохранить"),
+    "btn_au_cancel": _("✖️ Bekor qilish", "✖️ Cancel", "✖️ Отмена"),
+    "au_saved": _("✅ Qoida saqlandi va yoqildi.", "✅ Rule saved and turned on.", "✅ Правило сохранено и включено."),
+    "au_cancelled": _("Bekor qilindi.", "Cancelled.", "Отменено."),
+    "au_draft_lost": _(
+        "⚠️ Qoralama topilmadi (vaqti o'tgan bo'lishi mumkin). Qaytadan boshlang.",
+        "⚠️ The draft was not found (it may have expired). Start again.",
+        "⚠️ Черновик не найден (возможно, истёк срок). Начните заново.",
+    ),
+    "au_limit": _(
+        "❌ Qoidalar soni limitga yetdi ({max} ta). Keraksizini o'chiring.",
+        "❌ You have reached the rule limit ({max}). Delete one you don't need.",
+        "❌ Достигнут лимит правил ({max}). Удалите ненужное.",
+    ),
+    "au_list_empty": _(
+        "Hali qoida yo'q. «Qoida qo'shish» tugmasini bosing.",
+        "No rules yet. Press “Add a rule”.",
+        "Правил пока нет. Нажмите «Добавить правило».",
+    ),
+    "au_list_title": _(
+        "\U0001F4CB Qoidalaringiz ({count}/{max}). ⏸ — o'chirilgan.",
+        "\U0001F4CB Your rules ({count}/{max}). ⏸ — turned off.",
+        "\U0001F4CB Ваши правила ({count}/{max}). ⏸ — выключено.",
+    ),
+    "au_rule_view": _(
+        "\U0001F9E9 Qoida\n\nHolat: {status}\nKalit so'z: {kw}\n\nJavob:\n{a}",
+        "\U0001F9E9 Rule\n\nStatus: {status}\nKeyword: {kw}\n\nReply:\n{a}",
+        "\U0001F9E9 Правило\n\nСостояние: {status}\nКлючевое слово: {kw}\n\nОтвет:\n{a}",
+    ),
+    "btn_au_on": _("✅ Yoqish", "✅ Turn on", "✅ Включить"),
+    "btn_au_off": _("⏸ O'chirib turish", "⏸ Turn off", "⏸ Выключить"),
+    "btn_au_delete": _("\U0001F5D1 O'chirish", "\U0001F5D1 Delete", "\U0001F5D1 Удалить"),
+    "au_del_confirm": _(
+        "Bu qoidani butunlay o'chirasizmi?\n\nKalit so'z: {kw}",
+        "Delete this rule permanently?\n\nKeyword: {kw}",
+        "Удалить это правило навсегда?\n\nКлючевое слово: {kw}",
+    ),
+    "btn_au_del_yes": _("\U0001F5D1 Ha, o'chirish", "\U0001F5D1 Yes, delete", "\U0001F5D1 Да, удалить"),
+    "au_deleted": _("\U0001F5D1 Qoida o'chirildi.", "\U0001F5D1 Rule deleted.", "\U0001F5D1 Правило удалено."),
+    "au_rule_gone": _("Bu qoida topilmadi (o'chirilgan bo'lishi mumkin).", "This rule was not found (it may have been deleted).", "Это правило не найдено (возможно, оно удалено)."),
     "feature_automation": _("Avtomatlashtirish qoidalari", "Automation rules", "Правила автоматизации"),
     "pf_faq": _(
         "Smart FAQ — tayyor savol-javoblar bilan tez avtomatik javob (ko'pi bilan {n} ta savol)",
