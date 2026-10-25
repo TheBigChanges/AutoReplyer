@@ -81,7 +81,7 @@ class PanelBase(unittest.TestCase):
     plan = "plus"
 
     def setUp(self):
-        for d in (bot.pending_settings_action, bot._pending_settings_set_at, bot._au_drafts, bot._faq_drafts, bot._kb_drafts, bot._sc_drafts):
+        for d in (bot.pending_settings_action, bot._pending_settings_set_at, bot._au_drafts, bot._au_del_confirms, bot._faq_drafts, bot._kb_drafts, bot._sc_drafts):
             d.clear()
         self.fake = FakeRules()
         self.fake.install(self)
@@ -297,22 +297,86 @@ class RuleManagementTests(PanelBase):
         markup = q.edit_message_text.await_args.kwargs["reply_markup"]
         self.assertTrue(markup.inline_keyboard[0][0].text.startswith("⏸"))
 
-    def test_delete_needs_confirmation(self):
-        q = self.press(f"au_del:{self.rid}")
-        self.assertEqual(len(self.fake.rows), 1)
-        self.assertEqual(self.keyboard(q)[0], f"au_del_yes:{self.rid}")
-        q = self.press(f"au_del_yes:{self.rid}")
+    def _open_confirm(self, rule_id=None):
+        q = self.press(f"au_del:{self.rid if rule_id is None else rule_id}")
+        return self.keyboard(q)[0]
+
+    def test_delete_needs_confirmation_and_is_one_time(self):
+        yes = self._open_confirm()
+        self.assertRegex(yes, rf"^au_del_yes:{self.rid}:[0-9a-f]{{6}}$")
+        self.assertEqual(len(self.fake.rows), 1)  # tasdiqsiz o'chmaydi
+        q = self.press(yes)
         self.assertEqual(self.fake.rows, [])
         self.assertIn(t("uz", "au_deleted"), self.shown(q))
-        q = self.press(f"au_del_yes:{self.rid}")  # takror — zararsiz
-        self.assertIn(t("uz", "au_rule_gone"), self.shown(q))
+        self.assertNotIn(USER, bot._au_del_confirms)
+        # tasdiqni takrorlash — hech narsani o'chirmaydi (yangi qoida bir xil ID olmasa ham, tasdiq eskirgan)
+        self.fake.rows.append({"id": self.rid, "owner_user_id": USER, "name": "n", "conditions": {}, "action": {}, "priority": 1, "is_enabled": True})
+        q = self.press(yes)
+        self.assertEqual(len(self.fake.rows), 1)
+        self.assertEqual(self.shown(q), t("uz", "sc_stale_button"))
+
+    def test_old_yes_button_after_going_back_deletes_nothing(self):
+        """Hisobotdagi holat: o'chirish oynasi ochildi -> orqaga qaytildi -> eski «Ha» bosildi."""
+        yes = self._open_confirm()
+        self.press(f"au_view:{self.rid}")  # orqaga qaytdi: tasdiq bekor
+        self.assertNotIn(USER, bot._au_del_confirms)
+        q = self.press(yes)
+        self.assertEqual(len(self.fake.rows), 1)
+        self.assertEqual(self.shown(q), t("uz", "sc_stale_button"))
+
+    def test_yes_with_wrong_token_or_other_rule_deletes_nothing(self):
+        self.create("narx2", "Boshqa")
+        other_id = self.fake.rows[1]["id"]
+        yes = self._open_confirm()
+        for bad in (f"au_del_yes:{self.rid}:abcdef", f"au_del_yes:{other_id}:{yes.rsplit(':', 1)[1]}",
+                    f"au_del_yes:{self.rid}", "au_del_yes:abc:def", "au_del_yes"):
+            self.press(bad)
+            self.assertEqual(len(self.fake.rows), 2, bad)
+        self.press(yes)  # haqiqiysi hamon ishlaydi
+        self.assertEqual([r["id"] for r in self.fake.rows], [other_id])
+
+    def test_new_confirmation_invalidates_the_previous_one(self):
+        self.create("narx2", "Boshqa")
+        other_id = self.fake.rows[1]["id"]
+        first = self._open_confirm()
+        self._open_confirm(other_id)
+        self.press(first)
+        self.assertEqual(len(self.fake.rows), 2)
+
+    def test_confirmation_expires(self):
+        yes = self._open_confirm()
+        bot._au_del_confirms[USER]["ts"] -= bot.PENDING_ACTION_TTL_SECONDS + 5
+        self.press(yes)
+        self.assertEqual(len(self.fake.rows), 1)
+
+    def test_other_button_or_cancel_clears_confirmation(self):
+        yes = self._open_confirm()
+        self.press("au_list")
+        self.press(yes)
+        self.assertEqual(len(self.fake.rows), 1)
+        yes = self._open_confirm()
+        bot.clear_flow_state(USER)  # /start, /cancel
+        self.press(yes)
+        self.assertEqual(len(self.fake.rows), 1)
+
+    def test_stale_yes_keeps_pending_input_of_other_flow(self):
+        yes = self._open_confirm()
+        self.press(f"au_view:{self.rid}")
+        bot.set_pending_action(USER, "text")
+        self.press(yes)
+        self.assertEqual(bot.get_pending_action(USER), "text")
 
     def test_other_users_rules_are_invisible_and_untouchable(self):
-        for data in (f"au_view:{self.rid}", f"au_on:{self.rid}", f"au_off:{self.rid}", f"au_del:{self.rid}", f"au_del_yes:{self.rid}"):
+        for data in (f"au_view:{self.rid}", f"au_on:{self.rid}", f"au_off:{self.rid}", f"au_del:{self.rid}"):
             q = self.press(data, user=OTHER)
             self.assertIn(t("uz", "au_rule_gone"), self.shown(q), data)
         self.assertEqual(len(self.fake.rows), 1)
         self.assertTrue(self.fake.rows[0]["is_enabled"])
+
+    def test_other_user_cannot_use_my_confirmation(self):
+        yes = self._open_confirm()
+        self.press(yes, user=OTHER)
+        self.assertEqual(len(self.fake.rows), 1)
 
     def test_garbage_ids_do_not_crash(self):
         for data in ("au_view:abc", "au_view:", "au_on:99999999999999999999", "au_del:-5", "au_unknown"):
@@ -332,7 +396,7 @@ class PlansTests(PanelBase):
         locked = t("uz", "locked_feature", feature=t("uz", "feature_automation"),
                    plans=" / ".join(t("uz", "plan_name_" + p) for p in ("plus", "pro", "ultra")))
         for data in ("au_menu", "au_add", "au_list", "au_view:1", "au_on:1", "au_off:1", "au_del:1",
-                     "au_del_yes:1", "au_save:abc123", "au_cancel:abc123"):
+                     "au_del_yes:1:abc123", "au_save:abc123", "au_cancel:abc123"):
             q = self.press(data)
             self.assertEqual(self.shown(q), locked, data)
         self.assertIsNone(bot.get_pending_action(USER))
