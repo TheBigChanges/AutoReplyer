@@ -1,4 +1,4 @@
-"""Panel: 🧩 Avtomatlashtirish (qoida qo'shish, ro'yxat, yoqish/o'chirish, o'chirish) — hamma tarifda ochiq."""
+"""Panel: 🧩 Avtomatlashtirish (qoida qo'shish, ro'yxat, yoqish/o'chirish, o'chirish) — Plus/Pro/Ultra; Bepul tarifda to'liq yopiq."""
 import asyncio
 import os
 import random
@@ -78,7 +78,7 @@ def _text_update(text, user_id=USER):
 
 
 class PanelBase(unittest.TestCase):
-    plan = "free"
+    plan = "plus"
 
     def setUp(self):
         for d in (bot.pending_settings_action, bot._pending_settings_set_at, bot._au_drafts, bot._faq_drafts, bot._kb_drafts, bot._sc_drafts):
@@ -140,20 +140,27 @@ class PanelBase(unittest.TestCase):
 
 
 class MainMenuTests(PanelBase):
-    def test_button_in_panel_and_unlocked_for_free(self):
+    def _button(self):
         text, markup = bot.build_panel(USER)
         buttons = [b for row in markup.inline_keyboard for b in row if b.callback_data == "au_menu"]
         self.assertEqual(len(buttons), 1)
-        self.assertNotIn("\U0001F512", buttons[0].text)
+        return buttons[0]
 
-    def test_menu_opens_for_free_plan(self):
+    def test_button_unlocked_for_paid(self):
+        self.assertNotIn("\U0001F512", self._button().text)
+
+    def test_button_locked_for_free(self):
+        self.plan = "free"
+        self.assertIn("\U0001F512", self._button().text)
+
+    def test_menu_opens_for_paid_plan(self):
         q = self.press("au_menu")
         self.assertIn("0/", self.shown(q))
         self.assertEqual(self.keyboard(q)[:2], ["au_add", "au_list"])
 
 
 class AddFlowTests(PanelBase):
-    def test_full_flow_saves_enabled_rule_for_free_user(self):
+    def test_full_flow_saves_enabled_rule(self):
         q, confirm = self.create()
         self.assertIn("narx*", confirm.await_args.args[0])
         call = self.fake.add_calls[-1]
@@ -313,26 +320,49 @@ class RuleManagementTests(PanelBase):
 
 
 class PlansTests(PanelBase):
-    def test_every_plan_can_use_the_panel(self):
-        for plan in ("free", "plus", "pro", "ultra"):
+    def test_paid_plans_can_use_the_panel(self):
+        for plan in ("plus", "pro", "ultra"):
             self.plan = plan
             q = self.press("au_menu")
             self.assertEqual(self.keyboard(q)[:2], ["au_add", "au_list"], plan)
 
-    def test_restricted_deployment_still_locks(self):
-        """Admin FEATURE_PLANS orqali yopib qo'ysa, panel qulflangan ko'rinishni ko'rsatadi."""
+    def test_free_plan_is_fully_closed(self):
+        """Bepul tarif: hech bir au_* tugma ishlamaydi, qulflangan ko'rinish chiqadi, hech narsa yozilmaydi."""
+        self.plan = "free"
+        locked = t("uz", "locked_feature", feature=t("uz", "feature_automation"),
+                   plans=" / ".join(t("uz", "plan_name_" + p) for p in ("plus", "pro", "ultra")))
+        for data in ("au_menu", "au_add", "au_list", "au_view:1", "au_on:1", "au_off:1", "au_del:1",
+                     "au_del_yes:1", "au_save:abc123", "au_cancel:abc123"):
+            q = self.press(data)
+            self.assertEqual(self.shown(q), locked, data)
+        self.assertIsNone(bot.get_pending_action(USER))
+        self.assertIsNone(bot._au_draft(USER))
+        self.assertEqual(self.fake.add_calls, [])
+        self.assertEqual(self.fake.rows, [])
+
+    def test_downgraded_user_typing_is_stopped(self):
+        """Tarifi pasayib ketgan foydalanuvchining yozayotgan matni qoida yaratmaydi."""
+        self.press("au_add")
+        self.plan = "free"
+        reply = self.say("narx*")
+        self.assertIsNone(bot.get_pending_action(USER))
+        self.assertEqual(self.fake.rows, [])
+        self.assertNotEqual(reply.await_args.args[0], t("uz", "au_ans_prompt", max=au.MAX_REPLY_LENGTH))
+
+    def test_downgrade_keeps_rules_but_they_stop_working(self):
+        self.create()
+        self.plan = "free"
+        with patch.object(db, "get_enabled_automation_rules", return_value=self.fake.rows):
+            self.assertIsNone(bot.find_automation_rule(USER, "narxi qancha"))
+        self.assertEqual(len(self.fake.rows), 1)  # qoidalar o'chmaydi — Plus'ga qaytsa yana ishlaydi
+        self.plan = "plus"
+        with patch.object(db, "get_enabled_automation_rules", return_value=self.fake.rows):
+            self.assertIsNotNone(bot.find_automation_rule(USER, "narxi qancha"))
+
+    def test_restricted_deployment_locks_even_paid(self):
         with patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS, automation=("ultra",))):
             q = self.press("au_menu")
             self.assertNotEqual(self.keyboard(q)[:2], ["au_add", "au_list"])
-
-    def test_restricted_deployment_stops_typed_input_too(self):
-        self.press("au_add")  # ruxsat bor paytda boshlangan
-        with patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS, automation=("ultra",))):
-            reply = self.say("narx*")
-        self.assertIsNone(bot.get_pending_action(USER))
-        self.assertNotIn("kw", bot._au_draft(USER) or {})
-        self.assertEqual(reply.await_count, 1)
-        self.assertNotEqual(reply.await_args.args[0], t("uz", "au_ans_prompt", max=au.MAX_REPLY_LENGTH))
 
 
 @unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL o'rnatilmagan")
