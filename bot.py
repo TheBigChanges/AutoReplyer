@@ -778,7 +778,7 @@ DEFAULT_FEATURE_PLANS = {
     "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
     "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
     "faq": ("plus", "pro", "ultra"),    # Smart FAQ (savollar soni tarifga qarab: FAQ_PLAN_LIMITS)
-    "automation": ("plus", "pro", "ultra"),  # Automation Engine (Bepul tarifda yopiq; qoidalar soni: AUTOMATION_RULE_LIMIT)
+    "automation": ("free", "plus", "pro", "ultra"),  # Avtomatlashtirish qoidalari: hamma tarifda ochiq (soni: AUTOMATION_RULE_LIMIT)
     "kb": ("ultra",),                   # AI Bilimlar bazasi (AI bilan birga ishlaydi; KB_LIMIT ta yozuv)
     "scheduler": ("free", "plus", "pro", "ultra"),  # Smart Jadval (jadvallar soni: SCHEDULE_PLAN_LIMITS)
     "analytics_7": ("plus", "pro", "ultra"),   # Statistika: 7 kunlik davr
@@ -888,6 +888,80 @@ def kb_limit_for(user_id: int, plan: str | None = None) -> int:
 AUTOMATION_RULE_LIMIT = 20  # bitta egasida nechta Automation qoidasi bo'lishi mumkin
 
 
+_au_drafts: dict[int, dict] = {}  # {owner_id: {"id","kw","ans","ts"}} — saqlashdan oldingi qoralama (RAM, 10 daqiqa)
+
+
+def _au_draft(owner_id: int) -> dict | None:
+    d = _au_drafts.get(owner_id)
+    if d is None or time.time() - d["ts"] > PENDING_ACTION_TTL_SECONDS:
+        _au_drafts.pop(owner_id, None)
+        return None
+    return d
+
+
+def _au_rule_keyword(rule: dict) -> str:
+    try:
+        return str(rule["conditions"]["items"][0]["value"])
+    except (KeyError, IndexError, TypeError):
+        return "?"
+
+
+def _au_rule_reply(rule: dict) -> str:
+    try:
+        return str(rule["action"]["text"])
+    except (KeyError, TypeError):
+        return "?"
+
+
+def build_au_menu(owner_id: int, notice: str | None = None):
+    lang = get_lang(owner_id)
+    text = t(lang, "au_menu", count=db.count_automation_rules(owner_id), max=AUTOMATION_RULE_LIMIT)
+    if notice:
+        text += f"\n\n{notice}"
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_au_add"), callback_data="au_add")],
+        [InlineKeyboardButton(t(lang, "btn_au_list"), callback_data="au_list")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_au_list(owner_id: int, notice: str | None = None):
+    lang = get_lang(owner_id)
+    rules = db.list_automation_rules(owner_id)
+    if not rules:
+        text = t(lang, "au_list_empty")
+    else:
+        text = t(lang, "au_list_title", count=len(rules), max=AUTOMATION_RULE_LIMIT)
+    if notice:
+        text = f"{notice}\n\n{text}"
+    keyboard = [
+        [InlineKeyboardButton(("" if r["is_enabled"] else "\u23F8 ") + _faq_short(_au_rule_keyword(r)), callback_data=f"au_view:{r['id']}")]
+        for r in rules
+    ]
+    keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_menu")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_au_rule(owner_id: int, rule_id: int, notice: str | None = None):
+    """Bitta qoida ko'rinishi; qoida topilmasa (boshqa egasiniki yoki o'chirilgan) — None."""
+    lang = get_lang(owner_id)
+    rule = next((r for r in db.list_automation_rules(owner_id) if r["id"] == rule_id), None)
+    if rule is None:
+        return None
+    on = bool(rule["is_enabled"])
+    text = t(lang, "au_rule_view", status=t(lang, "status_on" if on else "status_off"),
+             kw=_au_rule_keyword(rule), a=_au_rule_reply(rule))
+    if notice:
+        text += f"\n\n{notice}"
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_au_off" if on else "btn_au_on"), callback_data=f"au_{'off' if on else 'on'}:{rule_id}")],
+        [InlineKeyboardButton(t(lang, "btn_au_delete"), callback_data=f"au_del:{rule_id}")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_list")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
 def find_automation_rule(owner_id: int, text: str) -> dict | None:
     """Mijoz xabariga mos faol Automation qoidasi (yoki None). Tarifda yo'q (Bepul) bo'lsa — hech qachon; xatolik oqimni buzmaydi."""
     try:
@@ -936,6 +1010,8 @@ def locked_feature_for(data: str) -> str | None:
         return "ai"
     if data.startswith("faq_"):
         return "faq"
+    if data.startswith("au_"):
+        return "automation"
     if data.startswith("kb_"):
         return "kb"
     if data.startswith("sc_ed:text"):
@@ -1913,6 +1989,7 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton(lock_label(t(lang, "btn_ai"), plan_allows(owner_id, plan, "ai")), callback_data="ai_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_faq"), plan_allows(owner_id, plan, "faq")), callback_data="faq_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_kb"), plan_allows(owner_id, plan, "kb")), callback_data="kb_menu")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_automation"), plan_allows(owner_id, plan, "automation")), callback_data="au_menu")],
     ]
     keyboard.append([InlineKeyboardButton(t(lang, "btn_sched"), callback_data="sc_menu")])
     keyboard.append([InlineKeyboardButton(t(lang, "btn_analytics"), callback_data="an_menu")])
@@ -2127,13 +2204,13 @@ def clear_flow_state(owner_id: int) -> bool:
     Aks holda "/cancel"dan keyin eski «Saqlash» tugmasi hamon tirik qoralamani saqlab yuborardi.
     Biror narsa bekor bo'lsa True."""
     cleared = clear_scheduler_state(owner_id)
-    for store in (_faq_drafts, _kb_drafts, _faq_edit_target, _kb_edit_target):
+    for store in (_faq_drafts, _kb_drafts, _faq_edit_target, _kb_edit_target, _au_drafts):
         if store.pop(owner_id, None) is not None:
             cleared = True
     return cleared
 
 
-_CANCEL_DRAFT_OF = {"sc_cancel": "_sc_draft", "faq_cancel": "_faq_draft", "kb_cancel": "_kb_draft"}
+_CANCEL_DRAFT_OF = {"sc_cancel": "_sc_draft", "faq_cancel": "_faq_draft", "kb_cancel": "_kb_draft", "au_cancel": "_au_draft"}
 
 
 def cancel_without_own_draft(owner_id: int, data: str) -> bool:
@@ -2148,8 +2225,8 @@ def stale_confirm_button(owner_id: int, data: str) -> bool:
     Eskirgan tugma HECH NARSANI o'zgartirmaydi: joriy qoralama, tasdiq va kutilayotgan kiritish saqlanadi.
       - sc_del_yes:ID:TOKEN  — joriy jadval o'chirish tasdig'iga mos bo'lishi shart;
       - kb_del_yes:ID:TOKEN  — joriy bilim o'chirish tasdig'iga mos bo'lishi shart;
-      - faq_save:TOKEN / kb_save:TOKEN — joriy qoralamaning ID'si;
-      - faq_cancel:TOKEN / kb_cancel:TOKEN — qoralama bor bo'lsa, o'zinikiga mos (qoralama yo'q bo'lsa — zararsiz)."""
+      - faq_save:TOKEN / kb_save:TOKEN / au_save:TOKEN — joriy qoralamaning ID'si;
+      - faq_cancel:TOKEN / kb_cancel:TOKEN / au_cancel:TOKEN — qoralama bor bo'lsa, o'zinikiga mos (qoralama yo'q bo'lsa — zararsiz)."""
     base, *rest = data.split(":")
     if base in ("sc_del_yes", "kb_del_yes"):
         confirms = _sc_del_confirms if base == "sc_del_yes" else _kb_del_confirms
@@ -2163,8 +2240,8 @@ def stale_confirm_button(owner_id: int, data: str) -> bool:
             confirm is None or confirm[id_key] != item_id or confirm["token"] != token
             or time.time() - confirm["ts"] > PENDING_ACTION_TTL_SECONDS
         )
-    if base in ("faq_save", "faq_cancel", "kb_save", "kb_cancel"):
-        d = (_faq_draft if base.startswith("faq") else _kb_draft)(owner_id)
+    if base in ("faq_save", "faq_cancel", "kb_save", "kb_cancel", "au_save", "au_cancel"):
+        d = {"faq": _faq_draft, "kb": _kb_draft, "au": _au_draft}[base.split("_")[0]](owner_id)
         token = rest[0] if rest else None
         if base.endswith("cancel"):
             return d is not None and d.get("id") != token
@@ -3233,8 +3310,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
-    if data.startswith(("faq_", "kb_")) and stale_confirm_button(owner_id, data):
-        back = "faq_menu" if data.startswith("faq_") else "kb_menu"
+    if data.startswith(("faq_", "kb_", "au_")) and stale_confirm_button(owner_id, data):
+        back = {"faq": "faq_menu", "kb": "kb_menu", "au": "au_menu"}[data.split("_")[0]]
         await query.edit_message_text(
             t(lang, "sc_stale_button"),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data=back)]]),
@@ -3441,6 +3518,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=markup)
         return
 
+    if data.startswith("au_") and await handle_automation_callback(query, owner_id, data, lang):
+        return
+
     if data.startswith("sc_") and await handle_schedule_callback(query, owner_id, data, lang):
         return
 
@@ -3644,6 +3724,84 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=markup)
 
 
+async def handle_automation_callback(query, owner_id: int, data: str, lang: str) -> bool:
+    """Panel: Avtomatlashtirish. Hamma amal aniq/idempotent (yoqish/o'chirish alohida tugma), qoralama tugmalari
+    qoralama ID'siga bog'langan (eskirgani stale_confirm_button orqali oldinroq to'xtatiladi)."""
+    base, _, raw = data.partition(":")
+
+    async def show(view):
+        await query.edit_message_text(view[0], reply_markup=view[1])
+
+    if base == "au_menu":
+        _au_drafts.pop(owner_id, None)
+        await show(build_au_menu(owner_id))
+        return True
+
+    if base == "au_list":
+        await show(build_au_list(owner_id))
+        return True
+
+    if base in ("au_view", "au_on", "au_off", "au_del", "au_del_yes"):
+        rule_id = int(raw) if raw.isdigit() and len(raw) <= 15 else -1
+        if base in ("au_on", "au_off"):
+            db.set_automation_rule_enabled(owner_id, rule_id, base == "au_on")
+        if base == "au_del_yes":
+            gone = not db.delete_automation_rule(owner_id, rule_id)
+            await show(build_au_list(owner_id, t(lang, "au_rule_gone" if gone else "au_deleted")))
+            return True
+        if base == "au_del":
+            rule = next((r for r in db.list_automation_rules(owner_id) if r["id"] == rule_id), None)
+            if rule is None:
+                await show(build_au_list(owner_id, t(lang, "au_rule_gone")))
+                return True
+            await show((
+                t(lang, "au_del_confirm", kw=_au_rule_keyword(rule)),
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton(t(lang, "btn_au_del_yes"), callback_data=f"au_del_yes:{rule_id}")],
+                    [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"au_view:{rule_id}")],
+                ]),
+            ))
+            return True
+        view = build_au_rule(owner_id, rule_id)
+        await show(view if view is not None else build_au_list(owner_id, t(lang, "au_rule_gone")))
+        return True
+
+    if base == "au_add":
+        if db.count_automation_rules(owner_id) >= AUTOMATION_RULE_LIMIT:
+            await show(build_au_menu(owner_id, t(lang, "au_limit", max=AUTOMATION_RULE_LIMIT)))
+            return True
+        _au_drafts[owner_id] = {"ts": time.time(), "id": secrets.token_hex(3)}
+        set_pending_action(owner_id, "au_kw")
+        await query.message.reply_text(t(lang, "au_kw_prompt"))
+        return True
+
+    if base == "au_cancel":
+        _au_drafts.pop(owner_id, None)
+        await show(build_au_menu(owner_id, t(lang, "au_cancelled")))
+        return True
+
+    if base == "au_save":
+        d = _au_draft(owner_id)
+        _au_drafts.pop(owner_id, None)
+        if d is None or not all(k in d for k in ("kw", "ans")):
+            await show(build_au_menu(owner_id, t(lang, "au_draft_lost")))
+            return True
+        try:
+            rule_id = db.add_automation_rule(
+                owner_id, d["kw"],
+                {"operator": "all", "items": [{"type": "keyword_contains", "value": d["kw"]}]},
+                {"type": "send_reply", "text": d["ans"]},
+                automation.DEFAULT_PRIORITY, AUTOMATION_RULE_LIMIT, enabled=True,
+            )
+        except automation.AutomationError:
+            await show(build_au_menu(owner_id, t(lang, "au_draft_lost")))
+            return True
+        await show(build_au_menu(owner_id, t(lang, "au_saved" if rule_id is not None else "au_limit", max=AUTOMATION_RULE_LIMIT)))
+        return True
+
+    return False
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = update.effective_user.id
     track_user(update.effective_user)
@@ -3665,7 +3823,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
              "faq_q": "faq", "faq_kw": "faq", "faq_ans": "faq", "faq_confirm": "faq",
              "faq_edit_q": "faq", "faq_edit_kw": "faq", "faq_edit_ans": "faq",
              "kb_title": "kb", "kb_content": "kb", "kb_kw": "kb", "kb_confirm": "kb",
-             "kb_edit_t": "kb", "kb_edit_c": "kb", "kb_edit_kw": "kb", "sc_text": "custom_text"}.get(action)
+             "kb_edit_t": "kb", "kb_edit_c": "kb", "kb_edit_kw": "kb", "sc_text": "custom_text",
+             "au_kw": "automation", "au_ans": "automation", "au_confirm": "automation"}.get(action)
     if gated and not has_feature(owner_id, gated):
         clear_pending_action(owner_id)
         text, markup = build_locked_view(owner_id, gated)
@@ -3783,6 +3942,44 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             t(lang, "faq_confirm", q=d["q"], kw=", ".join(d["kw"]), a=value), reply_markup=markup
         )
+        return
+
+    if action in ("au_kw", "au_ans", "au_confirm"):
+        d = _au_draft(owner_id)
+        if d is None:
+            clear_pending_action(owner_id)
+            await update.message.reply_text(t(lang, "au_draft_lost"))
+            return
+        if action == "au_confirm":
+            await update.message.reply_text(t(lang, "au_confirm_hint"))
+            return  # amal saqlanadi
+        if not value:
+            await update.message.reply_text(t(lang, "au_empty_text"))
+            return
+        if action == "au_kw":
+            try:
+                automation.parse_keyword(value)
+            except automation.AutomationError:
+                await update.message.reply_text(t(
+                    lang, "au_kw_bad", max=automation.MAX_KEYWORD_LENGTH, words=automation.MAX_KEYWORD_TOKENS,
+                    prefix=automation.MIN_PREFIX_LENGTH,
+                ))
+                return  # amal saqlanadi — foydalanuvchi qayta yuboradi
+            d["kw"] = value
+            set_pending_action(owner_id, "au_ans")
+            await update.message.reply_text(t(lang, "au_ans_prompt", max=automation.MAX_REPLY_LENGTH))
+            return
+        if len(value) > automation.MAX_REPLY_LENGTH:
+            await update.message.reply_text(t(lang, "au_too_long", n=len(value), max=automation.MAX_REPLY_LENGTH))
+            return
+        d["ans"] = value
+        d["ts"] = time.time()
+        set_pending_action(owner_id, "au_confirm")
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(t(lang, "btn_au_save"), callback_data=f"au_save:{d['id']}"),
+            InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}"),
+        ]])
+        await update.message.reply_text(t(lang, "au_confirm", kw=d["kw"], a=value), reply_markup=markup)
         return
 
     if action in ("kb_edit_t", "kb_edit_c", "kb_edit_kw"):
