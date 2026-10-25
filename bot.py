@@ -46,6 +46,7 @@ import secrets
 
 import ai
 import analytics
+import automation
 import db
 from i18n import DEFAULT_LANG, LANG_NAMES, LANGS, all_defaults, is_lang, t
 from logic import (
@@ -777,6 +778,7 @@ DEFAULT_FEATURE_PLANS = {
     "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
     "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
     "faq": ("plus", "pro", "ultra"),    # Smart FAQ (savollar soni tarifga qarab: FAQ_PLAN_LIMITS)
+    "automation": ("plus", "pro", "ultra"),  # Automation Engine (Bepul tarifda yopiq; qoidalar soni: AUTOMATION_RULE_LIMIT)
     "kb": ("ultra",),                   # AI Bilimlar bazasi (AI bilan birga ishlaydi; KB_LIMIT ta yozuv)
     "scheduler": ("free", "plus", "pro", "ultra"),  # Smart Jadval (jadvallar soni: SCHEDULE_PLAN_LIMITS)
     "analytics_7": ("plus", "pro", "ultra"),   # Statistika: 7 kunlik davr
@@ -788,6 +790,7 @@ FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
 FEATURE_NAME_KEYS = {
     "bio": "feature_bio", "custom_text": "feature_text", "ai": "feature_ai", "name_clock_fonts": "feature_fonts",
     "name_clock_zones": "feature_zones", "faq": "feature_faq", "kb": "feature_kb",
+    "automation": "feature_automation",
     "analytics_7": "feature_an7", "analytics_30": "feature_an30", "analytics_charts": "feature_anch",
     "analytics_full": "feature_anfull", "scheduler": "feature_sched",
 }
@@ -880,6 +883,20 @@ def kb_limit_for(user_id: int, plan: str | None = None) -> int:
     """Bilimlar bazasida nechta yozuv saqlash mumkin (0 — tarifda yo'q). Admin ham KB_LIMIT bilan cheklanadi."""
     plan = plan if plan is not None else plan_of(user_id)
     return KB_LIMIT if plan_allows(user_id, plan, "kb") else 0
+
+
+AUTOMATION_RULE_LIMIT = 20  # bitta egasida nechta Automation qoidasi bo'lishi mumkin
+
+
+def find_automation_rule(owner_id: int, text: str) -> dict | None:
+    """Mijoz xabariga mos faol Automation qoidasi (yoki None). Tarifda yo'q (Bepul) bo'lsa — hech qachon; xatolik oqimni buzmaydi."""
+    try:
+        if not has_feature(owner_id, "automation"):
+            return None
+        return automation.find_matching_automation(text, db.get_enabled_automation_rules(owner_id))
+    except Exception:
+        logger.exception("Automation qoidalarini qidirishda xato (owner=%s)", owner_id)
+        return None
 
 
 def faq_limit_for(user_id: int, plan: str | None = None) -> int:
@@ -3056,6 +3073,7 @@ ADMIN_HELP_TEXT = (
     "/setplan @username plus 1oy — tarifni belgilash (muddat: 1oy, 2hafta, 30kun, 1yil; tugagach avtomatik Bepul; muddatsiz ham mumkin)\n"
     "/blocked — bloklanganlar ro'yxati\n"
     "/userplans — tariflar va ularga obuna bo'lgan foydalanuvchilar\n"
+    "/automation — Automation qoidalari (kalit so'z → maxsus javob)\n"
     "/reklama — barcha foydalanuvchilarga xabar yuborish (yuborishdan oldin tasdiqlanadi)\n"
     "/reklama_status — oxirgi reklama holati\n"
     "/reklama_retry — oxirgi reklamani qayta urinish\n"
@@ -4854,6 +4872,85 @@ async def cmd_userplans(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(chunk)
 
 
+AUTOMATION_USAGE = (
+    "\U0001F9E9 Automation qoidalari (faqat admin, o'z akkauntingiz uchun)\n\n"
+    "/automation add kalit so'z | javob matni — qoida qo'shish (o'chirilgan holatda yaratiladi)\n"
+    "/automation on ID — yoqish\n/automation off ID — o'chirish\n/automation del ID — butunlay o'chirish\n\n"
+    "Kalit so'z: butun so'z (narx) yoki so'z boshi (narx* — narxi, narxlar ham mos). Ibora ham mumkin (narx qancha).\n"
+    "Qoida faqat Oflayn rejimda, Uxlash va Jadval oynasidan tashqarida ishlaydi."
+)
+
+
+def _automation_rule_line(rule: dict) -> str:
+    try:
+        keyword = rule["conditions"]["items"][0]["value"]
+        reply = rule["action"]["text"]
+    except (KeyError, IndexError, TypeError):
+        keyword, reply = "?", "?"
+    reply = " ".join(reply.split())
+    if len(reply) > 60:
+        reply = reply[:59] + "…"
+    state = "\u2705" if rule.get("is_enabled") else "\u26AA"
+    return f"{state} #{rule['id']} [{keyword}] → {reply}"
+
+
+async def cmd_automation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: o'z akkaunti uchun Automation qoidalarini boshqarish (Web App tayyor bo'lgunicha)."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    owner_id = update.effective_user.id
+    raw = (update.message.text or "").partition(" ")[2].strip()
+    sub, _sp, rest = raw.partition(" ")
+    sub, rest = sub.lower(), rest.strip()
+
+    if sub == "add":
+        keyword, sep, reply = rest.partition("|")
+        if not sep or not keyword.strip() or not reply.strip():
+            await update.message.reply_text(AUTOMATION_USAGE)
+            return
+        try:
+            rule_id = db.add_automation_rule(
+                owner_id, keyword.strip(),
+                {"operator": "all", "items": [{"type": "keyword_contains", "value": keyword.strip()}]},
+                {"type": "send_reply", "text": reply.strip()},
+                automation.DEFAULT_PRIORITY, AUTOMATION_RULE_LIMIT,
+            )
+        except automation.AutomationError as e:
+            await update.message.reply_text(
+                f"❌ Qoida noto'g'ri ({e}). Kalit so'z {automation.MAX_KEYWORD_LENGTH} belgigacha, "
+                f"javob {automation.MAX_REPLY_LENGTH} belgigacha bo'lishi kerak; * faqat oxirida va kamida "
+                f"{automation.MIN_PREFIX_LENGTH} harfdan keyin."
+            )
+            return
+        if rule_id is None:
+            await update.message.reply_text(f"❌ Limit to'lgan ({AUTOMATION_RULE_LIMIT} ta). Keraksizini /automation del ID bilan o'chiring.")
+            return
+        await update.message.reply_text(f"✅ Qoida #{rule_id} qo'shildi (hozircha o'chirilgan). Yoqish: /automation on {rule_id}")
+        return
+
+    if sub in ("on", "off", "del"):
+        if not rest.isdigit() or len(rest) > 15:
+            await update.message.reply_text(AUTOMATION_USAGE)
+            return
+        rule_id = int(rest)
+        if sub == "del":
+            ok = db.delete_automation_rule(owner_id, rule_id)
+        else:
+            ok = db.set_automation_rule_enabled(owner_id, rule_id, sub == "on")
+        done = {"on": "yoqildi", "off": "o'chirildi", "del": "butunlay o'chirildi"}[sub]
+        await update.message.reply_text(f"✅ Qoida #{rule_id} {done}." if ok else f"❌ #{rule_id} raqamli qoida topilmadi.")
+        return
+
+    if sub:
+        await update.message.reply_text(AUTOMATION_USAGE)
+        return
+    rules = db.list_automation_rules(owner_id)
+    head = f"\U0001F9E9 Qoidalar ({len(rules)}/{AUTOMATION_RULE_LIMIT}):\n\n" if rules else "Hali qoida yo'q.\n\n"
+    text = head + "\n".join(_automation_rule_line(r) for r in rules) + ("\n\n" if rules else "") + AUTOMATION_USAGE
+    for chunk in split_for_telegram(text):
+        await update.message.reply_text(chunk)
+
+
 async def cmd_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -5185,6 +5282,20 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         ai_usable = not sleeping and bool(settings.get("ai_enabled")) and ai.is_configured() and has_feature(owner_id, "ai")
 
+        # Automation Engine: FAQ'dan OLDIN. Faqat oddiy Oflayn rejimda (Sleep Mode ham, Jadval oynasi ham emas),
+        # faqat matnli xabarga. Mos qoida topilsa FAQ va AI ishlamaydi (bir xabarga bitta javob).
+        if not sleeping and schedule_rule is None and settings["offline"]:
+            auto_text = (bm.text or bm.caption or "").strip()
+            rule = find_automation_rule(owner_id, auto_text) if auto_text else None
+            if rule is not None:
+                if settings.get("ai_enabled") and db.is_ai_paused(owner_id, chat_id):
+                    return  # egasi shu chatda o'zi yozmoqda
+                await send_auto_reply(
+                    context.bot, bm, owner_id, chat_id, rule["action"]["text"], settings["cooldown_hours"],
+                    label + ",automation", kind="static",
+                )
+                return
+
         # Smart FAQ: faqat Oflayn holatda (uxlash vaqtida emas) va faqat aniq, yagona moslik bo'lsa
         if not sleeping and effective_offline and settings.get("faq_enabled", True):
             faq_text = (bm.text or bm.caption or "").strip()
@@ -5247,6 +5358,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("setplan", cmd_setplan, filters=only_messages))
     app.add_handler(CommandHandler("blocked", cmd_blocked, filters=only_messages))
     app.add_handler(CommandHandler("userplans", cmd_userplans, filters=only_messages))
+    app.add_handler(CommandHandler("automation", cmd_automation, filters=only_messages))
     app.add_handler(CommandHandler("users", cmd_users, filters=only_messages))
     app.add_handler(CommandHandler("bots", cmd_bots, filters=only_messages))
     app.add_handler(CommandHandler("reklama", cmd_reklama, filters=only_messages))
