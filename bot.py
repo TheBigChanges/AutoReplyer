@@ -888,6 +888,7 @@ def kb_limit_for(user_id: int, plan: str | None = None) -> int:
 AUTOMATION_RULE_LIMIT = 20  # bitta egasida nechta Automation qoidasi bo'lishi mumkin
 
 
+_au_del_confirms: dict[int, dict] = {}  # {owner_id: {"rule_id","token","ts"}} — bir martalik o'chirish tasdig'i (RAM)
 _au_drafts: dict[int, dict] = {}  # {owner_id: {"id","kw","ans","ts"}} — saqlashdan oldingi qoralama (RAM, 10 daqiqa)
 
 
@@ -2204,7 +2205,7 @@ def clear_flow_state(owner_id: int) -> bool:
     Aks holda "/cancel"dan keyin eski «Saqlash» tugmasi hamon tirik qoralamani saqlab yuborardi.
     Biror narsa bekor bo'lsa True."""
     cleared = clear_scheduler_state(owner_id)
-    for store in (_faq_drafts, _kb_drafts, _faq_edit_target, _kb_edit_target, _au_drafts):
+    for store in (_faq_drafts, _kb_drafts, _faq_edit_target, _kb_edit_target, _au_drafts, _au_del_confirms):
         if store.pop(owner_id, None) is not None:
             cleared = True
     return cleared
@@ -2225,12 +2226,13 @@ def stale_confirm_button(owner_id: int, data: str) -> bool:
     Eskirgan tugma HECH NARSANI o'zgartirmaydi: joriy qoralama, tasdiq va kutilayotgan kiritish saqlanadi.
       - sc_del_yes:ID:TOKEN  — joriy jadval o'chirish tasdig'iga mos bo'lishi shart;
       - kb_del_yes:ID:TOKEN  — joriy bilim o'chirish tasdig'iga mos bo'lishi shart;
+      - au_del_yes:ID:TOKEN  — joriy Automation qoidasini o'chirish tasdig'iga mos bo'lishi shart;
       - faq_save:TOKEN / kb_save:TOKEN / au_save:TOKEN — joriy qoralamaning ID'si;
       - faq_cancel:TOKEN / kb_cancel:TOKEN / au_cancel:TOKEN — qoralama bor bo'lsa, o'zinikiga mos (qoralama yo'q bo'lsa — zararsiz)."""
     base, *rest = data.split(":")
-    if base in ("sc_del_yes", "kb_del_yes"):
-        confirms = _sc_del_confirms if base == "sc_del_yes" else _kb_del_confirms
-        id_key = "rule_id" if base == "sc_del_yes" else "entry_id"
+    if base in ("sc_del_yes", "kb_del_yes", "au_del_yes"):
+        confirms = {"sc_del_yes": _sc_del_confirms, "kb_del_yes": _kb_del_confirms, "au_del_yes": _au_del_confirms}[base]
+        id_key = "entry_id" if base == "kb_del_yes" else "rule_id"
         confirm = confirms.get(owner_id)
         try:
             item_id, token = int(rest[0]), (rest[1] if len(rest) > 1 else None)
@@ -3298,9 +3300,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not stale_button:
         clear_pending_action(owner_id)
     # Har qanday boshqa tugma (o'chirishni tasdiqlashdan tashqari) ochiq o'chirish tasdig'ini bekor qiladi
-    if not stale_button and not data.startswith(("sc_del_yes:", "kb_del_yes:")):
+    if not stale_button and not data.startswith(("sc_del_yes:", "kb_del_yes:", "au_del_yes:")):
         _sc_del_confirms.pop(owner_id, None)
         _kb_del_confirms.pop(owner_id, None)
+        _au_del_confirms.pop(owner_id, None)
 
     lang = get_lang(owner_id)
 
@@ -3742,10 +3745,13 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
         return True
 
     if base in ("au_view", "au_on", "au_off", "au_del", "au_del_yes"):
-        rule_id = int(raw) if raw.isdigit() and len(raw) <= 15 else -1
+        raw_id = raw.partition(":")[0]
+        rule_id = int(raw_id) if raw_id.isdigit() and len(raw_id) <= 15 else -1
         if base in ("au_on", "au_off"):
             db.set_automation_rule_enabled(owner_id, rule_id, base == "au_on")
         if base == "au_del_yes":
+            # Eskirgan/soxta tugma yuqorida (stale_confirm_button) to'xtatilgan; bu yerga faqat joriy tasdiq yetib keladi.
+            _au_del_confirms.pop(owner_id, None)  # bir martalik
             gone = not db.delete_automation_rule(owner_id, rule_id)
             await show(build_au_list(owner_id, t(lang, "au_rule_gone" if gone else "au_deleted")))
             return True
@@ -3754,10 +3760,12 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
             if rule is None:
                 await show(build_au_list(owner_id, t(lang, "au_rule_gone")))
                 return True
+            token = secrets.token_hex(3)
+            _au_del_confirms[owner_id] = {"rule_id": rule_id, "token": token, "ts": time.time()}
             await show((
                 t(lang, "au_del_confirm", kw=_au_rule_keyword(rule)),
                 InlineKeyboardMarkup([
-                    [InlineKeyboardButton(t(lang, "btn_au_del_yes"), callback_data=f"au_del_yes:{rule_id}")],
+                    [InlineKeyboardButton(t(lang, "btn_au_del_yes"), callback_data=f"au_del_yes:{rule_id}:{token}")],
                     [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"au_view:{rule_id}")],
                 ]),
             ))
