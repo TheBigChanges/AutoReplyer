@@ -187,7 +187,7 @@ class ButtonGateTests(Base):
 
 class PanelLockMarkTests(Base):
     def test_panel_marks_locked_buttons(self):
-        for plan, locked in (("free", {"edit_text", "bio_menu", "ai_menu", "faq_menu", "kb_menu"}), ("plus", {"bio_menu", "ai_menu", "kb_menu"}), ("pro", {"ai_menu", "kb_menu"}), ("ultra", set())):
+        for plan, locked in (("free", {"edit_text", "bio_menu", "ai_menu", "faq_menu", "kb_menu", "au_menu"}), ("plus", {"bio_menu", "ai_menu", "kb_menu"}), ("pro", {"ai_menu", "kb_menu"}), ("ultra", set())):
             self.plan(plan)
             with patch.object(db, "get_settings", return_value=_settings()):
                 _, markup = bot.build_panel(USER)
