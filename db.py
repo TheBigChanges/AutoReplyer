@@ -18,6 +18,7 @@ import psycopg2.errors
 import psycopg2.extras
 import psycopg2.pool
 
+import automation
 from logic import DEFAULT_SLEEP_MESSAGE
 
 
@@ -225,6 +226,25 @@ def init_db():
             """
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_faq_owner ON faq_entries(owner_user_id)")
+        # Automation Engine: har egasining qoidalari alohida (hamma so'rov owner_user_id bilan cheklangan).
+        # Yangi qoida DOIM o'chirilgan holatda yaratiladi (is_enabled = FALSE).
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS automation_rules (
+                id BIGSERIAL PRIMARY KEY,
+                owner_user_id BIGINT NOT NULL,
+                name TEXT NOT NULL,
+                conditions JSONB NOT NULL,
+                action JSONB NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_automation_owner ON automation_rules(owner_user_id, is_enabled, priority, id)"
+        )
         # AI Knowledge Base: har egasining ma'lumotlari alohida (hamma so'rov owner_user_id bilan cheklangan)
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS kb_enabled BOOLEAN NOT NULL DEFAULT TRUE")
         cur.execute(
@@ -1214,6 +1234,79 @@ def update_faq_entry(owner_user_id: int, entry_id: int, **fields) -> bool:
         return cur.rowcount > 0
 
 
+_AUTOMATION_COLS = "id, owner_user_id, name, conditions, action, priority, is_enabled"
+
+
+def add_automation_rule(owner_user_id: int, name, conditions, action, priority: int, max_rules: int) -> int | None:
+    """Yangi qoida (O'CHIRILGAN holatda) qo'shadi va id qaytaradi; limit to'lgan bo'lsa — None.
+    Ma'lumot avval automation.validate_automation'dan o'tadi (noto'g'ri bo'lsa AutomationError — bazaga yozilmaydi).
+    Parallel so'rovlardan himoya: egasi uchun yozishlar advisory lock bilan ketma-ket (add_faq_entry kabi)."""
+    clean = automation.validate_automation(name, conditions, action, priority)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("BEGIN")
+        try:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('automation_rules'), (%s %% 2147483647)::int)", (owner_user_id,))
+            cur.execute(
+                """
+                INSERT INTO automation_rules (owner_user_id, name, conditions, action, priority, is_enabled)
+                SELECT %s, %s, %s, %s, %s, FALSE
+                WHERE (SELECT COUNT(*) FROM automation_rules WHERE owner_user_id = %s) < %s
+                RETURNING id
+                """,
+                (owner_user_id, clean["name"], psycopg2.extras.Json(clean["conditions"]),
+                 psycopg2.extras.Json(clean["action"]), clean["priority"], owner_user_id, max_rules),
+            )
+            row = cur.fetchone()
+            cur.execute("COMMIT")
+        except BaseException:
+            try:
+                cur.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+    return row[0] if row else None
+
+
+def list_automation_rules(owner_user_id: int) -> list[dict]:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"SELECT {_AUTOMATION_COLS} FROM automation_rules WHERE owner_user_id = %s ORDER BY priority, id",
+            (owner_user_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_enabled_automation_rules(owner_user_id: int) -> list[dict]:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"SELECT {_AUTOMATION_COLS} FROM automation_rules WHERE owner_user_id = %s AND is_enabled = TRUE ORDER BY priority, id",
+            (owner_user_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def count_automation_rules(owner_user_id: int) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM automation_rules WHERE owner_user_id = %s", (owner_user_id,))
+        return cur.fetchone()[0]
+
+
+def set_automation_rule_enabled(owner_user_id: int, rule_id: int, enabled: bool) -> bool:
+    """Qoidani ANIQ holatga o'rnatadi (idempotent). Qoida topilmasa yoki boshqa egasiniki bo'lsa — False."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE automation_rules SET is_enabled = %s WHERE owner_user_id = %s AND id = %s",
+            (bool(enabled), owner_user_id, rule_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_automation_rule(owner_user_id: int, rule_id: int) -> bool:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM automation_rules WHERE owner_user_id = %s AND id = %s", (owner_user_id, rule_id))
+        return cur.rowcount > 0
+
+
 def list_faq_entries(owner_user_id: int) -> list[dict]:
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(f"SELECT {_FAQ_COLS} FROM faq_entries WHERE owner_user_id = %s ORDER BY id", (owner_user_id,))
@@ -1889,7 +1982,7 @@ def retry_on_disconnect(fn):
 for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
-    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "get_faq_entry", "count_faq_entries",
+    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_faq_entry", "count_faq_entries",
     "get_analytics_rows", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
