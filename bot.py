@@ -778,7 +778,7 @@ DEFAULT_FEATURE_PLANS = {
     "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
     "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
     "faq": ("plus", "pro", "ultra"),    # Smart FAQ (savollar soni tarifga qarab: FAQ_PLAN_LIMITS)
-    "automation": ("free", "plus", "pro", "ultra"),  # Avtomatlashtirish qoidalari: hamma tarifda ochiq (soni: AUTOMATION_RULE_LIMIT)
+    "automation": ("plus", "pro", "ultra"),  # Avtomatlashtirish qoidalari: Bepul tarifda to'liq yopiq (soni: AUTOMATION_RULE_LIMIT)
     "kb": ("ultra",),                   # AI Bilimlar bazasi (AI bilan birga ishlaydi; KB_LIMIT ta yozuv)
     "scheduler": ("free", "plus", "pro", "ultra"),  # Smart Jadval (jadvallar soni: SCHEDULE_PLAN_LIMITS)
     "analytics_7": ("plus", "pro", "ultra"),   # Statistika: 7 kunlik davr
