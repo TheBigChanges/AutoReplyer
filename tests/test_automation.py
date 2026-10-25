@@ -350,8 +350,13 @@ class FlowTests(unittest.TestCase):
         _, m = self.flow(owner=555)
         m["rules"].assert_called_once_with(555)
 
-    def test_open_for_every_plan_including_free(self):
-        for plan in ("free", "plus", "pro", "ultra"):
+    def test_free_plan_is_closed_and_rules_not_even_read(self):
+        texts, m = self.flow(plan="free")
+        self.assertEqual(texts, ["Oflaynman"])
+        m["rules"].assert_not_called()
+
+    def test_paid_plans_open(self):
+        for plan in ("plus", "pro", "ultra"):
             texts, _ = self.flow(plan=plan)
             self.assertEqual(texts, [REPLY], plan)
 
@@ -507,12 +512,14 @@ class CommandTests(unittest.TestCase):
 
 
 class FeatureGateTests(unittest.TestCase):
-    def test_open_for_all_plans(self):
-        self.assertEqual(bot.DEFAULT_FEATURE_PLANS["automation"], ("free", "plus", "pro", "ultra"))
+    def test_closed_for_free_open_for_paid_and_admin(self):
+        self.assertEqual(bot.DEFAULT_FEATURE_PLANS["automation"], ("plus", "pro", "ultra"))
         with patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS)), patch.object(bot, "ADMIN_ID", ADMIN):
-            for plan in ("free", "plus", "pro", "ultra"):
+            self.assertFalse(bot.plan_allows(1, "free", "automation"))
+            self.assertFalse(bot.plan_allows(1, "free", "faq"))
+            for plan in ("plus", "pro", "ultra"):
                 self.assertTrue(bot.plan_allows(1, plan, "automation"), plan)
-            self.assertFalse(bot.plan_allows(1, "free", "faq"))  # Smart FAQ Bepulda yopiq qoladi
+            self.assertTrue(bot.plan_allows(ADMIN, "free", "automation"))
 
 
 if __name__ == "__main__":
