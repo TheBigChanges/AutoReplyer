@@ -1010,6 +1010,7 @@ T: dict[str, dict] = {
     "feature_fonts": _("Soat shriftlari", "Clock fonts", "Шрифты часов"),
     "feature_zones": _("Soat uchun boshqa vaqt zonalari", "Other time zones for the clock", "Другие часовые пояса для часов"),
     "feature_faq": _("Smart FAQ", "Smart FAQ", "Smart FAQ"),
+    "feature_automation": _("Avtomatlashtirish qoidalari", "Automation rules", "Правила автоматизации"),
     "pf_faq": _(
         "Smart FAQ — tayyor savol-javoblar bilan tez avtomatik javob (ko'pi bilan {n} ta savol)",
         "Smart FAQ — quick automatic answers from your ready Q&A (up to {n} questions)",
