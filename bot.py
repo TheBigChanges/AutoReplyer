@@ -1974,6 +1974,34 @@ async def ai_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Statistikani tozalashda xato")
 
 
+def build_autoreply_menu(owner_id: int, notice: str | None = None):
+    """🚀 Auto-Reply bo'limi: avtojavobni yoqish/o'chirish, Cooldown, xabar matni va Uxlayapman rejimi."""
+    lang = get_lang(owner_id)
+    s = db.get_settings(owner_id)
+    active = bool(s["offline"])  # Oflayn holat = avtojavob yoqilgan
+    ai_on = bool(s.get("ai_enabled"))
+    message_line = t(lang, "panel_ai_message") if ai_on else auto_reply_text_for(s, lang)[:MENU_TEXT_PREVIEW_CHARS]
+    text = t(
+        lang, "ar_menu",
+        status=t(lang, "status_on" if active else "status_off"),
+        cooldown=format_cooldown(s["cooldown_hours"], lang),
+        message=message_line,
+        sleep=t(lang, "panel_sleep_on" if s.get("sleep_mode_enabled") else "panel_sleep_off"),
+    )
+    if notice:
+        text += f"\n\n{notice}"
+    plan = plan_of(owner_id)
+    keyboard = [
+        # aniq amallar: eski tugma qayta bosilsa holat teskarilanmaydi
+        [InlineKeyboardButton(t(lang, "btn_disable" if active else "btn_enable"), callback_data="ar_off" if active else "ar_on")],
+        [InlineKeyboardButton(t(lang, "btn_edit_cooldown"), callback_data="edit_cooldown")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_edit_text"), plan_allows(owner_id, plan, "custom_text")), callback_data="edit_text")],
+        [InlineKeyboardButton(t(lang, "btn_sleep"), callback_data="sleep_menu")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
 def build_panel(owner_id: int):
     lang = get_lang(owner_id)
     s = db.get_settings(owner_id)
@@ -1996,10 +2024,8 @@ def build_panel(owner_id: int):
     plan = plan_of(owner_id)
     keyboard = [
         [InlineKeyboardButton(toggle_label, callback_data=toggle_data)],
-        [InlineKeyboardButton(t(lang, "btn_edit_cooldown"), callback_data="edit_cooldown")],
-        [InlineKeyboardButton(lock_label(t(lang, "btn_edit_text"), plan_allows(owner_id, plan, "custom_text")), callback_data="edit_text")],
+        [InlineKeyboardButton(t(lang, "btn_autoreply"), callback_data="ar_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_bio"), plan_allows(owner_id, plan, "bio")), callback_data="bio_menu")],
-        [InlineKeyboardButton(t(lang, "btn_sleep"), callback_data="sleep_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_ai"), plan_allows(owner_id, plan, "ai")), callback_data="ai_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_faq"), plan_allows(owner_id, plan, "faq")), callback_data="faq_menu")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_kb"), plan_allows(owner_id, plan, "kb")), callback_data="kb_menu")],
@@ -3072,7 +3098,7 @@ def build_sleep_menu(owner_id: int):
         [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="sleep_disable" if enabled else "sleep_enable")],
         [InlineKeyboardButton(t(lang, "btn_sleep_time"), callback_data="sleep_edit_time")],
         [InlineKeyboardButton(lock_label(t(lang, "btn_edit_text"), has_feature(owner_id, "custom_text")), callback_data="sleep_edit_text")],
-        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data="ar_menu")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
@@ -3385,6 +3411,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "admin_referrals":
         text, markup = await build_admin_referrals_view(context.bot)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "ar_menu":
+        text, markup = build_autoreply_menu(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data in ("ar_on", "ar_off"):
+        # Aniq (idempotent) amallar: Oflayn holat = avtojavob yoqilgan
+        db.update_settings(owner_id, offline=(data == "ar_on"))
+        text, markup = build_autoreply_menu(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
@@ -4134,7 +4172,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     clear_pending_action(owner_id)
-    text, markup = build_panel(owner_id)
+    # Cooldown va xabar matni endi 🚀 Auto-Reply bo'limida — saqlangach shu bo'limga qaytamiz
+    text, markup = build_autoreply_menu(owner_id) if action in ("cooldown", "text") else build_panel(owner_id)
     await update.message.reply_text(t(lang, "updated"))
     await update.message.reply_text(text, reply_markup=markup)
 
