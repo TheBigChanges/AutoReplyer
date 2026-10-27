@@ -284,7 +284,7 @@ class FlowTests(unittest.TestCase):
             "paused": patch.object(db, "is_ai_paused", return_value=paused),
             "plan": patch.object(db, "get_user_plan", return_value=plan),
             "ads": patch.object(bot, "shows_ads", return_value=False),
-            "rules": patch.object(db, "get_enabled_automation_rules", side_effect=RuntimeError("db") if rules_error else None,
+            "rules": patch.object(db, "list_automation_rules", side_effect=RuntimeError("db") if rules_error else None,
                                   return_value=[R()] if rules is None else rules),
             "faq": patch.object(bot, "find_faq_answer", return_value=faq_answer),
             "conf": patch.object(ai, "is_configured", return_value=ai_ready),
@@ -423,7 +423,7 @@ class ConcurrentMessagesTests(unittest.TestCase):
             patch.object(db, "get_settings", return_value=_settings()),
             patch.object(db, "get_user_plan", return_value="pro"),
             patch.object(bot, "shows_ads", return_value=False),
-            patch.object(db, "get_enabled_automation_rules", return_value=[R()]),
+            patch.object(db, "list_automation_rules", return_value=[R()]),
             patch.object(bot, "is_subscribed_cached", new=AsyncMock(return_value=True)),
         ]
         for p in patches:
@@ -473,7 +473,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(args[0], ADMIN)
         self.assertEqual(args[2]["items"][0]["value"], "narx*")
         self.assertEqual(args[3]["text"], "Salom! | narxlar 100$")
-        self.assertEqual(args[5], bot.AUTOMATION_RULE_LIMIT)
+        self.assertEqual(args[5], max(bot.AUTOMATION_PLAN_LIMITS.values()))  # admin — eng yuqori limit
         self.assertIn("#7", text)
 
     def test_add_without_separator_shows_usage(self):
@@ -509,6 +509,33 @@ class CommandTests(unittest.TestCase):
 
     def test_registered(self):
         self.assertIn('CommandHandler("automation", cmd_automation', Path(bot.__file__).read_text())
+
+
+class PlanLimitTests(FlowTests):
+    def test_limit_table(self):
+        with patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS)), patch.object(bot, "ADMIN_ID", ADMIN):
+            got = {p: bot.automation_limit_for(1, p) for p in ("free", "plus", "pro", "ultra")}
+            self.assertEqual(got, {"free": 0, "plus": 2, "pro": 10, "ultra": 30})
+            self.assertEqual(bot.automation_limit_for(ADMIN, "free"), 30)
+
+    def test_downgrade_only_first_rules_within_limit_work(self):
+        rules = [R("bir*", text="1", id_=1), R("ikki*", text="2", id_=2), R("uch*", text="3", id_=3)]
+        texts, _ = self.flow(text="uch narx", rules=rules, plan="plus")  # 3-qoida Plus limitidan (2) tashqarida
+        self.assertEqual(texts, ["Oflaynman"])
+        texts, _ = self.flow(text="ikki narx", rules=rules, plan="plus")
+        self.assertEqual(texts, ["2"])
+        texts, _ = self.flow(text="uch narx", rules=rules, plan="pro")
+        self.assertEqual(texts, ["3"])
+
+    def test_disabled_rule_still_takes_a_slot(self):
+        rules = [R("bir*", text="1", id_=1, enabled=False), R("ikki*", text="2", id_=2), R("uch*", text="3", id_=3)]
+        texts, _ = self.flow(text="uch", rules=rules, plan="plus")
+        self.assertEqual(texts, ["Oflaynman"])
+
+    def test_order_by_id_not_by_list_order(self):
+        rules = [R("uch*", text="3", id_=3), R("ikki*", text="2", id_=2), R("bir*", text="1", id_=1)]
+        texts, _ = self.flow(text="uch", rules=rules, plan="plus")
+        self.assertEqual(texts, ["Oflaynman"])
 
 
 class FeatureGateTests(unittest.TestCase):
