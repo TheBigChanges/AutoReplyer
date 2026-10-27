@@ -187,10 +187,22 @@ class ButtonGateTests(Base):
 
 class PanelLockMarkTests(Base):
     def test_panel_marks_locked_buttons(self):
-        for plan, locked in (("free", {"edit_text", "bio_menu", "ai_menu", "faq_menu", "kb_menu", "au_menu"}), ("plus", {"bio_menu", "ai_menu", "kb_menu"}), ("pro", {"ai_menu", "kb_menu"}), ("ultra", set())):
+        for plan, locked in (("free", {"bio_menu", "ai_menu", "faq_menu", "kb_menu", "au_menu"}), ("plus", {"bio_menu", "ai_menu", "kb_menu"}), ("pro", {"ai_menu", "kb_menu"}), ("ultra", set())):
             self.plan(plan)
             with patch.object(db, "get_settings", return_value=_settings()):
                 _, markup = bot.build_panel(USER)
+            got = {b.callback_data for b in buttons(markup) if b.text.startswith("\U0001F512")}
+            self.assertEqual(got, locked, plan)
+            patch.stopall()
+            self.setUp()
+
+
+class AutoReplyMenuLockTests(Base):
+    def test_message_text_button_locked_only_for_free(self):
+        for plan, locked in (("free", {"edit_text"}), ("plus", set()), ("pro", set()), ("ultra", set())):
+            self.plan(plan)
+            with patch.object(db, "get_settings", return_value=_settings()):
+                _, markup = bot.build_autoreply_menu(USER)
             got = {b.callback_data for b in buttons(markup) if b.text.startswith("\U0001F512")}
             self.assertEqual(got, locked, plan)
             patch.stopall()
