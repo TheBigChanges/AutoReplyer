@@ -144,8 +144,11 @@ class MenuLanguageTests(Base):
             with patch.object(db, "get_user_lang", return_value=lang), patch.object(db, "get_settings", return_value=self._settings()):
                 bot._lang_cache.clear()
                 text, markup = bot.build_panel(USER)
+                ar_text, ar_markup = bot.build_autoreply_menu(USER)
             self.assertIn(expect_cd, text, lang)
-            self.assertTrue(any(expect_btn in b.text for b in _buttons(markup)), lang)
+            self.assertIn(expect_cd, ar_text, lang)
+            self.assertTrue(any("Auto-Reply" in b.text for b in _buttons(markup)), lang)
+            self.assertTrue(any(expect_btn in b.text for b in _buttons(ar_markup)), lang)  # Cooldown tugmasi endi Auto-Reply bo'limida
 
     def test_default_auto_reply_follows_owner_language(self):
         s = self._settings()
