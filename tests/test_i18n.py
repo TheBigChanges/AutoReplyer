@@ -37,12 +37,12 @@ class DictionaryTests(unittest.TestCase):
         same = [k for k, e in i18n.T.items()
                 if e["en"] == e["uz"] and re.search(r"[A-Za-z]{4,}", e["uz"].replace("{", "").replace("}", ""))
                 and not k.startswith(("zone_", "lang_", "btn_language", "plan_name_"))]
-        allowed = {"lang_pick", "btn_faq", "feature_faq"}  # "Smart FAQ" — brend nomi
+        allowed = {"lang_pick", "btn_faq", "feature_faq", "btn_autoreply"}  # "Smart FAQ", "Auto-Reply" — brend nomlari
         self.assertEqual([k for k in same if k not in allowed], [], "tarjima qilinmagan kalitlar")
 
     def test_russian_is_cyrillic(self):
         for k, e in i18n.T.items():
-            if k in ("btn_faq", "feature_faq") or k.startswith(("lang_", "btn_language", "plan_name_plus", "plan_name_pro", "plan_name_ultra")):
+            if k in ("btn_faq", "feature_faq", "btn_autoreply") or k.startswith(("lang_", "btn_language", "plan_name_plus", "plan_name_pro", "plan_name_ultra")):
                 continue
             self.assertTrue(re.search(r"[А-Яа-я]", e["ru"]), f"{k}: ruscha matnda kirill yo'q")
 
