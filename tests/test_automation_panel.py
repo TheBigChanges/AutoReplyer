@@ -34,7 +34,7 @@ class FakeRules:
 
     def install(self, case):
         def add(owner, name, cond, act, prio, max_rules, enabled=False):
-            self.add_calls.append({"owner": owner, "cond": cond, "act": act, "enabled": enabled})
+            self.add_calls.append({"owner": owner, "cond": cond, "act": act, "enabled": enabled, "max": max_rules})
             if sum(r["owner_user_id"] == owner for r in self.rows) >= max_rules:
                 return None
             rule = {"id": self.next_id, "owner_user_id": owner, "name": name, "conditions": cond, "action": act,
@@ -211,12 +211,37 @@ class AddFlowTests(PanelBase):
         self.assertEqual(self.fake.rows, [])
 
     def test_limit_blocks_add(self):
-        for i in range(bot.AUTOMATION_RULE_LIMIT):
+        for i in range(bot.AUTOMATION_PLAN_LIMITS["plus"]):
             self.fake.rows.append({"id": 1000 + i, "owner_user_id": USER, "name": "n", "conditions": {}, "action": {}, "priority": 1, "is_enabled": True})
         q = self.press("au_add")
         self.assertIn("❌", self.shown(q))
         self.assertIsNone(bot.get_pending_action(USER))
         self.assertIsNone(bot._au_draft(USER))
+
+    def test_limit_follows_the_plan(self):
+        """Plus 2 ta, Pro 10 ta: 3-qoida Plus'da rad etiladi, Pro'da saqlanadi."""
+        self.create("bir*", "1")
+        self.create("ikki*", "2")
+        self.assertEqual(len(self.fake.rows), 2)
+        q = self.press("au_add")
+        self.assertIn("2", self.shown(q))
+        self.assertIn("❌", self.shown(q))
+        self.assertIsNone(bot.get_pending_action(USER))
+        self.plan = "pro"
+        self.create("uch*", "3")
+        self.assertEqual(len(self.fake.rows), 3)
+        self.assertEqual(self.fake.add_calls[-1]["owner"], USER)
+
+    def test_limit_passed_to_database_and_shown_in_menu(self):
+        with patch.object(bot, "automation_limit_for", return_value=7):
+            q = self.press("au_menu")
+            self.assertIn("0/7", self.shown(q))
+            self.press("au_add")
+            self.say("narx")
+            confirm = self.say("javob")
+            save = self.datas(confirm.await_args.kwargs["reply_markup"])[0]
+            self.press(save)
+        self.assertEqual(self.fake.add_calls[-1]["max"], 7)
 
     def test_expired_draft_is_lost(self):
         self.press("au_add")
@@ -416,11 +441,11 @@ class PlansTests(PanelBase):
     def test_downgrade_keeps_rules_but_they_stop_working(self):
         self.create()
         self.plan = "free"
-        with patch.object(db, "get_enabled_automation_rules", return_value=self.fake.rows):
+        with patch.object(db, "list_automation_rules", return_value=self.fake.rows):
             self.assertIsNone(bot.find_automation_rule(USER, "narxi qancha"))
         self.assertEqual(len(self.fake.rows), 1)  # qoidalar o'chmaydi — Plus'ga qaytsa yana ishlaydi
         self.plan = "plus"
-        with patch.object(db, "get_enabled_automation_rules", return_value=self.fake.rows):
+        with patch.object(db, "list_automation_rules", return_value=self.fake.rows):
             self.assertIsNotNone(bot.find_automation_rule(USER, "narxi qancha"))
 
     def test_restricted_deployment_locks_even_paid(self):
