@@ -778,7 +778,7 @@ DEFAULT_FEATURE_PLANS = {
     "name_clock_fonts": ("ultra",),    # ism soatining standart bo'lmagan shriftlari
     "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
     "faq": ("plus", "pro", "ultra"),    # Smart FAQ (savollar soni tarifga qarab: FAQ_PLAN_LIMITS)
-    "automation": ("plus", "pro", "ultra"),  # Avtomatlashtirish qoidalari: Bepul tarifda to'liq yopiq (soni: AUTOMATION_RULE_LIMIT)
+    "automation": ("plus", "pro", "ultra"),  # Avtomatlashtirish qoidalari: Bepul tarifda to'liq yopiq (soni tarifga qarab: AUTOMATION_PLAN_LIMITS)
     "kb": ("ultra",),                   # AI Bilimlar bazasi (AI bilan birga ishlaydi; KB_LIMIT ta yozuv)
     "scheduler": ("free", "plus", "pro", "ultra"),  # Smart Jadval (jadvallar soni: SCHEDULE_PLAN_LIMITS)
     "analytics_7": ("plus", "pro", "ultra"),   # Statistika: 7 kunlik davr
@@ -885,7 +885,17 @@ def kb_limit_for(user_id: int, plan: str | None = None) -> int:
     return KB_LIMIT if plan_allows(user_id, plan, "kb") else 0
 
 
-AUTOMATION_RULE_LIMIT = 20  # bitta egasida nechta Automation qoidasi bo'lishi mumkin
+AUTOMATION_PLAN_LIMITS = {"plus": 2, "pro": 10, "ultra": 30}  # bitta egasida nechta Automation qoidasi bo'lishi mumkin
+
+
+def automation_limit_for(user_id: int, plan: str | None = None) -> int:
+    """Nechta Automation qoidasi saqlash mumkin (0 — tarifda yo'q, masalan Bepul). Admin — eng yuqori limit."""
+    plan = plan if plan is not None else plan_of(user_id)
+    if not plan_allows(user_id, plan, "automation"):
+        return 0
+    if ADMIN_ID and user_id == ADMIN_ID:
+        return max(AUTOMATION_PLAN_LIMITS.values())
+    return AUTOMATION_PLAN_LIMITS.get(plan, min(AUTOMATION_PLAN_LIMITS.values()))
 
 
 _au_del_confirms: dict[int, dict] = {}  # {owner_id: {"rule_id","token","ts"}} — bir martalik o'chirish tasdig'i (RAM)
@@ -916,7 +926,7 @@ def _au_rule_reply(rule: dict) -> str:
 
 def build_au_menu(owner_id: int, notice: str | None = None):
     lang = get_lang(owner_id)
-    text = t(lang, "au_menu", count=db.count_automation_rules(owner_id), max=AUTOMATION_RULE_LIMIT)
+    text = t(lang, "au_menu", count=db.count_automation_rules(owner_id), max=automation_limit_for(owner_id))
     if notice:
         text += f"\n\n{notice}"
     keyboard = [
@@ -933,7 +943,7 @@ def build_au_list(owner_id: int, notice: str | None = None):
     if not rules:
         text = t(lang, "au_list_empty")
     else:
-        text = t(lang, "au_list_title", count=len(rules), max=AUTOMATION_RULE_LIMIT)
+        text = t(lang, "au_list_title", count=len(rules), max=automation_limit_for(owner_id))
     if notice:
         text = f"{notice}\n\n{text}"
     keyboard = [
@@ -966,9 +976,12 @@ def build_au_rule(owner_id: int, rule_id: int, notice: str | None = None):
 def find_automation_rule(owner_id: int, text: str) -> dict | None:
     """Mijoz xabariga mos faol Automation qoidasi (yoki None). Tarifda yo'q (Bepul) bo'lsa — hech qachon; xatolik oqimni buzmaydi."""
     try:
-        if not has_feature(owner_id, "automation"):
+        limit = automation_limit_for(owner_id)
+        if limit <= 0:
             return None
-        return automation.find_matching_automation(text, db.get_enabled_automation_rules(owner_id))
+        # Tarif pasaygan bo'lsa, faqat limitga sig'adigan birinchi (eng eski) qoidalar ishlaydi (o'chirilganlari ham sanaladi)
+        rules = sorted(db.list_automation_rules(owner_id), key=lambda r: r["id"])[:limit]
+        return automation.find_matching_automation(text, rules)
     except Exception:
         logger.exception("Automation qoidalarini qidirishda xato (owner=%s)", owner_id)
         return None
@@ -3775,8 +3788,9 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
         return True
 
     if base == "au_add":
-        if db.count_automation_rules(owner_id) >= AUTOMATION_RULE_LIMIT:
-            await show(build_au_menu(owner_id, t(lang, "au_limit", max=AUTOMATION_RULE_LIMIT)))
+        limit = automation_limit_for(owner_id)
+        if db.count_automation_rules(owner_id) >= limit:
+            await show(build_au_menu(owner_id, t(lang, "au_limit", max=limit)))
             return True
         _au_drafts[owner_id] = {"ts": time.time(), "id": secrets.token_hex(3)}
         set_pending_action(owner_id, "au_kw")
@@ -3799,12 +3813,12 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
                 owner_id, d["kw"],
                 {"operator": "all", "items": [{"type": "keyword_contains", "value": d["kw"]}]},
                 {"type": "send_reply", "text": d["ans"]},
-                automation.DEFAULT_PRIORITY, AUTOMATION_RULE_LIMIT, enabled=True,
+                automation.DEFAULT_PRIORITY, automation_limit_for(owner_id), enabled=True,
             )
         except automation.AutomationError:
             await show(build_au_menu(owner_id, t(lang, "au_draft_lost")))
             return True
-        await show(build_au_menu(owner_id, t(lang, "au_saved" if rule_id is not None else "au_limit", max=AUTOMATION_RULE_LIMIT)))
+        await show(build_au_menu(owner_id, t(lang, "au_saved" if rule_id is not None else "au_limit", max=automation_limit_for(owner_id))))
         return True
 
     return False
@@ -5118,7 +5132,7 @@ async def cmd_automation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 owner_id, keyword.strip(),
                 {"operator": "all", "items": [{"type": "keyword_contains", "value": keyword.strip()}]},
                 {"type": "send_reply", "text": reply.strip()},
-                automation.DEFAULT_PRIORITY, AUTOMATION_RULE_LIMIT,
+                automation.DEFAULT_PRIORITY, automation_limit_for(owner_id),
             )
         except automation.AutomationError as e:
             await update.message.reply_text(
@@ -5128,7 +5142,7 @@ async def cmd_automation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         if rule_id is None:
-            await update.message.reply_text(f"❌ Limit to'lgan ({AUTOMATION_RULE_LIMIT} ta). Keraksizini /automation del ID bilan o'chiring.")
+            await update.message.reply_text(f"❌ Limit to'lgan ({automation_limit_for(owner_id)} ta). Keraksizini /automation del ID bilan o'chiring.")
             return
         await update.message.reply_text(f"✅ Qoida #{rule_id} qo'shildi (hozircha o'chirilgan). Yoqish: /automation on {rule_id}")
         return
@@ -5150,7 +5164,7 @@ async def cmd_automation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(AUTOMATION_USAGE)
         return
     rules = db.list_automation_rules(owner_id)
-    head = f"\U0001F9E9 Qoidalar ({len(rules)}/{AUTOMATION_RULE_LIMIT}):\n\n" if rules else "Hali qoida yo'q.\n\n"
+    head = f"\U0001F9E9 Qoidalar ({len(rules)}/{automation_limit_for(owner_id)}):\n\n" if rules else "Hali qoida yo'q.\n\n"
     text = head + "\n".join(_automation_rule_line(r) for r in rules) + ("\n\n" if rules else "") + AUTOMATION_USAGE
     for chunk in split_for_telegram(text):
         await update.message.reply_text(chunk)
