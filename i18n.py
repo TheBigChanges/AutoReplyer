@@ -277,6 +277,27 @@ T: dict[str, dict] = {
         "Режим сна: {sleep}\n"
         "AI-помощник: {ai}",
     ),
+    "btn_autoreply": _("\U0001F680 Auto-Reply", "\U0001F680 Auto-Reply", "\U0001F680 Auto-Reply"),
+    "ar_menu": _(
+        "\U0001F680 Auto-Reply\n\n"
+        "Avtojavob: {status}\n"
+        "Cooldown: {cooldown}\n"
+        "Xabar: {message}\n"
+        "Uxlayapman rejimi: {sleep}\n\n"
+        "Avtojavob yoqilganda (Oflayn holat) mijozlar xabariga bot siz o'rningizga javob beradi.",
+        "\U0001F680 Auto-Reply\n\n"
+        "Auto-reply: {status}\n"
+        "Cooldown: {cooldown}\n"
+        "Message: {message}\n"
+        "Sleep mode: {sleep}\n\n"
+        "While auto-reply is on (Offline status), the bot answers your customers' messages for you.",
+        "\U0001F680 Auto-Reply\n\n"
+        "Автоответ: {status}\n"
+        "Кулдаун: {cooldown}\n"
+        "Сообщение: {message}\n"
+        "Режим сна: {sleep}\n\n"
+        "Пока автоответ включён (статус «Офлайн»), бот отвечает на сообщения ваших клиентов за вас.",
+    ),
     "panel_offline": _("\U0001F534 OFLAYN", "\U0001F534 OFFLINE", "\U0001F534 ОФЛАЙН"),
     "panel_online": _("\U0001F7E2 ONLAYN", "\U0001F7E2 ONLINE", "\U0001F7E2 ОНЛАЙН"),
     "panel_go_online": _("\U0001F7E2 Onlaynga o'tish", "\U0001F7E2 Go online", "\U0001F7E2 Перейти в онлайн"),
