@@ -24,7 +24,7 @@
 
 **AutoReplyer** is a Telegram Business automation bot that helps account owners stay responsive when they are away. Connect it through Telegram's official Business bot interface, configure replies and schedules, and optionally enable Gemini-powered AI responses.
 
-It includes **Smart Onboarding**, **Smart FAQ**, **Automation Engine v1.0**, **AI Personal Knowledge**, **Smart Scheduler**, and **AutoReply Analytics** — a built-in dashboard for incoming message counts, reply types and charts. Profile name clocks, BIO countdowns, subscription plans and administrator tools round out the experience.
+It includes **Smart Onboarding**, **Smart FAQ**, **Automation Engine v1.1**, **AI Personal Knowledge**, **Smart Scheduler**, and **AutoReply Analytics** — a built-in dashboard for incoming message counts, reply types and charts. Profile name clocks, BIO countdowns, subscription plans and administrator tools round out the experience.
 
 **The goal is an auto-reply assistant, not an online shop or order-management system.** You can store information about yourself, your work, availability, services, or even prices as ordinary notes — no product catalogue is required.
 
@@ -35,7 +35,7 @@ It includes **Smart Onboarding**, **Smart FAQ**, **Automation Engine v1.0**, **A
 - [Features](#-features)
 - [Smart Onboarding (first-time setup)](#-smart-onboarding-first-time-setup)
 - [Smart FAQ guide](#-smart-faq-guide)
-- [Automation Engine v1.0 guide](#-automation-engine-v10-guide)
+- [Automation Engine v1.1 guide](#-automation-engine-v11-guide)
 - [AI Personal Knowledge guide](#-ai-personal-knowledge-guide)
 - [AutoReply Analytics guide](#-autoreply-analytics-guide)
 - [Smart Auto-Reply Scheduler guide](#-smart-auto-reply-scheduler-guide)
@@ -59,7 +59,7 @@ It includes **Smart Onboarding**, **Smart FAQ**, **Automation Engine v1.0**, **A
 |---|---|
 | 🧭 **Smart Onboarding** | Optional three-step first-time setup: connect Telegram, enable auto-reply, and test it, with resumable progress. |
 | 📚 **Smart FAQ** | Keyword-based answers for frequently asked Business-chat questions, without a Gemini API call; owner-managed entries and plan-based limits. |
-| 🧩 **Automation Engine v1.0** | Custom keyword-to-reply rules for Telegram Business chats, without Gemini; Plus, Pro and Ultra currently allow up to 20 rules each. |
+| 🧩 **Automation Engine v1.1** | IF keyword AND optional day/time → fixed reply (no Gemini); Plus **2** keyword rules, Pro **10** and Ultra **30** rules with day/time conditions. |
 | 🧠 **AI Personal Knowledge** | Owner-written facts, keywords and notes help Gemini reply with more relevant information; individual notes can be edited, paused, or deleted. **Ultra only**. |
 | 📊 **AutoReply Analytics** | Per-owner counts of incoming Business messages and sent replies, time windows and activity charts; **today on Free**, richer views on paid plans. |
 | 📅 **Smart Scheduler** | Weekly recurring day/time windows, overnight and all-day schedules, rule management and plan-based limits. |
@@ -125,40 +125,53 @@ When a Business-chat message clearly matches a configured question or keyword ph
 
 **Privacy note:** FAQ answers are configured by the account owner and are sent automatically to relevant Business contacts. Avoid placing secrets or sensitive personal information in FAQ entries. Always review business-critical statements such as prices and availability.
 
-### 🧩 Automation Engine v1.0 guide
+### 🧩 Automation Engine v1.1 guide
 
-**Automation Engine v1.0** adds customizable **IF keyword → THEN fixed reply** rules for authorized incoming Telegram Business messages. The rule engine works without a Gemini API request. Unlike Smart FAQ, which avoids an answer when its best matches tie, Automation picks the highest-priority matching rule (then the lowest ID).
+**Automation Engine v1.1** creates conditional **IF keyword [AND day] [AND time] → THEN fixed reply** rules for incoming, permitted Telegram Business chats. Responses are predefined and do **not** use a Gemini API request. The optional **Days of Week** and **Time Between** filters are new in v1.1. Existing keyword-only v1.0 rules remain compatible.
 
-**Current access and limits:** **Free — locked; Plus — 20 rules; Pro — 20 rules; Ultra — 20 rules.** The code currently uses one `AUTOMATION_RULE_LIMIT = 20` for all eligible paid plans; proposed different per-plan limits have **not** been shipped. Existing rules remain stored if an account falls back to Free, but they will no longer run while Automation is unavailable.
+**Plan availability:**
 
-#### Create and manage a rule
+| Plan | Maximum stored rules | Keyword rules | Days of Week / Time Between |
+|---|---:|:---:|:---:|
+| Free | 0 (locked) | 🔒 | 🔒 |
+| Plus | **2** | ✅ | 🔒 |
+| Pro | **10** | ✅ | ✅ |
+| Ultra | **30** | ✅ | ✅ |
 
-1. Send `/start` to [@autoreplyer_dbot](https://t.me/autoreplyer_dbot) and open **Control panel → 🧩 Automation / Avtomatlashtirish**. On Free the feature is visible but locked.
-2. Select **Add a rule** and send a keyword or phrase, such as `narx*`.
-3. Send your custom reply (up to **500 characters**).
-4. Review the confirmation and tap **Save**. **Rules created in this panel are enabled immediately.**
-5. Under **My rules**, review, pause/resume or delete rules. Deleting requires a **one-time, expiring confirmation token**; obsolete confirmation buttons are rejected.
+Rules already saved are not automatically deleted after a downgrade. Only the **oldest rules up to the current plan's limit** are considered when replying (disabled rules also count toward that selection); day/time-dependent rules do not run if the current plan no longer permits advanced conditions. Admin access has a separate exception.
 
-**Example:**
+#### Create a rule in Telegram
 
-~~~text
-Rule keyword:     narx*
-Customer message: "Salom, telefon narxi qancha?"
-Reply:            "Assalomu alaykum! Narxlar haqida ma'lumot beraman."
-~~~
+1. Send `/start` to [@autoreplyer_dbot](https://t.me/autoreplyer_dbot) and open **Control panel → 🧩 Automation / Avtomatlashtirish**. Free users see the locked feature.
+2. Choose **Add a rule** and enter a keyword or phrase such as `narx*` (up to **50 characters** and **5 normalized tokens**).
+3. On **Pro / Ultra**, optionally select **Days of Week** using individual days or weekday/weekend/all-day presets; you may skip this filter.
+4. On **Pro / Ultra**, optionally set a **Time Between** interval, or skip it to match at any time. Overnight windows are supported.
+5. Enter the response (**up to 500 characters**), review the configuration, and **Save**. Newly saved panel rules are enabled by default.
+6. Use **My rules** to review, enable/disable, or delete saved rules; deleting requires confirmation.
 
-**Keyword matching:** Exact words and consecutive phrases are normalized case-insensitively using the same tokenization as Smart FAQ. `narx` matches the word `narx`, **not** `narxi`. A final `*` enables prefix matching on the last word: `narx*` can match `narx`, `narxi` and `narxlar`, but not `unarxon`. The star is allowed only at the end, after a last word of at least **3 normalized characters**. A keyword may contain at most **50 characters** and **5 tokens**. Messages containing recognized negations (such as `emas` or `yo'q`) are not matched, to avoid ambiguous replies.
+**Example — weekdays 09:00–18:00 (Pro / Ultra):**
 
-**Where Automation fits:**
-- The account needs an active, authorized **Telegram Business** connection, an eligible plan, and **Offline mode enabled**. Automation is **not** evaluated while **Sleep Mode or a Scheduler rule** is active, nor for an owner's own messages, bot messages, or messages without text/caption.
-- In ordinary Offline mode the order is **Automation → Smart FAQ → Gemini AI (if available) → standard reply**. A matched Automation rule attempts **one** fixed response; it does not also trigger FAQ or AI.
-- Automation uses the existing **static-reply per-chat cooldown**, Telegram permissions, and (when AI is enabled) the owner's manual-chat takeover pause.
-- Only enabled rules match. The **lowest priority number** wins; ties use **lowest rule ID**. The Telegram panel uses priority `100` and does **not** expose priority editing in v1.0, so earlier panel rules normally win on ties.
-- Rules are scoped to the account owner and stored in PostgreSQL `automation_rules` as structured `JSONB` conditions/actions. Unfinished rule drafts and delete confirmations are temporary in-memory data.
+```text
+IF message contains: narx*
+AND day is: Monday, Tuesday, Wednesday, Thursday or Friday
+AND local time is between: 09:00 and 18:00
+THEN send: Assalomu alaykum! Narxlar haqida ma'lumot beraman.
+```
 
-**Admin-only text commands:** The configured administrator can run `/automation` to list their own rules, `/automation add narx* | Reply text` to create a **disabled** rule, `/automation on ID`, `/automation off ID`, and `/automation del ID`. Regular eligible subscribers manage rules through the inline **Control panel**.
+All configured filters must match (**AND**, not OR). A keyword is always required; days and time are optional. A day-only rule applies throughout the selected days, and a time-only rule applies daily. An overnight interval such as Monday **22:00–06:00** continues into Tuesday morning and belongs to **Monday's selected window**. Rules use the account's configured time zone, consistently with the Scheduler and Sleep Mode.
 
-**v1.0 limitations:** A rule has exactly **one** `keyword_contains` condition and one `send_reply` action. Time/day conditions, AND/OR combinations, ignore actions, visual drag-and-drop editing, and an Automation Web App editor are **not implemented yet**. Successful Automation replies currently contribute to **standard/static reply** analytics rather than a separate Automation category. Do not put secrets or private customer data into fixed replies.
+**Keyword matching:** Matching is case-insensitive and based on normalized whole words or consecutive phrases. `narx` matches `narx`, not `narxi`; adding a final `*` allows last-token prefix matching, so `narx*` also matches `narxi` and `narxlar`, but not `unarxon`. The final prefix must have at least **3 normalized characters**. Messages containing recognized negations such as `emas` or `yo'q` are excluded to avoid ambiguous automatic responses.
+
+**Reply selection and priority:**
+- The account must have an authorized Telegram Business connection and **Offline mode** enabled. Automation runs in ordinary Offline mode, **not** while Sleep Mode or a Smart Scheduler window is active.
+- The reply order in ordinary Offline mode is **Automation → Smart FAQ → Gemini AI (if available) → standard reply**. A matching rule sends a single fixed response rather than stacking multiple replies.
+- Only enabled rules are eligible. If several rules match, the **smallest numeric priority** wins, followed by the **smallest rule ID**. Panel-created rules use default priority **100**; priority editing is not exposed in the Telegram panel.
+- The existing per-chat static reply cooldown, Business permissions, and applicable manual-chat takeover protection still apply. Successful Automation replies are counted with standard/static reply analytics, not a distinct Automation category.
+- Rules are stored per owner in PostgreSQL as structured `JSONB` conditions/actions. Unfinished panel drafts and delete confirmations are transient; obsolete delete confirmation tokens are rejected.
+
+**Admin text commands:** The configured administrator may use `/automation`, `/automation add narx* | Reply text` (creates a disabled rule), `/automation on ID`, `/automation off ID`, and `/automation del ID`. Ordinary subscribers use the inline Telegram panel.
+
+**Scope and current limitations:** v1.1 supports **one required keyword**, up to **one optional days filter**, and up to **one optional time filter**, combined with **AND**, plus a single `send_reply` action. **OR logic, multiple keywords in one rule, ignore actions, drag-and-drop editing, and an Automation Web App editor are not implemented.** Avoid placing secrets or sensitive customer information in fixed replies.
 
 ### 🧠 AI Personal Knowledge guide
 
@@ -337,7 +350,7 @@ AI-generated replies can be wrong. Never rely on them to commit to prices, appoi
 - Ordinary static replies support per-chat cooldowns; AI replies use a separate reply flow.
 - **AutoReply Analytics** collects hourly counters for supported incoming/reply events and produces statistics without an AI API key.
 - **Smart Scheduler** controls recurring reply windows without AI requests and supports custom rule text on eligible plans.
-- **Automation Engine v1.0** sends fixed keyword-based responses (no Gemini needed) in ordinary Offline mode, outside active Scheduler/Sleep windows.
+- **Automation Engine v1.1** sends fixed keyword-based responses (no Gemini needed) in ordinary Offline mode, outside active Scheduler/Sleep windows; Pro/Ultra can additionally require selected weekdays and local-time windows.
 - The name clock updates periodically, subject to Telegram Business permissions and API rate limits.
 - Free-tier accounts may see a promotional footer in auto-replies and a promotional BIO message when using the profile clock. Paid plans are configured as ad-free.
 
@@ -358,7 +371,8 @@ Prices below are **the currently configured public bot prices for one month**, i
 | Custom auto-reply and sleep text | — | ✅ | ✅ | ✅ |
 | BIO countdown | — | — | ✅ | ✅ |
 | Smart FAQ entries | — | **15** | **30** | **65** |
-| 🧩 Automation Engine v1.0 — saved rules | 🔒 | **20** | **20** | **20** |
+| 🧩 Automation Engine v1.1 — saved rules | 🔒 | **2** | **10** | **30** |
+| Advanced Automation — days/time (AND) | 🔒 | — | ✅ | ✅ |
 | Gemini AI assistant (50 replies/day*) | — | — | — | ✅ |
 | AI Personal Knowledge (55 entries) | — | — | — | ✅ |
 | AutoReply Analytics — Today | ✅ | ✅ | ✅ | ✅ |
@@ -404,11 +418,11 @@ For feature announcements, visit **[@AutoReplyer_News](https://t.me/AutoReplyer_
 4. **Smart FAQ** — kalit so‘zga mos tayyor javob; **AI Shaxsiy Bilimlar** (Ultra) — Gemini javob berayotganda foydalanadigan siz kiritgan ma’lumotlar.
 5. AI Shaxsiy Bilimlar bo‘limiga **sarlavha + ma’lumot + ixtiyoriy kalit so‘zlar** qo‘shing. Mahsulot va narxlar uchun alohida savdo tizimi **shart emas**.
 6. **📅 Smart Jadval** orqali kun va vaqtni tanlang, masalan, ish kunlari `09:00-18:00`. Jadval tugagach avvalgi Online/Offline sozlamalari ishlaydi. Free — 1 ta, Plus — 3 ta, Pro — 10 ta, Ultra — 30 ta jadval.
-7. **🧩 Avtomatlashtirish (Automation Engine v1.0)** — Plus/Pro/Ultra tariflarida boshqaruv panelidan kalit so‘z va 500 belgigacha javob qo‘shing; barcha pullik tariflar hozircha **20 tadan** qoida yaratishi mumkin, Free’da funksiya yopiq. `narx*` kalit so‘zi `narx`, `narxi`, `narxlar` so‘zlariga mos tushadi. Qoida oddiy Oflayn rejimda, Sleep Mode va faol Smart Jadvaldan tashqarida ishlaydi.
+7. **🧩 Avtomatlashtirish (Automation Engine v1.1)** — Plus: **2 ta** kalit so‘zli qoida; Pro: **10 ta**, Ultra: **30 ta** qoida. Pro va Ultra’da qo‘shimcha **hafta kunlari** hamda **vaqt oralig‘i** shartlari mavjud (VA / AND). Masalan, `narx*` so‘zi `narx`, `narxi`, `narxlar`ga mos keladi. Qoidalar oddiy Oflayn rejimda ishlaydi, Sleep Mode va faol Smart Jadval paytida ishlamaydi.
 8. **📊 Statistika** tugmasi orqali kelgan xabarlar, javoblar va eng faol vaqtni kuzating. **Free — bugun; Plus — 7 kun; Pro/Ultra — 30 kun**. Grafiklar Plus'dan, batafsil hisobot Ultra'dan boshlanadi.
 9. **Parol, karta yoki pasport ma’lumotlarini kiritmang.** AI javoblari xato qilishi mumkin.
 
-Ilova menyulari Telegram versiyasiga qarab farq qilishi mumkin. Batafsil ma’lumot: [Smart Onboarding](#-smart-onboarding-first-time-setup) · [Smart FAQ](#-smart-faq-guide) · [AI Shaxsiy Bilimlar](#-ai-personal-knowledge-guide) · [AutoReply Analytics](#-autoreply-analytics-guide) · [Smart Scheduler](#-smart-auto-reply-scheduler-guide) · [Automation Engine](#-automation-engine-v10-guide).
+Ilova menyulari Telegram versiyasiga qarab farq qilishi mumkin. Batafsil ma’lumot: [Smart Onboarding](#-smart-onboarding-first-time-setup) · [Smart FAQ](#-smart-faq-guide) · [AI Shaxsiy Bilimlar](#-ai-personal-knowledge-guide) · [AutoReply Analytics](#-autoreply-analytics-guide) · [Smart Scheduler](#-smart-auto-reply-scheduler-guide) · [Automation Engine](#-automation-engine-v11-guide).
 
 ## 🛠️ Run your own instance
 
@@ -631,7 +645,7 @@ This assigns a time-limited plan to the specified user ID; use the bot's help te
 
 ## 🧪 Testing
 
-The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ, translations, **Smart Onboarding**, **AI Personal Knowledge**, **AutoReply Analytics**, **Smart Scheduler**, **Automation Engine v1.0**, and **test database safety guards**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
+The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ, translations, **Smart Onboarding**, **AI Personal Knowledge**, **AutoReply Analytics**, **Smart Scheduler**, **Automation Engine v1.1**, and **test database safety guards**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
 
 Install the development-only test runner and run the suite:
 
