@@ -1052,17 +1052,17 @@ T: dict[str, dict] = {
     "btn_au_add": _("➕ Qoida qo'shish", "➕ Add a rule", "➕ Добавить правило"),
     "btn_au_list": _("\U0001F4CB Qoidalarim", "\U0001F4CB My rules", "\U0001F4CB Мои правила"),
     "au_kw_prompt": _(
-        "1/2. Kalit so'zni yuboring.\n\n"
+        "Kalit so'zni yuboring.\n\n"
         "• Butun so'z: narx — faqat «narx» so'zi mos keladi.\n"
         "• So'z boshi: narx* — «narxi», «narxlar» ham mos keladi.\n"
         "• Ibora ham mumkin: narx qancha\n\n"
         "Katta-kichik harf farq qilmaydi. «emas», «yo'q» kabi inkor so'zi bor xabarlarga javob berilmaydi.",
-        "Step 1/2. Send the keyword.\n\n"
+        "Send the keyword.\n\n"
         "• Whole word: price — only the word “price” matches.\n"
         "• Word start: price* — “prices”, “pricey” match too.\n"
         "• A phrase works too: how much\n\n"
         "Upper/lower case doesn't matter. Messages with a negation like “not” or “no” get no reply.",
-        "Шаг 1/2. Отправьте ключевое слово.\n\n"
+        "Отправьте ключевое слово.\n\n"
         "• Целое слово: цена — подходит только слово «цена».\n"
         "• Начало слова: цен* — подойдут и «цены», «ценами».\n"
         "• Можно фразу: сколько стоит\n\n"
@@ -1077,9 +1077,9 @@ T: dict[str, dict] = {
         "Знак * допускается только в конце и после минимум {prefix} букв. Отправьте ещё раз.",
     ),
     "au_ans_prompt": _(
-        "2/2. Mijozga yuboriladigan javob matnini yuboring (ko'pi bilan {max} belgi).",
-        "Step 2/2. Send the reply text for the customer (up to {max} characters).",
-        "Шаг 2/2. Отправьте текст ответа для клиента (до {max} символов).",
+        "Mijozga yuboriladigan javob matnini yuboring (ko'pi bilan {max} belgi).",
+        "Send the reply text for the customer (up to {max} characters).",
+        "Отправьте текст ответа для клиента (до {max} символов).",
     ),
     "au_too_long": _(
         "❌ Matn juda uzun: {n} belgi (ko'pi bilan {max}). Qisqartirib qayta yuboring.",
@@ -1093,9 +1093,9 @@ T: dict[str, dict] = {
         "Нажмите «Сохранить» или «Отмена» в сообщении выше.",
     ),
     "au_confirm": _(
-        "Qoidani tekshiring:\n\nKalit so'z: {kw}\n\nJavob:\n{a}",
-        "Check the rule:\n\nKeyword: {kw}\n\nReply:\n{a}",
-        "Проверьте правило:\n\nКлючевое слово: {kw}\n\nОтвет:\n{a}",
+        "Qoidani tekshiring:\n\nKalit so'z: {kw}{extra}\n\nJavob:\n{a}",
+        "Check the rule:\n\nKeyword: {kw}{extra}\n\nReply:\n{a}",
+        "Проверьте правило:\n\nКлючевое слово: {kw}{extra}\n\nОтвет:\n{a}",
     ),
     "btn_au_save": _("✅ Saqlash", "✅ Save", "✅ Сохранить"),
     "btn_au_cancel": _("✖️ Bekor qilish", "✖️ Cancel", "✖️ Отмена"),
@@ -1122,9 +1122,9 @@ T: dict[str, dict] = {
         "\U0001F4CB Ваши правила ({count}/{max}). ⏸ — выключено.",
     ),
     "au_rule_view": _(
-        "\U0001F9E9 Qoida\n\nHolat: {status}\nKalit so'z: {kw}\n\nJavob:\n{a}",
-        "\U0001F9E9 Rule\n\nStatus: {status}\nKeyword: {kw}\n\nReply:\n{a}",
-        "\U0001F9E9 Правило\n\nСостояние: {status}\nКлючевое слово: {kw}\n\nОтвет:\n{a}",
+        "\U0001F9E9 Qoida\n\nHolat: {status}\nKalit so'z: {kw}{extra}\n\nJavob:\n{a}",
+        "\U0001F9E9 Rule\n\nStatus: {status}\nKeyword: {kw}{extra}\n\nReply:\n{a}",
+        "\U0001F9E9 Правило\n\nСостояние: {status}\nКлючевое слово: {kw}{extra}\n\nОтвет:\n{a}",
     ),
     "btn_au_on": _("✅ Yoqish", "✅ Turn on", "✅ Включить"),
     "btn_au_off": _("⏸ O'chirib turish", "⏸ Turn off", "⏸ Выключить"),
@@ -1137,6 +1137,43 @@ T: dict[str, dict] = {
     "btn_au_del_yes": _("\U0001F5D1 Ha, o'chirish", "\U0001F5D1 Yes, delete", "\U0001F5D1 Да, удалить"),
     "au_deleted": _("\U0001F5D1 Qoida o'chirildi.", "\U0001F5D1 Rule deleted.", "\U0001F5D1 Правило удалено."),
     "au_rule_gone": _("Bu qoida topilmadi (o'chirilgan bo'lishi mumkin).", "This rule was not found (it may have been deleted).", "Это правило не найдено (возможно, оно удалено)."),
+    "feature_automation_conditions": _("Qoidalarda hafta kuni va vaqt shartlari", "Day-of-week and time conditions in rules", "Условия по дням недели и времени в правилах"),
+    "btn_au_skip": _("⏭ O'tkazib yuborish", "⏭ Skip", "⏭ Пропустить"),
+    "au_days_prompt": _(
+        "\U0001F4C5 Qoida qaysi hafta kunlari ishlasin?\n\nKunlarni tanlang va «Keyingi»ni bosing. Hafta kuni sharti kerak bo'lmasa — «O'tkazib yuborish».",
+        "\U0001F4C5 On which days of the week should the rule work?\n\nPick the days and press “Next”. If you don't need a day condition, press “Skip”.",
+        "\U0001F4C5 В какие дни недели должно работать правило?\n\nВыберите дни и нажмите «Далее». Если условие по дням не нужно — «Пропустить».",
+    ),
+    "au_days_empty": _(
+        "Kamida bitta kunni tanlang yoki «O'tkazib yuborish»ni bosing.",
+        "Pick at least one day or press “Skip”.",
+        "Выберите хотя бы один день или нажмите «Пропустить».",
+    ),
+    "au_days_hint": _(
+        "Kunlarni yuqoridagi tugmalardan tanlang.",
+        "Choose the days with the buttons above.",
+        "Выберите дни кнопками выше.",
+    ),
+    "au_time_prompt": _(
+        "\U0001F552 Qoida qaysi vaqt oralig'ida ishlasin?\n\nMasalan: 09:00-18:00. Yarim tundan o'tadigan oraliq ham mumkin (22:00-06:00; boshlangan kunga tegishli). "
+        "Vaqt sharti kerak bo'lmasa — «O'tkazib yuborish».",
+        "\U0001F552 In which time range should the rule work?\n\nFor example: 09:00-18:00. A range past midnight works too (22:00-06:00; it belongs to the day it starts). "
+        "If you don't need a time condition, press “Skip”.",
+        "\U0001F552 В какое время должно работать правило?\n\nНапример: 09:00-18:00. Можно и через полночь (22:00-06:00; относится ко дню начала). "
+        "Если условие по времени не нужно — «Пропустить».",
+    ),
+    "au_time_bad": _(
+        "❌ Vaqt oralig'i noto'g'ri. Shunday yozing: 09:00-18:00 (boshlanish va tugash bir xil bo'lmasin). Qayta yuboring.",
+        "❌ Invalid time range. Write it like this: 09:00-18:00 (start and end must differ). Send it again.",
+        "❌ Некорректный интервал. Напишите так: 09:00-18:00 (начало и конец не должны совпадать). Отправьте ещё раз.",
+    ),
+    "au_cond_days": _("Kunlar: {v}", "Days: {v}", "Дни: {v}"),
+    "au_cond_time": _("Vaqt: {v}", "Time: {v}", "Время: {v}"),
+    "au_rule_locked": _(
+        "\U0001F512 Kun/vaqt shartlari Pro va Ultra tarifida ishlaydi. Hozirgi tarifda bu qoida ishlamaydi (o'chib ketmaydi).",
+        "\U0001F512 Day/time conditions work on the Pro and Ultra plans. On your current plan this rule does not run (it is not deleted).",
+        "\U0001F512 Условия по дням/времени работают на тарифах Pro и Ultra. На текущем тарифе это правило не срабатывает (оно не удаляется).",
+    ),
     "feature_automation": _("Avtomatlashtirish qoidalari", "Automation rules", "Правила автоматизации"),
     "pf_faq": _(
         "Smart FAQ — tayyor savol-javoblar bilan tez avtomatik javob (ko'pi bilan {n} ta savol)",
