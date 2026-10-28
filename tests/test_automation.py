@@ -6,7 +6,9 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 TEST_DB_URL = os.environ.get("TEST_DATABASE_URL")
@@ -235,6 +237,17 @@ class DbTests(unittest.TestCase):
     def _drop(owner):
         with db.get_conn() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM automation_rules WHERE owner_user_id = %s", (owner,))
+
+    def test_smart_rule_roundtrips_through_jsonb(self):
+        cond = au.build_conditions("narx*", [4, 0, 1], (22 * 60, 6 * 60))
+        rid = db.add_automation_rule(self.a, "n", cond, {"type": "send_reply", "text": "x"}, 100, 20, enabled=True)
+        rule = db.get_enabled_automation_rules(self.a)[0]
+        self.assertEqual(rule["id"], rid)
+        self.assertEqual(au.split_conditions(rule), ("narx*", [0, 1, 4], (1320, 360)))
+        self.assertTrue(au.rule_matches("narxi qancha", rule, when(0, "23:00")))
+        self.assertTrue(au.rule_matches("narxi qancha", rule, when(1, "03:00")))
+        self.assertTrue(au.rule_matches("narxi qancha", rule, when(2, "03:00")))   # Seshanba oynasining davomi
+        self.assertFalse(au.rule_matches("narxi qancha", rule, when(3, "03:00")))  # Chorshanba oynasi — tanlanmagan
 
     def test_invalid_rule_never_reaches_database(self):
         with self.assertRaises(au.AutomationError):
@@ -536,6 +549,239 @@ class PlanLimitTests(FlowTests):
         rules = [R("uch*", text="3", id_=3), R("ikki*", text="2", id_=2), R("bir*", text="1", id_=1)]
         texts, _ = self.flow(text="uch", rules=rules, plan="plus")
         self.assertEqual(texts, ["Oflaynman"])
+
+
+# ---------------------------------------------------------------------------
+# v1.1: Smart Conditions (hafta kuni va vaqt)
+# ---------------------------------------------------------------------------
+TASHKENT = ZoneInfo("Asia/Tashkent")
+MON = datetime(2026, 10, 26, tzinfo=TASHKENT)  # Dushanba
+
+
+def at(day_offset: int, hhmm: str, tz=TASHKENT) -> datetime:
+    h, m = map(int, hhmm.split(":"))
+    return (MON + timedelta(days=day_offset)).replace(hour=h, minute=m, tzinfo=tz)
+
+
+def when(day_offset: int, hhmm: str):
+    d = at(day_offset, hhmm)
+    return (d.weekday(), d.hour * 60 + d.minute)
+
+
+def SR(keyword="narx*", days=None, time=None, text="Javob", id_=1, enabled=True):
+    """Smart qoida: ixtiyoriy kunlar (0=Dushanba) va (boshlanish, tugash) daqiqalari."""
+    return {"id": id_, "name": "n", "priority": 100, "is_enabled": enabled,
+            "conditions": au.build_conditions(keyword, days, time), "action": {"type": "send_reply", "text": text}}
+
+
+WORK = SR(days=[0, 1, 2, 3, 4], time=(9 * 60, 18 * 60))  # Dushanba-Juma 09:00-18:00
+
+
+class SmartValidateTests(unittest.TestCase):
+    def ok(self, items):
+        return au.validate_automation("n", {"operator": "all", "items": items}, {"type": "send_reply", "text": "x"})
+
+    def bad(self, items):
+        with self.assertRaises(au.AutomationError):
+            self.ok(items)
+
+    KW = {"type": "keyword_contains", "value": "narx*"}
+    DAYS = {"type": "days_of_week", "value": [4, 0, 1]}
+    TIME = {"type": "time_between", "value": {"start": 540, "end": 1080}}
+
+    def test_three_conditions_accepted_and_canonical_order(self):
+        clean = self.ok([self.TIME, self.DAYS, self.KW])
+        self.assertEqual([i["type"] for i in clean["conditions"]["items"]], ["keyword_contains", "days_of_week", "time_between"])
+        self.assertEqual(clean["conditions"]["items"][1]["value"], [0, 1, 4])
+
+    def test_optional_parts(self):
+        self.ok([self.KW])
+        self.ok([self.KW, self.DAYS])
+        self.ok([self.KW, self.TIME])
+
+    def test_old_v10_rule_still_valid(self):
+        clean = au.validate_automation("Narx", {"operator": "all", "items": [{"type": "keyword_contains", "value": "narx*"}]},
+                                       {"type": "send_reply", "text": "Salom"})
+        self.assertEqual(len(clean["conditions"]["items"]), 1)
+
+    def test_keyword_is_required_and_types_not_repeated(self):
+        self.bad([self.DAYS, self.TIME])
+        self.bad([self.DAYS])
+        self.bad([self.KW, self.DAYS, self.DAYS])
+        self.bad([self.KW, self.KW])
+        self.bad([self.KW, self.DAYS, self.TIME, {"type": "keyword_contains", "value": "boshqa"}])  # 4 ta
+
+    def test_bad_days(self):
+        for value in ([], [7], [-1], [0, 0], ["0"], [True], "Du", None, list(range(8)), 3):
+            self.bad([self.KW, {"type": "days_of_week", "value": value}])
+
+    def test_bad_time(self):
+        for value in ({"start": 540, "end": 540}, {"start": -1, "end": 100}, {"start": 0, "end": 1500}, {"start": "9", "end": 10},
+                      {"start": 540}, {"start": 1, "end": 2, "x": 3}, [540, 1080], None, {"start": True, "end": 5}):
+            self.bad([self.KW, {"type": "time_between", "value": value}])
+
+    def test_unknown_condition_type_rejected(self):
+        self.bad([self.KW, {"type": "chat_is_vip", "value": 1}])
+
+    def test_split_and_flags(self):
+        self.assertEqual(au.split_conditions(WORK), ("narx*", [0, 1, 2, 3, 4], (540, 1080)))
+        self.assertTrue(au.has_smart_conditions(WORK))
+        self.assertFalse(au.has_smart_conditions(R()))
+        self.assertEqual(au.split_conditions({"junk": 1}), (None, None, None))
+
+
+class SmartMatchTests(unittest.TestCase):
+    MSG = "Telefon narxi qancha?"
+
+    def m(self, rule, day, hhmm, msg=None):
+        return au.rule_matches(msg or self.MSG, rule, when(day, hhmm))
+
+    def test_weekday_working_hours(self):
+        self.assertTrue(self.m(WORK, 0, "10:00"))   # Dushanba 10:00
+        self.assertTrue(self.m(WORK, 4, "17:59"))   # Juma 17:59
+        self.assertTrue(self.m(WORK, 0, "09:00"))   # boshlanish kiradi
+        self.assertFalse(self.m(WORK, 0, "18:00"))  # tugash kirmaydi
+        self.assertFalse(self.m(WORK, 0, "08:59"))
+        self.assertFalse(self.m(WORK, 5, "10:00"))  # Shanba
+        self.assertFalse(self.m(WORK, 6, "10:00"))  # Yakshanba
+
+    def test_midnight_range_belongs_to_the_starting_day(self):
+        rule = SR(days=[0], time=(22 * 60, 6 * 60))  # Dushanba 22:00 -> Seshanba 06:00
+        self.assertTrue(self.m(rule, 0, "22:00"))
+        self.assertTrue(self.m(rule, 0, "23:59"))
+        self.assertTrue(self.m(rule, 1, "00:00"))   # Seshanba 00:00 — Dushanba oynasining davomi
+        self.assertTrue(self.m(rule, 1, "05:59"))
+        self.assertFalse(self.m(rule, 1, "06:00"))
+        self.assertFalse(self.m(rule, 1, "22:00"))  # Seshanba tanlanmagan
+        self.assertFalse(self.m(rule, 0, "03:00"))  # Dushanba ertalab — oldingi (Yakshanba) oynasi, tanlanmagan
+        self.assertFalse(self.m(rule, 0, "21:59"))
+
+    def test_midnight_range_wraps_from_sunday_to_monday(self):
+        rule = SR(days=[6], time=(22 * 60, 6 * 60))  # Yakshanba 22:00 -> Dushanba 06:00
+        self.assertTrue(self.m(rule, 6, "23:00"))
+        self.assertTrue(self.m(rule, 7, "03:00"))   # Dushanba 03:00
+        self.assertFalse(self.m(rule, 7, "06:00"))
+
+    def test_only_days_means_whole_day(self):
+        rule = SR(days=[5, 6])
+        self.assertTrue(self.m(rule, 5, "00:00"))
+        self.assertTrue(self.m(rule, 6, "23:59"))
+        self.assertFalse(self.m(rule, 0, "12:00"))
+
+    def test_only_time_means_every_day(self):
+        rule = SR(time=(9 * 60, 18 * 60))
+        for day in range(7):
+            self.assertTrue(self.m(rule, day, "12:00"), day)
+        self.assertFalse(self.m(rule, 2, "20:00"))
+
+    def test_any_failed_condition_blocks_the_rule(self):
+        self.assertFalse(self.m(WORK, 0, "10:00", msg="Salom, qalaysiz?"))  # kalit so'z yo'q
+        self.assertFalse(self.m(WORK, 5, "10:00"))                          # kun mos emas
+        self.assertFalse(self.m(WORK, 0, "20:00"))                          # vaqt mos emas
+        self.assertTrue(self.m(WORK, 0, "10:00"))                           # hammasi mos
+
+    def test_unknown_time_fails_closed_for_smart_rules_only(self):
+        self.assertFalse(au.rule_matches(self.MSG, WORK, None))
+        self.assertTrue(au.rule_matches(self.MSG, R("narx*"), None))        # v1.0 qoidasiga vaqt shart emas
+
+    def test_v10_rule_unaffected_by_when(self):
+        for d in range(7):
+            self.assertTrue(au.rule_matches(self.MSG, R("narx*"), when(d, "03:00")))
+
+    def test_allow_smart_false_blocks_only_smart(self):
+        self.assertFalse(au.rule_matches(self.MSG, WORK, when(0, "10:00"), allow_smart=False))
+        self.assertTrue(au.rule_matches(self.MSG, R("narx*"), when(0, "10:00"), allow_smart=False))
+
+    def test_garbage_when_does_not_crash(self):
+        for bad in ("x", (1,), (None, None), ("a", "b")):
+            self.assertFalse(au.rule_matches(self.MSG, WORK, bad))
+
+    def test_find_prefers_priority_among_smart_rules(self):
+        a, b = SR(text="A", id_=2), SR(text="B", id_=1)
+        self.assertEqual(au.find_matching_automation(self.MSG, [a, b], when(0, "10:00"))["action"]["text"], "B")
+
+
+class _FixedNow(datetime):
+    fixed_utc = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.fixed_utc.astimezone(tz) if tz else cls.fixed_utc
+
+
+class SmartBotTests(FlowTests):
+    """bot.find_automation_rule: vaqt zonasi, tarif cheklovi va xabar oqimi."""
+
+    def _find(self, rules, plan, utc, settings=None, owner=OWNER):
+        _FixedNow.fixed_utc = utc
+        with patch.object(bot, "datetime", _FixedNow), \
+                patch.object(db, "get_user_plan", return_value=plan), \
+                patch.object(db, "list_automation_rules", return_value=rules), \
+                patch.object(db, "get_settings", return_value=settings or _settings()):
+            return bot.find_automation_rule(owner, "Telefon narxi qancha?", settings or _settings())
+
+    MON_10_TASHKENT = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)  # Toshkent 10:00 (UTC+5), Dushanba
+
+    def test_works_in_tashkent_time_by_default(self):
+        self.assertIsNotNone(self._find([WORK], "pro", self.MON_10_TASHKENT))
+        # Toshkent 20:00 — ish vaqtidan tashqari
+        self.assertIsNone(self._find([WORK], "pro", datetime(2026, 10, 26, 15, 0, tzinfo=timezone.utc)))
+
+    def test_uses_owners_zone_when_plan_allows(self):
+        utc = datetime(2026, 10, 26, 10, 0, tzinfo=timezone.utc)  # Toshkent 15:00, Tokio 19:00 (ish vaqtidan tashqari)
+        self.assertIsNotNone(self._find([WORK], "ultra", utc))                              # Toshkent
+        self.assertIsNone(self._find([WORK], "ultra", utc, _settings(name_clock_tz="Asia/Tokyo")))  # Tokio 19:00
+
+    def test_zone_choice_ignored_without_zone_feature(self):
+        utc = datetime(2026, 10, 26, 10, 0, tzinfo=timezone.utc)
+        # Zonalar faqat Ultra'da bo'lgan o'rnatmada Pro tanlangan Tokio zonasini ishlatmaydi — Toshkent (15:00, ish vaqti)
+        with patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS, name_clock_zones=("ultra",))):
+            self.assertIsNotNone(self._find([WORK], "pro", utc, _settings(name_clock_tz="Asia/Tokyo")))
+
+    def test_plus_cannot_run_smart_rules_but_keeps_v10(self):
+        rules = [WORK, R("narx*", text="Oddiy", id_=2)]
+        found = self._find(rules, "plus", self.MON_10_TASHKENT)
+        self.assertEqual(found["action"]["text"], "Oddiy")
+        self.assertIsNone(self._find([WORK], "plus", self.MON_10_TASHKENT))
+
+    def test_free_runs_nothing_and_pro_ultra_run_smart(self):
+        self.assertIsNone(self._find([WORK], "free", self.MON_10_TASHKENT))
+        for plan in ("pro", "ultra"):
+            self.assertIsNotNone(self._find([WORK], plan, self.MON_10_TASHKENT), plan)
+
+    def test_clock_not_needed_without_smart_rules(self):
+        with patch.object(db, "get_settings", side_effect=AssertionError("kerak emas")):
+            with patch.object(db, "get_user_plan", return_value="plus"), patch.object(db, "list_automation_rules", return_value=[R()]):
+                self.assertIsNotNone(bot.find_automation_rule(OWNER, "narx qancha", _settings()))
+
+    def _flow_at(self, utc, rules, plan="pro", **kw):
+        _FixedNow.fixed_utc = utc
+        with patch.object(bot, "datetime", _FixedNow):
+            return self.flow(text="Telefon narxi qancha?", rules=rules, plan=plan, **kw)
+
+    def test_message_flow_inside_and_outside_window(self):
+        rule = SR(text="Ish vaqtidagi javob", days=[0, 1, 2, 3, 4], time=(9 * 60, 18 * 60))
+        texts, _ = self._flow_at(self.MON_10_TASHKENT, [rule])
+        self.assertEqual(texts, ["Ish vaqtidagi javob"])
+        texts, _ = self._flow_at(datetime(2026, 10, 26, 15, 0, tzinfo=timezone.utc), [rule])  # Toshkent 20:00
+        self.assertEqual(texts, ["Oflaynman"])
+        texts, _ = self._flow_at(datetime(2026, 10, 31, 5, 0, tzinfo=timezone.utc), [rule])  # Shanba 10:00
+        self.assertEqual(texts, ["Oflaynman"])
+
+    def test_sleep_mode_and_schedule_still_win(self):
+        rule = SR(text="Smart", days=[0], time=(0, 1439))
+        with patch.object(bot, "is_within_sleep_window", return_value=True):
+            texts, m = self._flow_at(self.MON_10_TASHKENT, [rule], settings=_settings(sleep_mode_enabled=True, sleep_reply_text="Uxlayapman"))
+        self.assertEqual(texts, ["Uxlayapman"])
+        m["rules"].assert_not_called()
+        texts, m = self._flow_at(self.MON_10_TASHKENT, [rule], schedule={"id": 1})
+        self.assertEqual(texts, ["Jadval matni"])
+        m["rules"].assert_not_called()
+
+    def test_cooldown_still_respected(self):
+        texts, _ = self._flow_at(self.MON_10_TASHKENT, [WORK], claim=None)
+        self.assertEqual(texts, [])
+
 
 
 class FeatureGateTests(unittest.TestCase):
