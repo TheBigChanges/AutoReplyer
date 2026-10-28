@@ -779,6 +779,7 @@ DEFAULT_FEATURE_PLANS = {
     "name_clock_zones": ("pro", "ultra"),  # ism soatining Toshkentdan boshqa vaqt zonalari
     "faq": ("plus", "pro", "ultra"),    # Smart FAQ (savollar soni tarifga qarab: FAQ_PLAN_LIMITS)
     "automation": ("plus", "pro", "ultra"),  # Avtomatlashtirish qoidalari: Bepul tarifda to'liq yopiq (soni tarifga qarab: AUTOMATION_PLAN_LIMITS)
+    "automation_conditions": ("pro", "ultra"),  # Qoidada hafta kuni va vaqt shartlari (VA); Plus'da faqat kalit so'z
     "kb": ("ultra",),                   # AI Bilimlar bazasi (AI bilan birga ishlaydi; KB_LIMIT ta yozuv)
     "scheduler": ("free", "plus", "pro", "ultra"),  # Smart Jadval (jadvallar soni: SCHEDULE_PLAN_LIMITS)
     "analytics_7": ("plus", "pro", "ultra"),   # Statistika: 7 kunlik davr
@@ -790,7 +791,7 @@ FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
 FEATURE_NAME_KEYS = {
     "bio": "feature_bio", "custom_text": "feature_text", "ai": "feature_ai", "name_clock_fonts": "feature_fonts",
     "name_clock_zones": "feature_zones", "faq": "feature_faq", "kb": "feature_kb",
-    "automation": "feature_automation",
+    "automation": "feature_automation", "automation_conditions": "feature_automation_conditions",
     "analytics_7": "feature_an7", "analytics_30": "feature_an30", "analytics_charts": "feature_anch",
     "analytics_full": "feature_anfull", "scheduler": "feature_sched",
 }
@@ -911,10 +912,57 @@ def _au_draft(owner_id: int) -> dict | None:
 
 
 def _au_rule_keyword(rule: dict) -> str:
-    try:
-        return str(rule["conditions"]["items"][0]["value"])
-    except (KeyError, IndexError, TypeError):
-        return "?"
+    keyword = automation.split_conditions(rule)[0]
+    return str(keyword) if keyword is not None else "?"
+
+
+def _au_extra_text(lang: str, days, time_range) -> str:
+    """Qoida/qoralama ko'rinishidagi qo'shimcha shart satrlari (kunlar, vaqt); shart bo'lmasa — bo'sh."""
+    lines = []
+    if days:
+        lines.append(t(lang, "au_cond_days", v=format_day_set(days_mask(days), _sc_day_names(lang), t(lang, "sched_everyday"))))
+    if time_range is not None:
+        lines.append(t(lang, "au_cond_time", v=format_time_range(*time_range)))
+    return ("\n" + "\n".join(lines)) if lines else ""
+
+
+def build_au_days(owner_id: int, notice: str | None = None):
+    """Qoida qoralamasi: hafta kunlarini belgilash ekrani (ixtiyoriy shart)."""
+    lang = get_lang(owner_id)
+    d = _au_draft(owner_id) or {"id": "-", "days": set()}
+    chosen = d.get("days") or set()
+    short = _sc_day_names(lang, short=True)
+    day_buttons = [
+        InlineKeyboardButton(("✅ " if i in chosen else "") + short[i], callback_data=f"au_d:{i}:{d['id']}") for i in range(7)
+    ]
+    keyboard = [
+        day_buttons[:4], day_buttons[4:],
+        [
+            InlineKeyboardButton(t(lang, "btn_sc_wd"), callback_data=f"au_dp:wd:{d['id']}"),
+            InlineKeyboardButton(t(lang, "btn_sc_we"), callback_data=f"au_dp:we:{d['id']}"),
+            InlineKeyboardButton(t(lang, "btn_sc_all"), callback_data=f"au_dp:all:{d['id']}"),
+        ],
+        [InlineKeyboardButton(t(lang, "btn_sc_continue"), callback_data=f"au_dnext:{d['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_au_skip"), callback_data=f"au_dskip:{d['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}")],
+    ]
+    text = t(lang, "au_days_prompt")
+    return (f"{text}\n\n{notice}" if notice else text), InlineKeyboardMarkup(keyboard)
+
+
+def build_au_time(owner_id: int):
+    lang = get_lang(owner_id)
+    d = _au_draft(owner_id) or {"id": "-"}
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t(lang, "btn_au_skip"), callback_data=f"au_tskip:{d['id']}")],
+        [InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}")],
+    ])
+    return t(lang, "au_time_prompt"), markup
+
+
+def _au_ans_cancel_markup(owner_id: int, lang: str):
+    d = _au_draft(owner_id) or {"id": "-"}
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}")]])
 
 
 def _au_rule_reply(rule: dict) -> str:
@@ -961,8 +1009,11 @@ def build_au_rule(owner_id: int, rule_id: int, notice: str | None = None):
     if rule is None:
         return None
     on = bool(rule["is_enabled"])
+    _, days, time_range = automation.split_conditions(rule)
     text = t(lang, "au_rule_view", status=t(lang, "status_on" if on else "status_off"),
-             kw=_au_rule_keyword(rule), a=_au_rule_reply(rule))
+             kw=_au_rule_keyword(rule), extra=_au_extra_text(lang, days, time_range), a=_au_rule_reply(rule))
+    if automation.has_smart_conditions(rule) and not has_feature(owner_id, "automation_conditions"):
+        text += f"\n\n{t(lang, 'au_rule_locked')}"
     if notice:
         text += f"\n\n{notice}"
     keyboard = [
@@ -973,15 +1024,23 @@ def build_au_rule(owner_id: int, rule_id: int, notice: str | None = None):
     return text, InlineKeyboardMarkup(keyboard)
 
 
-def find_automation_rule(owner_id: int, text: str) -> dict | None:
-    """Mijoz xabariga mos faol Automation qoidasi (yoki None). Tarifda yo'q (Bepul) bo'lsa — hech qachon; xatolik oqimni buzmaydi."""
+def find_automation_rule(owner_id: int, text: str, settings: dict | None = None, now: datetime | None = None) -> dict | None:
+    """Mijoz xabariga mos faol Automation qoidasi (yoki None). Tarifda yo'q (Bepul) bo'lsa — hech qachon; xatolik oqimni buzmaydi.
+    Hafta kuni/vaqt shartlari Sleep Mode va Jadval bilan BIR XIL vaqt zonasida (tz_from_settings) hisoblanadi."""
     try:
         limit = automation_limit_for(owner_id)
         if limit <= 0:
             return None
         # Tarif pasaygan bo'lsa, faqat limitga sig'adigan birinchi (eng eski) qoidalar ishlaydi (o'chirilganlari ham sanaladi)
         rules = sorted(db.list_automation_rules(owner_id), key=lambda r: r["id"])[:limit]
-        return automation.find_matching_automation(text, rules)
+        # Kun/vaqt shartli qoidalar faqat shu imkoniyat tarifda bo'lsagina ishlaydi (xabarni qayta ishlashda ham tekshiriladi)
+        allow_smart = has_feature(owner_id, "automation_conditions")
+        when = None
+        if allow_smart and any(automation.has_smart_conditions(r) for r in rules):
+            if now is None:
+                now = datetime.now(tz_from_settings(settings if settings is not None else db.get_settings(owner_id), owner_id))
+            when = (now.weekday(), now.hour * 60 + now.minute)
+        return automation.find_matching_automation(text, rules, when=when, allow_smart=allow_smart)
     except Exception:
         logger.exception("Automation qoidalarini qidirishda xato (owner=%s)", owner_id)
         return None
@@ -1014,6 +1073,10 @@ def build_locked_view(owner_id: int, feature: str, back_data: str = "open_panel"
     return locked_text(lang, feature), InlineKeyboardMarkup(rows)
 
 
+_AU_SMART_BUTTONS = frozenset({"au_d", "au_dp", "au_dnext", "au_dskip", "au_tskip"})  # kun/vaqt bosqichi tugmalari
+_AU_STAGE_FOR = {"au_d": "days", "au_dp": "days", "au_dnext": "days", "au_dskip": "days", "au_tskip": "time", "au_save": "confirm"}
+
+
 def locked_feature_for(data: str) -> str | None:
     """Tugma ma'lumotidan qaysi tarif-cheklangan funksiyaga tegishli ekanini aniqlaydi."""
     if data in ("bio_menu", "bio_set_new_year", "bio_set_navroz", "bio_set_birthday"):
@@ -1024,6 +1087,8 @@ def locked_feature_for(data: str) -> str | None:
         return "ai"
     if data.startswith("faq_"):
         return "faq"
+    if data.split(":")[0] in _AU_SMART_BUTTONS:
+        return "automation_conditions"
     if data.startswith("au_"):
         return "automation"
     if data.startswith("kb_"):
@@ -2281,7 +2346,11 @@ def stale_confirm_button(owner_id: int, data: str) -> bool:
             confirm is None or confirm[id_key] != item_id or confirm["token"] != token
             or time.time() - confirm["ts"] > PENDING_ACTION_TTL_SECONDS
         )
-    if base in ("faq_save", "faq_cancel", "kb_save", "kb_cancel", "au_save", "au_cancel"):
+    if base in _AU_STAGE_FOR:
+        # Qoralama tugmalari: qoralama ID'si VA bosqichi mos bo'lishi shart (eski xabardagi tugma boshqa bosqichda ishlamaydi)
+        d = _au_draft(owner_id)
+        return d is None or not rest or d.get("id") != rest[-1] or d.get("stage") != _AU_STAGE_FOR[base]
+    if base in ("faq_save", "faq_cancel", "kb_save", "kb_cancel", "au_cancel"):
         d = {"faq": _faq_draft, "kb": _kb_draft, "au": _au_draft}[base.split("_")[0]](owner_id)
         token = rest[0] if rest else None
         if base.endswith("cancel"):
@@ -3830,7 +3899,8 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
         if db.count_automation_rules(owner_id) >= limit:
             await show(build_au_menu(owner_id, t(lang, "au_limit", max=limit)))
             return True
-        _au_drafts[owner_id] = {"ts": time.time(), "id": secrets.token_hex(3)}
+        _au_drafts[owner_id] = {"ts": time.time(), "id": secrets.token_hex(3), "stage": "kw",
+                                "smart": has_feature(owner_id, "automation_conditions"), "days": set()}
         set_pending_action(owner_id, "au_kw")
         await query.message.reply_text(t(lang, "au_kw_prompt"))
         return True
@@ -3840,16 +3910,58 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
         await show(build_au_menu(owner_id, t(lang, "au_cancelled")))
         return True
 
+    if base in ("au_d", "au_dp", "au_dnext", "au_dskip", "au_tskip"):
+        d = _au_draft(owner_id)
+        if d is None:  # stale_confirm_button oldin to'xtatadi; xavfsizlik uchun
+            await show(build_au_menu(owner_id, t(lang, "au_draft_lost")))
+            return True
+        d["ts"] = time.time()
+        args = raw.split(":")
+        if base == "au_d":
+            day = int(args[0]) if args and args[0].isdigit() else -1
+            if 0 <= day <= 6:
+                d["days"] ^= {day}
+            await show(build_au_days(owner_id))
+            return True
+        if base == "au_dp":
+            preset = {"wd": set(mask_days(WEEKDAYS_MASK)), "we": set(mask_days(WEEKEND_MASK)), "all": set(range(7))}.get(args[0])
+            if preset is not None:
+                d["days"] = preset
+            await show(build_au_days(owner_id))
+            return True
+        if base == "au_dnext" and not d["days"]:
+            await show(build_au_days(owner_id, t(lang, "au_days_empty")))
+            return True
+        if base in ("au_dnext", "au_dskip"):
+            if base == "au_dskip":
+                d["days"] = set()
+            d["stage"] = "time"
+            set_pending_action(owner_id, "au_time")
+            await show(build_au_time(owner_id))
+            return True
+        # au_tskip
+        d["start"] = d["end"] = None
+        d["stage"] = "ans"
+        set_pending_action(owner_id, "au_ans")
+        await show((t(lang, "au_ans_prompt", max=automation.MAX_REPLY_LENGTH), _au_ans_cancel_markup(owner_id, lang)))
+        return True
+
     if base == "au_save":
         d = _au_draft(owner_id)
         _au_drafts.pop(owner_id, None)
         if d is None or not all(k in d for k in ("kw", "ans")):
             await show(build_au_menu(owner_id, t(lang, "au_draft_lost")))
             return True
+        days = sorted(d.get("days") or [])
+        time_range = (d["start"], d["end"]) if d.get("start") is not None else None
+        if (days or time_range is not None) and not has_feature(owner_id, "automation_conditions"):
+            text, markup = build_locked_view(owner_id, "automation_conditions", back_data="au_menu")  # tarif o'zgargan
+            await query.edit_message_text(text, reply_markup=markup)
+            return True
         try:
             rule_id = db.add_automation_rule(
                 owner_id, d["kw"],
-                {"operator": "all", "items": [{"type": "keyword_contains", "value": d["kw"]}]},
+                automation.build_conditions(d["kw"], days, time_range),
                 {"type": "send_reply", "text": d["ans"]},
                 automation.DEFAULT_PRIORITY, automation_limit_for(owner_id), enabled=True,
             )
@@ -3884,7 +3996,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
              "faq_edit_q": "faq", "faq_edit_kw": "faq", "faq_edit_ans": "faq",
              "kb_title": "kb", "kb_content": "kb", "kb_kw": "kb", "kb_confirm": "kb",
              "kb_edit_t": "kb", "kb_edit_c": "kb", "kb_edit_kw": "kb", "sc_text": "custom_text",
-             "au_kw": "automation", "au_ans": "automation", "au_confirm": "automation"}.get(action)
+             "au_kw": "automation", "au_ans": "automation", "au_confirm": "automation",
+             "au_days": "automation_conditions", "au_time": "automation_conditions"}.get(action)
     if gated and not has_feature(owner_id, gated):
         clear_pending_action(owner_id)
         text, markup = build_locked_view(owner_id, gated)
@@ -4004,7 +4117,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if action in ("au_kw", "au_ans", "au_confirm"):
+    if action in ("au_kw", "au_days", "au_time", "au_ans", "au_confirm"):
         d = _au_draft(owner_id)
         if d is None:
             clear_pending_action(owner_id)
@@ -4013,6 +4126,22 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "au_confirm":
             await update.message.reply_text(t(lang, "au_confirm_hint"))
             return  # amal saqlanadi
+        if action == "au_days":
+            await update.message.reply_text(t(lang, "au_days_hint"))
+            return  # amal saqlanadi — kunlar tugmalar bilan tanlanadi
+        if action == "au_time":
+            parsed = parse_time_range_input(value)
+            if parsed is None or not valid_schedule_time(*parsed) or is_all_day(*parsed):
+                await update.message.reply_text(t(lang, "au_time_bad"))
+                return  # amal saqlanadi — qayta yuboradi
+            d["start"], d["end"] = parsed
+            d["stage"] = "ans"
+            d["ts"] = time.time()
+            set_pending_action(owner_id, "au_ans")
+            await update.message.reply_text(
+                t(lang, "au_ans_prompt", max=automation.MAX_REPLY_LENGTH), reply_markup=_au_ans_cancel_markup(owner_id, lang)
+            )
+            return
         if not value:
             await update.message.reply_text(t(lang, "au_empty_text"))
             return
@@ -4026,6 +4155,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ))
                 return  # amal saqlanadi — foydalanuvchi qayta yuboradi
             d["kw"] = value
+            if d.get("smart") and has_feature(owner_id, "automation_conditions"):
+                d["stage"] = "days"
+                set_pending_action(owner_id, "au_days")
+                text, markup = build_au_days(owner_id)
+                await update.message.reply_text(text, reply_markup=markup)
+                return
+            d["stage"] = "ans"
+            d["smart"] = False
             set_pending_action(owner_id, "au_ans")
             await update.message.reply_text(t(lang, "au_ans_prompt", max=automation.MAX_REPLY_LENGTH))
             return
@@ -4034,12 +4171,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         d["ans"] = value
         d["ts"] = time.time()
+        d["stage"] = "confirm"
         set_pending_action(owner_id, "au_confirm")
         markup = InlineKeyboardMarkup([[
             InlineKeyboardButton(t(lang, "btn_au_save"), callback_data=f"au_save:{d['id']}"),
             InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}"),
         ]])
-        await update.message.reply_text(t(lang, "au_confirm", kw=d["kw"], a=value), reply_markup=markup)
+        time_range = (d["start"], d["end"]) if d.get("start") is not None else None
+        extra = _au_extra_text(lang, sorted(d.get("days") or []), time_range)
+        await update.message.reply_text(t(lang, "au_confirm", kw=d["kw"], extra=extra, a=value), reply_markup=markup)
         return
 
     if action in ("kb_edit_t", "kb_edit_c", "kb_edit_kw"):
@@ -5544,7 +5684,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # faqat matnli xabarga. Mos qoida topilsa FAQ va AI ishlamaydi (bir xabarga bitta javob).
         if not sleeping and schedule_rule is None and settings["offline"]:
             auto_text = (bm.text or bm.caption or "").strip()
-            rule = find_automation_rule(owner_id, auto_text) if auto_text else None
+            rule = find_automation_rule(owner_id, auto_text, settings) if auto_text else None
             if rule is not None:
                 if settings.get("ai_enabled") and db.is_ai_paused(owner_id, chat_id):
                     return  # egasi shu chatda o'zi yozmoqda
