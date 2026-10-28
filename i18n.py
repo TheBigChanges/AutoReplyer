@@ -1587,6 +1587,21 @@ T: dict[str, dict] = {
     # ---------------- AI Personal Knowledge (ichki nom: kb) ----------------
     "btn_kb": _("\U0001F9E0 AI Shaxsiy Bilimlar", "\U0001F9E0 AI Personal Knowledge", "\U0001F9E0 AI Личные знания"),
     "feature_kb": _("AI Shaxsiy Bilimlar", "AI Personal Knowledge", "AI Личные знания"),
+    "pf_automation": _(
+        "Automation Engine — kalit so'zga ko'ra maxsus javob ({n} ta qoida)",
+        "Automation Engine — custom reply by keyword ({n} rules)",
+        "Automation Engine — свой ответ по ключевому слову ({n} правил)",
+    ),
+    "pf_automation_locked": _(
+        "Automation Engine — kalit so'zga ko'ra maxsus javob (qoidalar soni: {limits})",
+        "Automation Engine — custom reply by keyword (number of rules: {limits})",
+        "Automation Engine — свой ответ по ключевому слову (количество правил: {limits})",
+    ),
+    "pf_automation_smart": _(
+        "Smart Conditions — vaqt, hafta kunlari va AND shartlari",
+        "Smart Conditions — time, weekdays and AND conditions",
+        "Smart Conditions — время, дни недели и условия И (AND)",
+    ),
     "pf_kb": _(
         "AI Shaxsiy Bilimlar — AI siz yozgan ma'lumotlarga tayanib javob beradi (ko'pi bilan {n} ta yozuv)",
         "AI Personal Knowledge — the AI answers based on the facts you wrote (up to {n} entries)",
