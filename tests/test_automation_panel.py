@@ -546,6 +546,23 @@ class SmartFlowTests(PanelBase):
         self.assertEqual(reply.await_args.args[0], t("uz", "au_days_hint"))
         self.assertEqual(bot._au_draft(USER)["stage"], "days")
 
+    def test_typing_after_day_buttons_still_hints(self):
+        """Kun/preset/bo'sh «Keyingi» bosilgach on_button holatni tozalaydi — matn yozilsa baribir ko'rsatma chiqishi kerak."""
+        token, _ = self.start()
+        for press in (f"au_d:0:{token}", f"au_dp:wd:{token}"):
+            self.press(press)
+            self.assertEqual(bot.get_pending_action(USER), "au_days")
+            reply = self.say("dushanba")
+            self.assertEqual(reply.await_args.args[0], t("uz", "au_days_hint"))
+            self.assertEqual(bot._au_draft(USER)["stage"], "days")
+
+    def test_typing_after_empty_next_still_hints(self):
+        token, _ = self.start()
+        self.press(f"au_dnext:{token}")  # kun tanlanmagan
+        self.assertEqual(bot.get_pending_action(USER), "au_days")
+        reply = self.say("dushanba")
+        self.assertEqual(reply.await_args.args[0], t("uz", "au_days_hint"))
+
     def test_bad_time_keeps_waiting(self):
         token, _ = self.start()
         self.press(f"au_dskip:{token}")
