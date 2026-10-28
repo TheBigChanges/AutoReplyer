@@ -1161,6 +1161,12 @@ def plan_features_text(lang: str, plan: str) -> str:
     else:
         excluded.append(t(lang, "pf_faq_locked", limits=" / ".join(f"{p.capitalize()} — {n}" for p, n in FAQ_PLAN_LIMITS.items() if p in FEATURE_PLANS.get("faq", ()))))
     (included if plan in FEATURE_PLANS.get("kb", ()) else excluded).append(t(lang, "pf_kb", n=KB_LIMIT))
+    if plan in FEATURE_PLANS.get("automation", ()):
+        included.append(t(lang, "pf_automation", n=AUTOMATION_PLAN_LIMITS.get(plan, 0)))
+    else:
+        excluded.append(t(lang, "pf_automation_locked", limits=" / ".join(
+            f"{p.capitalize()} — {n}" for p, n in AUTOMATION_PLAN_LIMITS.items() if p in FEATURE_PLANS.get("automation", ()))))
+    (included if plan in FEATURE_PLANS.get("automation_conditions", ()) else excluded).append(t(lang, "pf_automation_smart"))
     included.append(t(lang, "pf_sched", n=SCHEDULE_PLAN_LIMITS.get(plan, SCHEDULE_PLAN_LIMITS["free"])))
     included.append(t(lang, "pf_an_" + (plan if plan in ("plus", "pro", "ultra") else "free")))
     included.append(t(lang, "pf_ads_off" if plan in AD_FREE_PLANS else "pf_ads_on"))
@@ -3921,15 +3927,18 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
             day = int(args[0]) if args and args[0].isdigit() else -1
             if 0 <= day <= 6:
                 d["days"] ^= {day}
+            set_pending_action(owner_id, "au_days")  # on_button holatni tozalagan; matn yozilsa ko'rsatma chiqsin
             await show(build_au_days(owner_id))
             return True
         if base == "au_dp":
             preset = {"wd": set(mask_days(WEEKDAYS_MASK)), "we": set(mask_days(WEEKEND_MASK)), "all": set(range(7))}.get(args[0])
             if preset is not None:
                 d["days"] = preset
+            set_pending_action(owner_id, "au_days")
             await show(build_au_days(owner_id))
             return True
         if base == "au_dnext" and not d["days"]:
+            set_pending_action(owner_id, "au_days")
             await show(build_au_days(owner_id, t(lang, "au_days_empty")))
             return True
         if base in ("au_dnext", "au_dskip"):
