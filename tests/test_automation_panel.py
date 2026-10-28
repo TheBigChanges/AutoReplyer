@@ -133,6 +133,10 @@ class PanelBase(unittest.TestCase):
     def create(self, kw="narx*", reply="Salom! Narxlar haqida ma'lumot beraman.", user=USER):
         self.press("au_add", user)
         self.say(kw, user)
+        d = bot._au_draft(user)
+        if d is not None and d["stage"] == "days":  # Pro/Ultra: kun va vaqt bosqichlari o'tkazib yuboriladi (v1.0 qoidasi)
+            self.press(f"au_dskip:{d['id']}", user)
+            self.press(f"au_tskip:{d['id']}", user)
         confirm = self.say(reply, user)
         markup = confirm.await_args.kwargs["reply_markup"]
         save = [b.callback_data for row in markup.inline_keyboard for b in row][0]
@@ -452,6 +456,224 @@ class PlansTests(PanelBase):
         with patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS, automation=("ultra",))):
             q = self.press("au_menu")
             self.assertNotEqual(self.keyboard(q)[:2], ["au_add", "au_list"])
+
+
+class SmartFlowTests(PanelBase):
+    """v1.1: kalit so'z -> hafta kunlari -> vaqt -> javob -> ko'rish -> saqlash (Pro/Ultra)."""
+    plan = "pro"
+
+    def start(self, kw="narx*"):
+        self.press("au_add")
+        reply = self.say(kw)
+        return bot._au_draft(USER)["id"], reply
+
+    def test_full_flow_saves_conditions(self):
+        token, reply = self.start()
+        self.assertEqual(bot._au_draft(USER)["stage"], "days")
+        self.assertEqual(bot.get_pending_action(USER), "au_days")
+        self.assertIn(f"au_d:0:{token}", self.datas(reply.await_args.kwargs["reply_markup"]))
+        self.press(f"au_dp:wd:{token}")                      # Dushanba-Juma
+        q = self.press(f"au_dnext:{token}")
+        self.assertEqual(bot._au_draft(USER)["stage"], "time")
+        self.assertEqual(bot.get_pending_action(USER), "au_time")
+        self.assertIn(f"au_tskip:{token}", self.keyboard(q))
+        reply = self.say("09:00-18:00")
+        self.assertEqual(bot.get_pending_action(USER), "au_ans")
+        confirm = self.say("Assalomu alaykum! Narxlar haqida ma'lumot beraman.")
+        text = confirm.await_args.args[0]
+        self.assertIn("09:00", text)
+        self.assertIn("18:00", text)
+        self.assertIn("narx*", text)
+        save = self.datas(confirm.await_args.kwargs["reply_markup"])[0]
+        self.press(save)
+        items = self.fake.add_calls[-1]["cond"]["items"]
+        self.assertEqual([i["type"] for i in items], ["keyword_contains", "days_of_week", "time_between"])
+        self.assertEqual(items[1]["value"], [0, 1, 2, 3, 4])
+        self.assertEqual(items[2]["value"], {"start": 540, "end": 1080})
+        self.assertTrue(self.fake.rows[0]["is_enabled"])
+
+    def test_skipping_both_creates_plain_v10_rule(self):
+        token, _ = self.start()
+        self.press(f"au_dskip:{token}")
+        self.press(f"au_tskip:{token}")
+        self.assertEqual(bot.get_pending_action(USER), "au_ans")
+        confirm = self.say("Javob")
+        self.assertNotIn("Vaqt:", confirm.await_args.args[0])
+        self.press(self.datas(confirm.await_args.kwargs["reply_markup"])[0])
+        self.assertEqual(len(self.fake.add_calls[-1]["cond"]["items"]), 1)
+
+    def test_only_days_or_only_time(self):
+        token, _ = self.start()
+        self.press(f"au_d:5:{token}")
+        self.press(f"au_d:6:{token}")
+        self.press(f"au_dnext:{token}")
+        self.press(f"au_tskip:{token}")
+        self.say("Javob")
+        d = bot._au_draft(USER)
+        self.assertEqual(sorted(d["days"]), [5, 6])
+        self.assertIsNone(d["start"])
+        # faqat vaqt
+        self.press(f"au_cancel:{token}")
+        token, _ = self.start()
+        self.press(f"au_dskip:{token}")
+        self.say("22:00-06:00")
+        d = bot._au_draft(USER)
+        self.assertEqual((d["start"], d["end"]), (1320, 360))
+        self.assertEqual(d["days"], set())
+
+    def test_day_toggle_and_presets(self):
+        token, _ = self.start()
+        self.press(f"au_d:2:{token}")
+        self.assertEqual(bot._au_draft(USER)["days"], {2})
+        self.press(f"au_d:2:{token}")
+        self.assertEqual(bot._au_draft(USER)["days"], set())
+        self.press(f"au_dp:we:{token}")
+        self.assertEqual(bot._au_draft(USER)["days"], {5, 6})
+        self.press(f"au_dp:all:{token}")
+        self.assertEqual(bot._au_draft(USER)["days"], set(range(7)))
+        self.press(f"au_d:99:{token}")  # noto'g'ri kun — hech narsa o'zgarmaydi
+        self.assertEqual(bot._au_draft(USER)["days"], set(range(7)))
+
+    def test_next_without_days_asks_to_choose_or_skip(self):
+        token, _ = self.start()
+        q = self.press(f"au_dnext:{token}")
+        self.assertIn(t("uz", "au_days_empty"), self.shown(q))
+        self.assertEqual(bot._au_draft(USER)["stage"], "days")
+
+    def test_typing_at_days_stage_only_hints(self):
+        self.start()
+        reply = self.say("dushanba")
+        self.assertEqual(reply.await_args.args[0], t("uz", "au_days_hint"))
+        self.assertEqual(bot._au_draft(USER)["stage"], "days")
+
+    def test_bad_time_keeps_waiting(self):
+        token, _ = self.start()
+        self.press(f"au_dskip:{token}")
+        for bad in ("abc", "10:00-10:00", "25:00-26:00", "09:00", "00:00-24:00"):
+            reply = self.say(bad)
+            self.assertEqual(reply.await_args.args[0], t("uz", "au_time_bad"), bad)
+            self.assertEqual(bot.get_pending_action(USER), "au_time", bad)
+
+    def test_stage_guards_block_stale_buttons(self):
+        token, _ = self.start()
+        self.press(f"au_dp:wd:{token}")
+        self.press(f"au_dnext:{token}")          # endi bosqich: vaqt
+        before = set(bot._au_draft(USER)["days"])
+        for stale in (f"au_d:6:{token}", f"au_dp:all:{token}", f"au_dnext:{token}", f"au_dskip:{token}"):
+            q = self.press(stale)
+            self.assertEqual(self.shown(q), t("uz", "sc_stale_button"), stale)
+        self.assertEqual(bot._au_draft(USER)["days"], before)
+        self.assertEqual(bot._au_draft(USER)["stage"], "time")
+        self.assertEqual(bot.get_pending_action(USER), "au_time")  # kiritish bekor bo'lmadi
+
+    def test_wrong_token_blocks_buttons(self):
+        token, _ = self.start()
+        for stale in ("au_d:1:abcdef", "au_dp:wd:abcdef", "au_dnext:abcdef", "au_dskip:abcdef", "au_tskip:abcdef"):
+            q = self.press(stale)
+            self.assertEqual(self.shown(q), t("uz", "sc_stale_button"), stale)
+        self.assertEqual(bot._au_draft(USER)["days"], set())
+        self.assertEqual(bot.get_pending_action(USER), "au_days")
+
+    def test_save_only_at_confirm_stage(self):
+        token, _ = self.start()
+        q = self.press(f"au_save:{token}")
+        self.assertEqual(self.shown(q), t("uz", "sc_stale_button"))
+        self.assertEqual(self.fake.rows, [])
+        self.assertIsNotNone(bot._au_draft(USER))
+
+    def test_cancel_works_at_every_stage(self):
+        token, _ = self.start()
+        self.press(f"au_cancel:{token}")
+        self.assertIsNone(bot._au_draft(USER))
+        token, _ = self.start()
+        self.press(f"au_dskip:{token}")
+        self.press(f"au_cancel:{token}")
+        self.assertIsNone(bot._au_draft(USER))
+        self.assertEqual(self.fake.rows, [])
+
+    def test_start_and_cancel_commands_drop_the_draft(self):
+        self.start()
+        self.assertTrue(bot.clear_flow_state(USER))
+        self.assertIsNone(bot._au_draft(USER))
+
+    def test_rule_view_shows_conditions(self):
+        token, _ = self.start()
+        self.press(f"au_dp:wd:{token}")
+        self.press(f"au_dnext:{token}")
+        self.say("09:00-18:00")
+        confirm = self.say("Javob")
+        self.press(self.datas(confirm.await_args.kwargs["reply_markup"])[0])
+        q = self.press(f"au_view:{self.fake.rows[0]['id']}")
+        text = self.shown(q)
+        self.assertIn("09:00", text)
+        self.assertIn("narx*", text)
+        self.assertNotIn(t("uz", "au_rule_locked"), text)
+
+
+class SmartPlanGateTests(PanelBase):
+    plan = "plus"
+
+    def test_plus_flow_is_plain_v10(self):
+        self.press("au_add")
+        self.assertFalse(bot._au_draft(USER)["smart"])
+        reply = self.say("narx*")
+        self.assertEqual(bot._au_draft(USER)["stage"], "ans")
+        self.assertEqual(bot.get_pending_action(USER), "au_ans")
+        self.assertEqual(reply.await_args.args[0], t("uz", "au_ans_prompt", max=au.MAX_REPLY_LENGTH))
+
+    def test_plus_cannot_use_condition_buttons(self):
+        locked = t("uz", "locked_feature", feature=t("uz", "feature_automation_conditions"),
+                   plans=" / ".join(t("uz", "plan_name_" + p) for p in ("pro", "ultra")))
+        self.press("au_add")
+        self.say("narx*")
+        token = bot._au_draft(USER)["id"]
+        for data in (f"au_d:1:{token}", f"au_dp:wd:{token}", f"au_dnext:{token}", f"au_dskip:{token}", f"au_tskip:{token}"):
+            q = self.press(data)
+            self.assertEqual(self.shown(q), locked, data)
+        self.assertEqual(bot._au_draft(USER).get("days"), set())
+
+    def test_downgrade_during_flow_blocks_saving_conditions(self):
+        self.plan = "pro"
+        self.press("au_add")
+        self.say("narx*")
+        token = bot._au_draft(USER)["id"]
+        self.press(f"au_dp:wd:{token}")
+        self.press(f"au_dnext:{token}")
+        self.say("09:00-18:00")
+        confirm = self.say("Javob")
+        save = self.datas(confirm.await_args.kwargs["reply_markup"])[0]
+        self.plan = "plus"  # tarif tushib ketdi
+        q = self.press(save)
+        self.assertEqual(self.fake.rows, [])
+        self.assertIn(t("uz", "feature_automation_conditions"), self.shown(q))
+
+    def test_typed_time_after_downgrade_is_stopped(self):
+        self.plan = "pro"
+        self.press("au_add")
+        self.say("narx*")
+        token = bot._au_draft(USER)["id"]
+        self.press(f"au_dskip:{token}")
+        self.plan = "plus"
+        reply = self.say("09:00-18:00")
+        self.assertIsNone(bot.get_pending_action(USER))
+        self.assertNotIn("start", bot._au_draft(USER))
+        self.assertNotEqual(reply.await_args.args[0], t("uz", "au_ans_prompt", max=au.MAX_REPLY_LENGTH))
+
+    def test_old_smart_rule_view_explains_it_is_paused_on_plus(self):
+        smart = {"id": 7, "owner_user_id": USER, "name": "n", "priority": 100, "is_enabled": True,
+                 "conditions": au.build_conditions("narx*", [0, 1], (540, 1080)), "action": {"type": "send_reply", "text": "J"}}
+        self.fake.rows.append(smart)
+        q = self.press("au_view:7")
+        self.assertIn(t("uz", "au_rule_locked"), self.shown(q))
+        self.plan = "pro"
+        q = self.press("au_view:7")
+        self.assertNotIn(t("uz", "au_rule_locked"), self.shown(q))
+
+    def test_rule_list_survives_smart_rules(self):
+        self.fake.rows.append({"id": 3, "owner_user_id": USER, "name": "n", "priority": 100, "is_enabled": True,
+                               "conditions": au.build_conditions("narx*", [0], (60, 120)), "action": {"type": "send_reply", "text": "J"}})
+        q = self.press("au_list")
+        self.assertIn("au_view:3", self.keyboard(q))
 
 
 @unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL o'rnatilmagan")
