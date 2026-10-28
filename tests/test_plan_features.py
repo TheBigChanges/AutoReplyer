@@ -562,3 +562,33 @@ class AiLimitTests(Base):
     def test_plan_text_mentions_50_for_ultra(self):
         for lang in ("uz", "en", "ru"):
             self.assertIn("50", bot.plan_features_text(lang, "ultra"))
+
+
+class AutomationPlanFeatureTextTests(Base):
+    """Tariflar oynasi: Automation Engine va Smart Conditions har tarifda to'g'ri ko'rinadi."""
+
+    def _split(self, lang, plan):
+        text = bot.plan_features_text(lang, plan)
+        marker = i18n.t(lang, "plan_excludes")
+        inc, _, exc = text.partition(marker)
+        return inc, exc
+
+    def test_free_has_neither(self):
+        inc, exc = self._split("uz", "free")
+        self.assertNotIn("Automation Engine", inc)
+        self.assertIn("Automation Engine", exc)
+        self.assertIn("Smart Conditions", exc)
+
+    def test_plus_has_two_rules_but_no_smart(self):
+        inc, exc = self._split("uz", "plus")
+        self.assertIn("Automation Engine — kalit so'zga ko'ra maxsus javob (2 ta qoida)", inc)
+        self.assertNotIn("Smart Conditions", inc)
+        self.assertIn("Smart Conditions", exc)
+
+    def test_pro_and_ultra_have_limits_and_smart(self):
+        for plan, n in (("pro", 10), ("ultra", 30)):
+            for lang in ("uz", "en", "ru"):
+                inc, exc = self._split(lang, plan)
+                self.assertIn(i18n.t(lang, "pf_automation", n=n), inc)
+                self.assertIn(i18n.t(lang, "pf_automation_smart"), inc)
+                self.assertNotIn("Smart Conditions", exc)
