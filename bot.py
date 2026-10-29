@@ -911,9 +911,59 @@ def _au_draft(owner_id: int) -> dict | None:
     return d
 
 
-def _au_rule_keyword(rule: dict) -> str:
-    keyword = automation.split_conditions(rule)[0]
-    return str(keyword) if keyword is not None else "?"
+_au_edits: dict[int, dict] = {}  # {owner_id: {"id": token, "rule_id", "field", "stage", "days", "ts"}} — tahrirlash sessiyasi (RAM, 10 daqiqa)
+_AU_EDIT_FIELDS = ("name", "kw", "days", "time", "reply", "prio")
+_AU_EDIT_BUTTONS = frozenset({"au_ed", "au_edp", "au_edone", "au_eclear", "au_ecancel"})  # sessiya tokeniga bog'liq tugmalar
+
+
+def _au_edit(owner_id: int) -> dict | None:
+    e = _au_edits.get(owner_id)
+    if e is None or time.time() - e["ts"] > PENDING_ACTION_TTL_SECONDS:
+        _au_edits.pop(owner_id, None)
+        return None
+    return e
+
+
+def _au_join_keywords(lang: str, keywords) -> str:
+    return t(lang, "au_or_join").join(keywords)
+
+
+def _au_rule_keyword(rule: dict, lang: str = "uz") -> str:
+    keywords = automation.split_keywords(rule)
+    return _au_join_keywords(lang, keywords) if keywords else "?"
+
+
+def parse_au_keywords(value: str) -> list[str]:
+    """Foydalanuvchi matnidan kalit so'zlar ro'yxati: vergul, nuqta-vergul yoki yangi qator bilan ajratiladi."""
+    return [p.strip() for p in re.split(r"[,;\n]", value) if p.strip()]
+
+
+def au_keyword_error(keywords: list[str]) -> str | None:
+    """Kalit so'zlar ro'yxatini tekshiradi: xato kodi ("count" | "dup" | "bad") yoki None."""
+    try:
+        if len(keywords) == 1:
+            automation.parse_keyword(keywords[0])
+        else:
+            automation._clean_keyword_list(keywords)
+    except automation.AutomationError as e:
+        return {"keyword_count": "count", "keyword_duplicate": "dup"}.get(str(e), "bad")
+    return None
+
+
+def _au_keyword_error_text(lang: str, code: str) -> str:
+    if code == "count":
+        return t(lang, "au_kw_count", n=automation.MAX_ANY_KEYWORDS)
+    if code == "dup":
+        return t(lang, "au_kw_dup")
+    return t(lang, "au_kw_bad", max=automation.MAX_KEYWORD_LENGTH, words=automation.MAX_KEYWORD_TOKENS, prefix=automation.MIN_PREFIX_LENGTH)
+
+
+def _au_rule_name(rule: dict) -> str:
+    return str(rule.get("name") or _au_rule_keyword(rule))
+
+
+def _au_default_name(keywords: list[str]) -> str:
+    return keywords[0] if len(keywords) == 1 else f"{keywords[0]} +{len(keywords) - 1}"[:automation.MAX_NAME_LENGTH]
 
 
 def _au_extra_text(lang: str, days, time_range) -> str:
@@ -980,6 +1030,7 @@ def build_au_menu(owner_id: int, notice: str | None = None):
     keyboard = [
         [InlineKeyboardButton(t(lang, "btn_au_add"), callback_data="au_add")],
         [InlineKeyboardButton(t(lang, "btn_au_list"), callback_data="au_list")],
+        [InlineKeyboardButton(t(lang, "btn_au_stats"), callback_data="au_stats")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
@@ -995,7 +1046,7 @@ def build_au_list(owner_id: int, notice: str | None = None):
     if notice:
         text = f"{notice}\n\n{text}"
     keyboard = [
-        [InlineKeyboardButton(("" if r["is_enabled"] else "\u23F8 ") + _faq_short(_au_rule_keyword(r)), callback_data=f"au_view:{r['id']}")]
+        [InlineKeyboardButton(("" if r["is_enabled"] else "\u23F8 ") + _faq_short(_au_rule_name(r)), callback_data=f"au_view:{r['id']}")]
         for r in rules
     ]
     keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_menu")])
@@ -1010,18 +1061,76 @@ def build_au_rule(owner_id: int, rule_id: int, notice: str | None = None):
         return None
     on = bool(rule["is_enabled"])
     _, days, time_range = automation.split_conditions(rule)
-    text = t(lang, "au_rule_view", status=t(lang, "status_on" if on else "status_off"),
-             kw=_au_rule_keyword(rule), extra=_au_extra_text(lang, days, time_range), a=_au_rule_reply(rule))
+    text = t(lang, "au_rule_view", status=t(lang, "status_on" if on else "status_off"), name=_au_rule_name(rule),
+             kw=_au_rule_keyword(rule, lang), extra=_au_extra_text(lang, days, time_range),
+             prio=rule.get("priority", automation.DEFAULT_PRIORITY), sent=rule.get("sent_count") or 0, a=_au_rule_reply(rule))
     if automation.has_smart_conditions(rule) and not has_feature(owner_id, "automation_conditions"):
         text += f"\n\n{t(lang, 'au_rule_locked')}"
     if notice:
         text += f"\n\n{notice}"
     keyboard = [
+        [InlineKeyboardButton(t(lang, "btn_au_edit"), callback_data=f"au_edit:{rule_id}")],
         [InlineKeyboardButton(t(lang, "btn_au_off" if on else "btn_au_on"), callback_data=f"au_{'off' if on else 'on'}:{rule_id}")],
         [InlineKeyboardButton(t(lang, "btn_au_delete"), callback_data=f"au_del:{rule_id}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_list")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_au_edit_menu(owner_id: int, rule_id: int):
+    """Tahrirlash menyusi (holatsiz): har tugma sessiyani alohida boshlaydi. Kun/vaqt tugmalari — Pro/Ultra (qulf belgisi bilan)."""
+    lang = get_lang(owner_id)
+    ok = has_feature(owner_id, "automation_conditions")
+    rows = [
+        [InlineKeyboardButton(t(lang, "btn_au_e_name"), callback_data=f"au_ef:name:{rule_id}"),
+         InlineKeyboardButton(t(lang, "btn_au_e_kw"), callback_data=f"au_ef:kw:{rule_id}")],
+        [InlineKeyboardButton(lock_label(t(lang, "btn_au_e_days"), ok), callback_data=f"au_ef:days:{rule_id}"),
+         InlineKeyboardButton(lock_label(t(lang, "btn_au_e_time"), ok), callback_data=f"au_ef:time:{rule_id}")],
+        [InlineKeyboardButton(t(lang, "btn_au_e_reply"), callback_data=f"au_ef:reply:{rule_id}"),
+         InlineKeyboardButton(t(lang, "btn_au_e_prio"), callback_data=f"au_ef:prio:{rule_id}")],
+        [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"au_view:{rule_id}")],
+    ]
+    return t(lang, "au_edit_menu"), InlineKeyboardMarkup(rows)
+
+
+def build_au_edit_days(owner_id: int):
+    lang = get_lang(owner_id)
+    e = _au_edit(owner_id) or {"id": "-", "days": set()}
+    chosen, tok = e.get("days") or set(), e["id"]
+    short = _sc_day_names(lang, short=True)
+    day_buttons = [InlineKeyboardButton(("✅ " if i in chosen else "") + short[i], callback_data=f"au_ed:{i}:{tok}") for i in range(7)]
+    keyboard = [
+        day_buttons[:4], day_buttons[4:],
+        [InlineKeyboardButton(t(lang, "btn_sc_wd"), callback_data=f"au_edp:wd:{tok}"),
+         InlineKeyboardButton(t(lang, "btn_sc_we"), callback_data=f"au_edp:we:{tok}"),
+         InlineKeyboardButton(t(lang, "btn_sc_all"), callback_data=f"au_edp:all:{tok}")],
+        [InlineKeyboardButton(t(lang, "btn_au_e_done"), callback_data=f"au_edone:{tok}")],
+        [InlineKeyboardButton(t(lang, "btn_au_e_clear"), callback_data=f"au_eclear:{tok}")],
+        [InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_ecancel:{tok}")],
+    ]
+    return t(lang, "au_e_days_title"), InlineKeyboardMarkup(keyboard)
+
+
+def _au_stats_period(owner_id: int) -> int:
+    return 7 if analytics_allowed_days(owner_id) >= 7 else 1
+
+
+def build_au_stats(owner_id: int):
+    """Automation statistikasi: qoidalar soni, faol qoidalar, davr bo'yicha javoblar (analytics) va jami/qoida bo'yicha sanagichlar."""
+    lang = get_lang(owner_id)
+    rules = db.list_automation_rules(owner_id)
+    days = _au_stats_period(owner_id)
+    try:
+        period_sent = analytics_summary(owner_id, days)["kinds"]["automation"]
+    except Exception:
+        logger.warning("Automation statistikasi: analytics o'qilmadi (owner=%s)", owner_id, exc_info=True)
+        period_sent = 0
+    sent_of = lambda r: int(r.get("sent_count") or 0)  # noqa: E731
+    top = sorted((r for r in rules if sent_of(r) > 0), key=lambda r: (-sent_of(r), r["id"]))[:3]
+    top_text = "\n".join(f"{i}. {_faq_short(_au_rule_name(r))} — {sent_of(r)}" for i, r in enumerate(top, 1)) or t(lang, "au_stats_top_none")
+    text = t(lang, "au_stats", total=len(rules), active=sum(1 for r in rules if r["is_enabled"]), period=_an_period_name(lang, days),
+             period_sent=period_sent, all_sent=sum(sent_of(r) for r in rules), top=top_text)
+    return text, InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_menu")]])
 
 
 def find_automation_rule(owner_id: int, text: str, settings: dict | None = None, now: datetime | None = None) -> dict | None:
@@ -1087,7 +1196,7 @@ def locked_feature_for(data: str) -> str | None:
         return "ai"
     if data.startswith("faq_"):
         return "faq"
-    if data.split(":")[0] in _AU_SMART_BUTTONS:
+    if data.split(":")[0] in _AU_SMART_BUTTONS or data.split(":")[0] in ("au_ed", "au_edp", "au_edone") or data.startswith(("au_ef:days:", "au_ef:time:")):
         return "automation_conditions"
     if data.startswith("au_"):
         return "automation"
@@ -1915,7 +2024,8 @@ def build_ai_roles_menu(owner_id: int):
     return t(lang, "ai_roles_menu"), InlineKeyboardMarkup(rows)
 
 
-async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str, cooldown_hours: float, label: str, kind: str | None = None):
+async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str, cooldown_hours: float, label: str, kind: str | None = None,
+                          automation_rule_id: int | None = None):
     """Oddiy (matnli) avtojavob: cooldown huquqini atomik band qilib, yuboradi."""
     # Cooldown huquqini YUBORISHDAN OLDIN atomik band qilamiz (bitta SQL).
     # Oldingi "tekshir -> yubor -> belgila" ketma-ketligida ikkita xabar
@@ -1943,6 +2053,8 @@ async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str,
     _remember_sent(chat_id, sent)
     # Statistika: javob FAQAT muvaffaqiyatli yuborilgandan keyin sanaladi
     track_analytics(owner_id, kind or ("sleep" if "sleeping=True" in label else "static"))
+    if automation_rule_id is not None:
+        track_automation_sent(owner_id, automation_rule_id)  # qoida sanagichi ham FAQAT muvaffaqiyatli yuborilgach
     logger.info("auto reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
 
 
@@ -2122,6 +2234,21 @@ def _record_analytics_safe(owner_id: int, kind: str):
         logger.warning("Analytics yozilmadi (owner=%s, kind=%s)", owner_id, kind, exc_info=True)
 
 
+def _record_automation_sent_safe(owner_id: int, rule_id: int):
+    try:
+        db.record_automation_sent(owner_id, rule_id)
+    except Exception:
+        logger.warning("Automation sanagichi yozilmadi (owner=%s, rule=%s)", owner_id, rule_id, exc_info=True)
+
+
+def track_automation_sent(owner_id: int, rule_id: int):
+    """Orqa fonda qoidaning yuborilgan javoblar sanagichini oshiradi (xatolik javob oqimini buzmaydi)."""
+    try:
+        spawn_background(asyncio.to_thread(_record_automation_sent_safe, owner_id, rule_id))
+    except RuntimeError:
+        _record_automation_sent_safe(owner_id, rule_id)
+
+
 def track_analytics(owner_id: int, kind: str):
     """Orqa fonda (event loop'ni bloklamasdan) hisoblagichni oshiradi."""
     try:
@@ -2177,12 +2304,12 @@ def build_analytics_menu(owner_id: int, days: int = 1):
     days = days if days in (1, 7, 30) and days <= analytics_allowed_days(owner_id) else 1
     summary = analytics_summary(owner_id, days)
     if analytics.is_empty(summary):
-        text = t(lang, "an_menu", period=_an_period_name(lang, days), incoming=0, sent=0, faq=0, ai=0, static=0, sleep=0,
+        text = t(lang, "an_menu", period=_an_period_name(lang, days), incoming=0, sent=0, faq=0, ai=0, static=0, sleep=0, automation=0,
                  peak=t(lang, "an_peak_none")) + "\n\n" + t(lang, "an_empty")
     else:
         k = summary["kinds"]
         text = t(lang, "an_menu", period=_an_period_name(lang, days), incoming=summary["incoming"], sent=summary["sent"],
-                 faq=k["faq"], ai=k["ai"], static=k["static"], sleep=k["sleep"], peak=_an_peak_text(lang, summary["peak"]))
+                 faq=k["faq"], ai=k["ai"], static=k["static"], sleep=k["sleep"], automation=k["automation"], peak=_an_peak_text(lang, summary["peak"]))
         text += "\n\n" + t(lang, "an_note")
     text += "\n\n" + t(lang, "an_privacy")
     ok = lambda f: has_feature(owner_id, f)  # noqa: E731
@@ -2239,7 +2366,7 @@ def analytics_chart_labels(lang: str, kind: str) -> dict:
     return {
         "title": t(lang, "an_chart_" + kind), "incoming": t(lang, "an_lbl_incoming"), "sent": t(lang, "an_lbl_sent"),
         "faq": t(lang, "an_lbl_faq"), "ai": t(lang, "an_lbl_ai"), "static": t(lang, "an_lbl_static"),
-        "sleep": t(lang, "an_lbl_sleep"), "none": t(lang, "an_lbl_none"), "hour": t(lang, "an_lbl_hour"),
+        "sleep": t(lang, "an_lbl_sleep"), "automation": t(lang, "an_lbl_automation"), "none": t(lang, "an_lbl_none"), "hour": t(lang, "an_lbl_hour"),
     }
 
 
@@ -2315,13 +2442,13 @@ def clear_flow_state(owner_id: int) -> bool:
     Aks holda "/cancel"dan keyin eski «Saqlash» tugmasi hamon tirik qoralamani saqlab yuborardi.
     Biror narsa bekor bo'lsa True."""
     cleared = clear_scheduler_state(owner_id)
-    for store in (_faq_drafts, _kb_drafts, _faq_edit_target, _kb_edit_target, _au_drafts, _au_del_confirms):
+    for store in (_faq_drafts, _kb_drafts, _faq_edit_target, _kb_edit_target, _au_drafts, _au_edits, _au_del_confirms):
         if store.pop(owner_id, None) is not None:
             cleared = True
     return cleared
 
 
-_CANCEL_DRAFT_OF = {"sc_cancel": "_sc_draft", "faq_cancel": "_faq_draft", "kb_cancel": "_kb_draft", "au_cancel": "_au_draft"}
+_CANCEL_DRAFT_OF = {"sc_cancel": "_sc_draft", "faq_cancel": "_faq_draft", "kb_cancel": "_kb_draft", "au_cancel": "_au_draft", "au_ecancel": "_au_edit"}
 
 
 def cancel_without_own_draft(owner_id: int, data: str) -> bool:
@@ -2352,6 +2479,14 @@ def stale_confirm_button(owner_id: int, data: str) -> bool:
             confirm is None or confirm[id_key] != item_id or confirm["token"] != token
             or time.time() - confirm["ts"] > PENDING_ACTION_TTL_SECONDS
         )
+    if base in _AU_EDIT_BUTTONS:
+        # Tahrirlash sessiyasi tugmalari: sessiya tokeni mos bo'lishi shart; «Bekor qilish» — sessiya yo'q bo'lsa zararsiz
+        e = _au_edit(owner_id)
+        token = rest[-1] if rest else None
+        if base == "au_ecancel":
+            return e is not None and e.get("id") != token
+        needed = "days" if base in ("au_ed", "au_edp", "au_edone") else None
+        return e is None or e.get("id") != token or (needed is not None and e.get("stage") != needed)
     if base in _AU_STAGE_FOR:
         # Qoralama tugmalari: qoralama ID'si VA bosqichi mos bo'lishi shart (eski xabardagi tugma boshqa bosqichda ishlamaydi)
         d = _au_draft(owner_id)
@@ -3853,6 +3988,22 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=markup)
 
 
+def _au_apply_edit(owner_id: int, lang: str, changes: dict):
+    """Tahrirlash sessiyasini yakunlaydi: o'zgarishni BITTA tranzaksiyada yozadi (db.update_automation_rule), sessiyani yopadi
+    va ko'rsatiladigan ekranni (matn, tugmalar) qaytaradi. Qoida yo'q/boshqasiniki bo'lsa — ro'yxat va «topilmadi» xabari."""
+    e = _au_edits.pop(owner_id, None)
+    clear_pending_action(owner_id)
+    if e is None:
+        return build_au_list(owner_id, t(lang, "au_edit_lost"))
+    try:
+        updated = db.update_automation_rule(owner_id, e["rule_id"], **changes)
+    except automation.AutomationError:
+        return build_au_rule(owner_id, e["rule_id"]) or build_au_list(owner_id, t(lang, "au_rule_gone"))
+    if not updated:
+        return build_au_list(owner_id, t(lang, "au_rule_gone"))
+    return build_au_rule(owner_id, e["rule_id"], t(lang, "au_updated")) or build_au_list(owner_id, t(lang, "au_rule_gone"))
+
+
 async def handle_automation_callback(query, owner_id: int, data: str, lang: str) -> bool:
     """Panel: Avtomatlashtirish. Hamma amal aniq/idempotent (yoqish/o'chirish alohida tugma), qoralama tugmalari
     qoralama ID'siga bog'langan (eskirgani stale_confirm_button orqali oldinroq to'xtatiladi)."""
@@ -3863,7 +4014,91 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
 
     if base == "au_menu":
         _au_drafts.pop(owner_id, None)
+        _au_edits.pop(owner_id, None)
         await show(build_au_menu(owner_id))
+        return True
+
+    if base == "au_stats":
+        await show(build_au_stats(owner_id))
+        return True
+
+    if base in ("au_edit", "au_ef"):
+        # au_edit:RULE_ID — menyu; au_ef:FIELD:RULE_ID — tanlangan maydon uchun yangi tahrirlash sessiyasi (o'z tokeni bilan)
+        field, _, raw_id = raw.rpartition(":") if base == "au_ef" else ("", "", raw)
+        rule_id = int(raw_id) if raw_id.isdigit() and len(raw_id) <= 15 else -1
+        rule = next((r for r in db.list_automation_rules(owner_id) if r["id"] == rule_id), None)  # faqat O'ZINING qoidalari
+        if rule is None:
+            await show(build_au_list(owner_id, t(lang, "au_rule_gone")))
+            return True
+        if base == "au_edit":
+            _au_edits.pop(owner_id, None)
+            await show(build_au_edit_menu(owner_id, rule_id))
+            return True
+        if field not in _AU_EDIT_FIELDS:
+            await show(build_au_edit_menu(owner_id, rule_id))
+            return True
+        _, rule_days, rule_time = automation.split_conditions(rule)
+        e = _au_edits[owner_id] = {"id": secrets.token_hex(3), "rule_id": rule_id, "field": field, "ts": time.time(),
+                                   "stage": "days" if field == "days" else "text", "days": set(rule_days or [])}
+        if field == "days":
+            set_pending_action(owner_id, "au_e_days")
+            await show(build_au_edit_days(owner_id))
+            return True
+        none = t(lang, "au_e_none")
+        current = {
+            "name": _au_rule_name(rule), "kw": _au_rule_keyword(rule, lang), "reply": _au_rule_reply(rule),
+            "time": format_time_range(*rule_time) if rule_time is not None else none, "prio": rule.get("priority", automation.DEFAULT_PRIORITY),
+        }[field]
+        prompt = t(lang, f"au_e_{field}_prompt", cur=current, max={"name": automation.MAX_NAME_LENGTH, "kw": automation.MAX_ANY_KEYWORDS,
+                                                                    "reply": automation.MAX_REPLY_LENGTH, "prio": automation.PRIORITY_MAX}.get(field, 0),
+                   min=automation.PRIORITY_MIN)
+        buttons = []
+        if field == "time":
+            buttons.append([InlineKeyboardButton(t(lang, "btn_au_e_clear"), callback_data=f"au_eclear:{e['id']}")])
+        buttons.append([InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_ecancel:{e['id']}")])
+        set_pending_action(owner_id, "au_e_text")
+        await query.message.reply_text(prompt, reply_markup=InlineKeyboardMarkup(buttons))
+        return True
+
+    if base in _AU_EDIT_BUTTONS:
+        e = _au_edit(owner_id)
+        if e is None:  # stale_confirm_button oldin to'xtatadi; xavfsizlik uchun
+            await show(build_au_list(owner_id, t(lang, "au_edit_lost")))
+            return True
+        rule_id = e["rule_id"]
+        if base == "au_ecancel":
+            _au_edits.pop(owner_id, None)
+            await show(build_au_rule(owner_id, rule_id, t(lang, "au_cancelled")) or build_au_list(owner_id, t(lang, "au_rule_gone")))
+            return True
+        e["ts"] = time.time()
+        args = raw.split(":")
+        if base in ("au_ed", "au_edp"):
+            if base == "au_ed":
+                day = int(args[0]) if args and args[0].isdigit() else -1
+                if 0 <= day <= 6:
+                    e["days"] ^= {day}
+            else:
+                preset = {"wd": set(mask_days(WEEKDAYS_MASK)), "we": set(mask_days(WEEKEND_MASK)), "all": set(range(7))}.get(args[0])
+                if preset is not None:
+                    e["days"] = preset
+            set_pending_action(owner_id, "au_e_days")  # on_button holatni tozalagan
+            await show(build_au_edit_days(owner_id))
+            return True
+        if base == "au_edone" and not e["days"]:
+            set_pending_action(owner_id, "au_e_days")
+            text, markup = build_au_edit_days(owner_id)
+            await show((f"{text}\n\n{t(lang, 'au_e_days_empty')}", markup))
+            return True
+        if base == "au_edone":
+            changes = {"days": sorted(e["days"])}
+        elif e["field"] == "days":  # au_eclear
+            changes = {"days": None}
+        elif e["field"] == "time":
+            changes = {"time_range": None}
+        else:
+            await show(build_au_edit_menu(owner_id, rule_id))
+            return True
+        await show(_au_apply_edit(owner_id, lang, changes))
         return True
 
     if base == "au_list":
@@ -3901,6 +4136,7 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
         return True
 
     if base == "au_add":
+        _au_edits.pop(owner_id, None)
         limit = automation_limit_for(owner_id)
         if db.count_automation_rules(owner_id) >= limit:
             await show(build_au_menu(owner_id, t(lang, "au_limit", max=limit)))
@@ -3908,7 +4144,8 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
         _au_drafts[owner_id] = {"ts": time.time(), "id": secrets.token_hex(3), "stage": "kw",
                                 "smart": has_feature(owner_id, "automation_conditions"), "days": set()}
         set_pending_action(owner_id, "au_kw")
-        await query.message.reply_text(t(lang, "au_kw_prompt"))
+        hint = t(lang, "au_kw_or_hint", n=automation.MAX_ANY_KEYWORDS) if _au_drafts[owner_id]["smart"] else ""
+        await query.message.reply_text(t(lang, "au_kw_prompt") + hint)
         return True
 
     if base == "au_cancel":
@@ -3963,14 +4200,15 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
             return True
         days = sorted(d.get("days") or [])
         time_range = (d["start"], d["end"]) if d.get("start") is not None else None
-        if (days or time_range is not None) and not has_feature(owner_id, "automation_conditions"):
+        keywords = d.get("kws") or [d["kw"]]
+        if (days or time_range is not None or len(keywords) > 1) and not has_feature(owner_id, "automation_conditions"):
             text, markup = build_locked_view(owner_id, "automation_conditions", back_data="au_menu")  # tarif o'zgargan
             await query.edit_message_text(text, reply_markup=markup)
             return True
         try:
             rule_id = db.add_automation_rule(
-                owner_id, d["kw"],
-                automation.build_conditions(d["kw"], days, time_range),
+                owner_id, _au_default_name(keywords),
+                automation.build_conditions(keywords, days, time_range),
                 {"type": "send_reply", "text": d["ans"]},
                 automation.DEFAULT_PRIORITY, automation_limit_for(owner_id), enabled=True,
             )
@@ -4126,6 +4364,60 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if action in ("au_e_text", "au_e_days"):
+        e = _au_edit(owner_id)
+        if e is None:
+            clear_pending_action(owner_id)
+            await update.message.reply_text(t(lang, "au_edit_lost"))
+            return
+        if action == "au_e_days":
+            await update.message.reply_text(t(lang, "au_days_hint"))
+            return  # amal saqlanadi — kunlar tugmalar bilan tanlanadi
+        field = e["field"]
+        if field in ("days", "time") and not has_feature(owner_id, "automation_conditions"):
+            _au_edits.pop(owner_id, None)  # tahrirlash paytida tarif tushgan — yangi cheklov darhol kuchga kiradi
+            clear_pending_action(owner_id)
+            text, markup = build_locked_view(owner_id, "automation_conditions", back_data="au_menu")
+            await update.message.reply_text(text, reply_markup=markup)
+            return
+        if not value:
+            await update.message.reply_text(t(lang, "au_empty_text"))
+            return
+        if field == "name":
+            if len(value) > automation.MAX_NAME_LENGTH:
+                await update.message.reply_text(t(lang, "au_name_bad", max=automation.MAX_NAME_LENGTH))
+                return
+            changes = {"name": value}
+        elif field == "kw":
+            keywords = parse_au_keywords(value) or [value]
+            if len(keywords) > 1 and not has_feature(owner_id, "automation_conditions"):
+                await update.message.reply_text(t(lang, "au_or_locked"))
+                return
+            error = au_keyword_error(keywords)
+            if error:
+                await update.message.reply_text(_au_keyword_error_text(lang, error))
+                return
+            changes = {"keywords": keywords}
+        elif field == "time":
+            parsed = parse_time_range_input(value)
+            if parsed is None or not valid_schedule_time(*parsed) or is_all_day(*parsed):
+                await update.message.reply_text(t(lang, "au_time_bad"))
+                return
+            changes = {"time_range": parsed}
+        elif field == "reply":
+            if len(value) > automation.MAX_REPLY_LENGTH:
+                await update.message.reply_text(t(lang, "au_too_long", n=len(value), max=automation.MAX_REPLY_LENGTH))
+                return
+            changes = {"reply": value}
+        else:  # prio
+            if not re.fullmatch(r"[0-9]{1,5}", value) or not automation.PRIORITY_MIN <= int(value) <= automation.PRIORITY_MAX:
+                await update.message.reply_text(t(lang, "au_prio_bad", min=automation.PRIORITY_MIN, max=automation.PRIORITY_MAX))
+                return
+            changes = {"priority": int(value)}
+        text, markup = _au_apply_edit(owner_id, lang, changes)
+        await update.message.reply_text(text, reply_markup=markup)
+        return
+
     if action in ("au_kw", "au_days", "au_time", "au_ans", "au_confirm"):
         d = _au_draft(owner_id)
         if d is None:
@@ -4155,15 +4447,16 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(t(lang, "au_empty_text"))
             return
         if action == "au_kw":
-            try:
-                automation.parse_keyword(value)
-            except automation.AutomationError:
-                await update.message.reply_text(t(
-                    lang, "au_kw_bad", max=automation.MAX_KEYWORD_LENGTH, words=automation.MAX_KEYWORD_TOKENS,
-                    prefix=automation.MIN_PREFIX_LENGTH,
-                ))
+            keywords = parse_au_keywords(value) or [value]
+            if len(keywords) > 1 and not has_feature(owner_id, "automation_conditions"):
+                await update.message.reply_text(t(lang, "au_or_locked"))
+                return  # amal saqlanadi — Plus: bitta kalit so'z
+            error = au_keyword_error(keywords)
+            if error:
+                await update.message.reply_text(_au_keyword_error_text(lang, error))
                 return  # amal saqlanadi — foydalanuvchi qayta yuboradi
-            d["kw"] = value
+            d["kws"] = keywords
+            d["kw"] = _au_join_keywords(lang, keywords)
             if d.get("smart") and has_feature(owner_id, "automation_conditions"):
                 d["stage"] = "days"
                 set_pending_action(owner_id, "au_days")
@@ -4188,7 +4481,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         time_range = (d["start"], d["end"]) if d.get("start") is not None else None
         extra = _au_extra_text(lang, sorted(d.get("days") or []), time_range)
-        await update.message.reply_text(t(lang, "au_confirm", kw=d["kw"], extra=extra, a=value), reply_markup=markup)
+        await update.message.reply_text(t(lang, "au_confirm", kw=_au_join_keywords(lang, d.get("kws") or [d["kw"]]), extra=extra, a=value), reply_markup=markup)
         return
 
     if action in ("kb_edit_t", "kb_edit_c", "kb_edit_kw"):
@@ -5699,7 +5992,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return  # egasi shu chatda o'zi yozmoqda
                 await send_auto_reply(
                     context.bot, bm, owner_id, chat_id, rule["action"]["text"], settings["cooldown_hours"],
-                    label + ",automation", kind="static",
+                    label + ",automation", kind="automation", automation_rule_id=rule.get("id"),
                 )
                 return
 
