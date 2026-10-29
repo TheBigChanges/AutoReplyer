@@ -245,6 +245,9 @@ def init_db():
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_automation_owner ON automation_rules(owner_user_id, is_enabled, priority, id)"
         )
+        # v1.2: qoida bo'yicha statistika (faqat son va vaqt — mijoz xabarlari/chat ID saqlanmaydi)
+        cur.execute("ALTER TABLE automation_rules ADD COLUMN IF NOT EXISTS sent_count BIGINT NOT NULL DEFAULT 0")
+        cur.execute("ALTER TABLE automation_rules ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMPTZ")
         # AI Knowledge Base: har egasining ma'lumotlari alohida (hamma so'rov owner_user_id bilan cheklangan)
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS kb_enabled BOOLEAN NOT NULL DEFAULT TRUE")
         cur.execute(
@@ -1234,7 +1237,7 @@ def update_faq_entry(owner_user_id: int, entry_id: int, **fields) -> bool:
         return cur.rowcount > 0
 
 
-_AUTOMATION_COLS = "id, owner_user_id, name, conditions, action, priority, is_enabled"
+_AUTOMATION_COLS = "id, owner_user_id, name, conditions, action, priority, is_enabled, sent_count, last_sent_at"
 
 
 def add_automation_rule(owner_user_id: int, name, conditions, action, priority: int, max_rules: int, enabled: bool = False) -> int | None:
@@ -1265,6 +1268,78 @@ def add_automation_rule(owner_user_id: int, name, conditions, action, priority: 
                 pass
             raise
     return row[0] if row else None
+
+
+_AUTOMATION_EDIT_FIELDS = frozenset({"name", "keywords", "days", "time_range", "reply", "priority"})
+
+
+def update_automation_rule(owner_user_id: int, rule_id: int, **changes) -> bool:
+    """Mavjud qoidani tahrirlaydi — FAQAT berilgan maydonlar o'zgaradi (qolganlari bazadagi joriy qiymatida qoladi):
+    name, keywords (str yoki ro'yxat; 2+ ta = YOKI), days (ro'yxat; None/[] = olib tashlash), time_range ((boshlanish, tugash)
+    yoki None = olib tashlash), reply, priority.
+    Hammasi BITTA tranzaksiyada: qator `FOR UPDATE` bilan qulflanadi (ikki tahrir bir-birining o'zgarishini bosib ketmaydi),
+    yangi qiymatlar yig'ilgach automation.validate_automation'dan o'tadi (noto'g'ri bo'lsa AutomationError — hech narsa yozilmaydi).
+    Boshqa egasining yoki yo'q qoida uchun — False. is_enabled, sent_count va id tegilmaydi."""
+    invalid = set(changes) - _AUTOMATION_EDIT_FIELDS
+    if invalid or not changes:
+        raise ValueError(f"Ruxsat etilmagan automation maydoni: {invalid or 'bo`sh'}")
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("BEGIN")
+        try:
+            cur.execute(
+                "SELECT name, conditions, action, priority FROM automation_rules WHERE owner_user_id = %s AND id = %s FOR UPDATE",
+                (owner_user_id, rule_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                cur.execute("ROLLBACK")
+                return False
+            current = {"conditions": row["conditions"]}
+            keywords = automation.split_keywords(current)
+            _, days, time_range = automation.split_conditions(current)
+            if "keywords" in changes:
+                keywords = changes["keywords"]
+            if "days" in changes:
+                days = changes["days"] or None
+            if "time_range" in changes:
+                time_range = changes["time_range"]
+            if isinstance(keywords, str):
+                keywords = [keywords]
+            if not isinstance(keywords, (list, tuple)) or not keywords:
+                raise automation.AutomationError("keyword_required")
+            action = dict(row["action"]) if isinstance(row["action"], dict) else {}
+            if "reply" in changes:
+                action = {"type": "send_reply", "text": changes["reply"]}
+            clean = automation.validate_automation(
+                changes.get("name", row["name"]),
+                automation.build_conditions(list(keywords), days, time_range),
+                action,
+                changes.get("priority", row["priority"]),
+            )
+            cur.execute(
+                "UPDATE automation_rules SET name = %s, conditions = %s, action = %s, priority = %s "
+                "WHERE owner_user_id = %s AND id = %s",
+                (clean["name"], psycopg2.extras.Json(clean["conditions"]), psycopg2.extras.Json(clean["action"]),
+                 clean["priority"], owner_user_id, rule_id),
+            )
+            cur.execute("COMMIT")
+        except BaseException:
+            try:
+                cur.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+    return True
+
+
+def record_automation_sent(owner_user_id: int, rule_id: int) -> bool:
+    """Qoida javobi MUVAFFAQIYATLI yuborilgach sanagichni atomik oshiradi (boshqa egasiniki/o'chirilgan qoida — False)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE automation_rules SET sent_count = sent_count + 1, last_sent_at = NOW() WHERE owner_user_id = %s AND id = %s",
+            (owner_user_id, rule_id),
+        )
+        return cur.rowcount > 0
 
 
 def list_automation_rules(owner_user_id: int) -> list[dict]:
@@ -1843,7 +1918,7 @@ def delete_schedule_rule(owner_user_id: int, rule_id: int) -> bool:
 # --------------------------------------------------------------------------
 # Analytics (soatlik hisoblagichlar)
 # --------------------------------------------------------------------------
-ANALYTICS_KINDS = ("incoming", "faq", "ai", "static", "sleep", "skipped")
+ANALYTICS_KINDS = ("incoming", "faq", "ai", "static", "sleep", "automation", "skipped")
 ANALYTICS_RETENTION_DAYS = 90
 
 
