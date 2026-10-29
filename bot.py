@@ -1125,11 +1125,18 @@ def build_au_stats(owner_id: int):
     except Exception:
         logger.warning("Automation statistikasi: analytics o'qilmadi (owner=%s)", owner_id, exc_info=True)
         period_sent = 0
+    try:
+        deleted_sent = int(db.get_automation_deleted_sent(owner_id) or 0)  # o'chirilgan qoidalarning tarixiy javoblari
+        since = db.get_automation_counters_since()
+        since_text = since.astimezone(TASHKENT_TZ).strftime("%d.%m.%Y") if since else "-"
+    except Exception:
+        logger.warning("Automation statistikasi: tarixiy hisob o'qilmadi (owner=%s)", owner_id, exc_info=True)
+        deleted_sent, since_text = 0, "-"
     sent_of = lambda r: int(r.get("sent_count") or 0)  # noqa: E731
     top = sorted((r for r in rules if sent_of(r) > 0), key=lambda r: (-sent_of(r), r["id"]))[:3]
     top_text = "\n".join(f"{i}. {_faq_short(_au_rule_name(r))} — {sent_of(r)}" for i, r in enumerate(top, 1)) or t(lang, "au_stats_top_none")
     text = t(lang, "au_stats", total=len(rules), active=sum(1 for r in rules if r["is_enabled"]), period=_an_period_name(lang, days),
-             period_sent=period_sent, all_sent=sum(sent_of(r) for r in rules), top=top_text)
+             period_sent=period_sent, all_sent=sum(sent_of(r) for r in rules) + deleted_sent, since=since_text, top=top_text)
     return text, InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_menu")]])
 
 
@@ -4369,6 +4376,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if e is None:
             clear_pending_action(owner_id)
             await update.message.reply_text(t(lang, "au_edit_lost"))
+            return
+        if not has_feature(owner_id, "automation"):
+            # Tahrirlash paytida tarif tushgan (masalan Bepul): Automation yopiq — sessiya bekor, hech narsa yozilmaydi
+            _au_edits.pop(owner_id, None)
+            clear_pending_action(owner_id)
+            text, markup = build_locked_view(owner_id, "automation")
+            await update.message.reply_text(text, reply_markup=markup)
             return
         if action == "au_e_days":
             await update.message.reply_text(t(lang, "au_days_hint"))
