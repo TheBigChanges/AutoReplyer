@@ -1122,9 +1122,9 @@ T: dict[str, dict] = {
         "\U0001F4CB Ваши правила ({count}/{max}). ⏸ — выключено.",
     ),
     "au_rule_view": _(
-        "\U0001F9E9 Qoida\n\nHolat: {status}\nKalit so'z: {kw}{extra}\n\nJavob:\n{a}",
-        "\U0001F9E9 Rule\n\nStatus: {status}\nKeyword: {kw}{extra}\n\nReply:\n{a}",
-        "\U0001F9E9 Правило\n\nСостояние: {status}\nКлючевое слово: {kw}{extra}\n\nОтвет:\n{a}",
+        "\U0001F9E9 Qoida\n\nHolat: {status}\nNomi: {name}\nKalit so'z: {kw}{extra}\nUstuvorlik: {prio}\nYuborilgan javoblar: {sent}\n\nJavob:\n{a}",
+        "\U0001F9E9 Rule\n\nStatus: {status}\nName: {name}\nKeyword: {kw}{extra}\nPriority: {prio}\nReplies sent: {sent}\n\nReply:\n{a}",
+        "\U0001F9E9 Правило\n\nСостояние: {status}\nНазвание: {name}\nКлючевое слово: {kw}{extra}\nПриоритет: {prio}\nОтправлено ответов: {sent}\n\nОтвет:\n{a}",
     ),
     "btn_au_on": _("✅ Yoqish", "✅ Turn on", "✅ Включить"),
     "btn_au_off": _("⏸ O'chirib turish", "⏸ Turn off", "⏸ Выключить"),
@@ -1169,11 +1169,120 @@ T: dict[str, dict] = {
     ),
     "au_cond_days": _("Kunlar: {v}", "Days: {v}", "Дни: {v}"),
     "au_cond_time": _("Vaqt: {v}", "Time: {v}", "Время: {v}"),
-    "au_rule_locked": _(
-        "\U0001F512 Kun/vaqt shartlari Pro va Ultra tarifida ishlaydi. Hozirgi tarifda bu qoida ishlamaydi (o'chib ketmaydi).",
-        "\U0001F512 Day/time conditions work on the Pro and Ultra plans. On your current plan this rule does not run (it is not deleted).",
-        "\U0001F512 Условия по дням/времени работают на тарифах Pro и Ultra. На текущем тарифе это правило не срабатывает (оно не удаляется).",
+    "au_or_join": _(" YOKI ", " OR ", " ИЛИ "),
+    "au_kw_or_hint": _(
+        "\n\n\U0001F500 Bir nechta kalit so'z (YOKI): vergul bilan ajrating, ko'pi bilan {n} ta. Masalan: narx*, qancha, price",
+        "\n\n\U0001F500 Several keywords (OR): separate them with commas, up to {n}. For example: price*, how much, cost",
+        "\n\n\U0001F500 Несколько ключевых слов (ИЛИ): разделите запятыми, не более {n}. Например: цен*, сколько, стоимость",
     ),
+    "au_kw_count": _(
+        "❌ Kalit so'zlar soni 2 dan {n} gacha bo'lishi kerak. Qayta yuboring.",
+        "❌ The number of keywords must be between 2 and {n}. Send them again.",
+        "❌ Количество ключевых слов должно быть от 2 до {n}. Отправьте ещё раз.",
+    ),
+    "au_kw_dup": _(
+        "❌ Bir xil kalit so'z takrorlangan. Har birini bir martadan yozing.",
+        "❌ A keyword is repeated. Write each one only once.",
+        "❌ Ключевое слово повторяется. Напишите каждое только один раз.",
+    ),
+    "au_or_locked": _(
+        "\U0001F512 Bir nechta kalit so'z (YOKI) Pro va Ultra tarifida ishlaydi. Hozir bitta kalit so'z yuboring.",
+        "\U0001F512 Several keywords (OR) work on the Pro and Ultra plans. Send a single keyword for now.",
+        "\U0001F512 Несколько ключевых слов (ИЛИ) работают на тарифах Pro и Ultra. Сейчас отправьте одно ключевое слово.",
+    ),
+    "au_rule_locked": _(
+        "\U0001F512 Kun/vaqt va YOKI (bir nechta kalit so'z) shartlari Pro va Ultra tarifida ishlaydi. Hozirgi tarifda bu qoida ishlamaydi (o'chib ketmaydi).",
+        "\U0001F512 Day/time and OR (several keywords) conditions work on the Pro and Ultra plans. On your current plan this rule does not run (it is not deleted).",
+        "\U0001F512 Условия по дням/времени и ИЛИ (несколько ключевых слов) работают на тарифах Pro и Ultra. На текущем тарифе это правило не срабатывает (оно не удаляется).",
+    ),
+    "btn_au_edit": _("✏️ Tahrirlash", "✏️ Edit", "✏️ Изменить"),
+    "au_edit_menu": _(
+        "✏️ Qoidani tahrirlash\n\nQaysi qismini o'zgartirasiz?",
+        "✏️ Edit rule\n\nWhich part do you want to change?",
+        "✏️ Изменение правила\n\nЧто вы хотите изменить?",
+    ),
+    "btn_au_e_name": _("\U0001F4DD Nomi", "\U0001F4DD Name", "\U0001F4DD Название"),
+    "btn_au_e_kw": _("\U0001F511 Kalit so'zlar", "\U0001F511 Keywords", "\U0001F511 Ключевые слова"),
+    "btn_au_e_days": _("\U0001F4C5 Kunlar", "\U0001F4C5 Days", "\U0001F4C5 Дни"),
+    "btn_au_e_time": _("\U0001F552 Vaqt", "\U0001F552 Time", "\U0001F552 Время"),
+    "btn_au_e_reply": _("\U0001F4AC Javob", "\U0001F4AC Reply", "\U0001F4AC Ответ"),
+    "btn_au_e_prio": _("⚡ Ustuvorlik", "⚡ Priority", "⚡ Приоритет"),
+    "btn_au_e_clear": _("\U0001F9F9 Shartni olib tashlash", "\U0001F9F9 Remove the condition", "\U0001F9F9 Убрать условие"),
+    "btn_au_e_done": _("✅ Tayyor", "✅ Done", "✅ Готово"),
+    "au_e_name_prompt": _(
+        "Qoidaning yangi nomini yuboring (ko'pi bilan {max} belgi).\nHozirgi: {cur}",
+        "Send the new name of the rule (up to {max} characters).\nCurrent: {cur}",
+        "Отправьте новое название правила (до {max} символов).\nСейчас: {cur}",
+    ),
+    "au_e_kw_prompt": _(
+        "Yangi kalit so'z(lar)ni yuboring. Bir nechta bo'lsa (Pro/Ultra) vergul bilan ajrating, ko'pi bilan {max} ta.\nHozirgi: {cur}",
+        "Send the new keyword(s). If several (Pro/Ultra), separate with commas, up to {max}.\nCurrent: {cur}",
+        "Отправьте новые ключевые слова. Если несколько (Pro/Ultra) — через запятую, не более {max}.\nСейчас: {cur}",
+    ),
+    "au_e_time_prompt": _(
+        "Yangi vaqt oralig'ini yuboring, masalan 09:00-18:00. Shartni butunlay olib tashlash uchun pastdagi tugmani bosing.\nHozirgi: {cur}",
+        "Send the new time range, for example 09:00-18:00. To remove the condition completely, press the button below.\nCurrent: {cur}",
+        "Отправьте новый интервал, например 09:00-18:00. Чтобы убрать условие совсем, нажмите кнопку ниже.\nСейчас: {cur}",
+    ),
+    "au_e_reply_prompt": _(
+        "Yangi javob matnini yuboring (ko'pi bilan {max} belgi).\nHozirgi:\n{cur}",
+        "Send the new reply text (up to {max} characters).\nCurrent:\n{cur}",
+        "Отправьте новый текст ответа (до {max} символов).\nСейчас:\n{cur}",
+    ),
+    "au_e_prio_prompt": _(
+        "Yangi ustuvorlikni yuboring: {min} dan {max} gacha butun son. Kichik son — oldin tekshiriladi.\nHozirgi: {cur}",
+        "Send the new priority: a whole number from {min} to {max}. A smaller number is checked first.\nCurrent: {cur}",
+        "Отправьте новый приоритет: целое число от {min} до {max}. Меньшее число проверяется раньше.\nСейчас: {cur}",
+    ),
+    "au_e_days_title": _(
+        "\U0001F4C5 Qoida ishlaydigan kunlarni tanlang va «Tayyor»ni bosing.",
+        "\U0001F4C5 Pick the days the rule works and press “Done”.",
+        "\U0001F4C5 Выберите дни, когда работает правило, и нажмите «Готово».",
+    ),
+    "au_name_bad": _(
+        "❌ Nom bo'sh bo'lmasligi va {max} belgidan oshmasligi kerak. Qayta yuboring.",
+        "❌ The name must not be empty or longer than {max} characters. Send it again.",
+        "❌ Название не должно быть пустым или длиннее {max} символов. Отправьте ещё раз.",
+    ),
+    "au_prio_bad": _(
+        "❌ Ustuvorlik {min} dan {max} gacha butun son bo'lishi kerak. Qayta yuboring.",
+        "❌ The priority must be a whole number from {min} to {max}. Send it again.",
+        "❌ Приоритет должен быть целым числом от {min} до {max}. Отправьте ещё раз.",
+    ),
+    "au_updated": _("✅ O'zgarishlar saqlandi.", "✅ Changes saved.", "✅ Изменения сохранены."),
+    "au_edit_lost": _(
+        "⚠️ Tahrirlash sessiyasi topilmadi (vaqti o'tgan bo'lishi mumkin). Qoidani qaytadan oching.",
+        "⚠️ The edit session was not found (it may have expired). Open the rule again.",
+        "⚠️ Сессия изменения не найдена (возможно, истёк срок). Откройте правило заново.",
+    ),
+    "au_e_days_empty": _(
+        "Kamida bitta kunni tanlang yoki «Shartni olib tashlash»ni bosing.",
+        "Pick at least one day or press “Remove the condition”.",
+        "Выберите хотя бы один день или нажмите «Убрать условие».",
+    ),
+    "au_e_none": _("yo'q", "none", "нет"),
+    "btn_au_stats": _("\U0001F4CA Statistika", "\U0001F4CA Statistics", "\U0001F4CA Статистика"),
+    "au_stats": _(
+        "\U0001F4CA Automation statistikasi\n\n"
+        "\U0001F9E9 Jami qoidalar: {total}\n✅ Faol qoidalar: {active}\n\n"
+        "\U0001F4E8 Automation javoblari ({period}): {period_sent}\n"
+        "\U0001F4E8 Automation javoblari (jami): {all_sent}\n\n"
+        "\U0001F3C6 Eng ko'p ishlatilgan qoidalar (jami):\n{top}\n\n"
+        "\U0001F512 Mijoz xabarlari yoki chat ID saqlanmaydi — faqat sonlar.",
+        "\U0001F4CA Automation statistics\n\n"
+        "\U0001F9E9 Total rules: {total}\n✅ Active rules: {active}\n\n"
+        "\U0001F4E8 Automation replies ({period}): {period_sent}\n"
+        "\U0001F4E8 Automation replies (all time): {all_sent}\n\n"
+        "\U0001F3C6 Most used rules (all time):\n{top}\n\n"
+        "\U0001F512 Customer messages and chat IDs are not stored — only counters.",
+        "\U0001F4CA Статистика автоматизации\n\n"
+        "\U0001F9E9 Всего правил: {total}\n✅ Активных правил: {active}\n\n"
+        "\U0001F4E8 Ответов автоматизации ({period}): {period_sent}\n"
+        "\U0001F4E8 Ответов автоматизации (всего): {all_sent}\n\n"
+        "\U0001F3C6 Самые используемые правила (всего):\n{top}\n\n"
+        "\U0001F512 Сообщения клиентов и ID чатов не хранятся — только счётчики.",
+    ),
+    "au_stats_top_none": _("Hali javob yuborilmagan.", "No replies sent yet.", "Пока нет отправленных ответов."),
     "feature_automation": _("Avtomatlashtirish qoidalari", "Automation rules", "Правила автоматизации"),
     "pf_faq": _(
         "Smart FAQ — tayyor savol-javoblar bilan tez avtomatik javob (ko'pi bilan {n} ta savol)",
@@ -1493,6 +1602,7 @@ T: dict[str, dict] = {
         "  \u251C \U0001F4A1 Smart FAQ: {faq}\n"
         "  \u251C \U0001F916 Gemini AI: {ai}\n"
         "  \u251C \U0001F4DD Oddiy javoblar: {static}\n"
+        "  \u251C \U0001F9E9 Automation: {automation}\n"
         "  \u2514 \U0001F634 Sleep Mode: {sleep}\n\n"
         "\u23F0 Eng faol vaqt: {peak}",
         "\U0001F4CA AUTOREPLY ANALYTICS\n\n"
@@ -1502,6 +1612,7 @@ T: dict[str, dict] = {
         "  \u251C \U0001F4A1 Smart FAQ: {faq}\n"
         "  \u251C \U0001F916 Gemini AI: {ai}\n"
         "  \u251C \U0001F4DD Standard replies: {static}\n"
+        "  \u251C \U0001F9E9 Automation: {automation}\n"
         "  \u2514 \U0001F634 Sleep Mode: {sleep}\n\n"
         "\u23F0 Busiest time: {peak}",
         "\U0001F4CA AUTOREPLY ANALYTICS\n\n"
@@ -1511,6 +1622,7 @@ T: dict[str, dict] = {
         "  \u251C \U0001F4A1 Smart FAQ: {faq}\n"
         "  \u251C \U0001F916 Gemini AI: {ai}\n"
         "  \u251C \U0001F4DD Обычные ответы: {static}\n"
+        "  \u251C \U0001F9E9 Automation: {automation}\n"
         "  \u2514 \U0001F634 Sleep Mode: {sleep}\n\n"
         "\u23F0 Самое активное время: {peak}",
     ),
@@ -1544,6 +1656,7 @@ T: dict[str, dict] = {
     "an_lbl_faq": _("Smart FAQ javoblari", "Smart FAQ replies", "Ответы Smart FAQ"),
     "an_lbl_ai": _("Gemini AI javoblari", "Gemini AI replies", "Ответы Gemini AI"),
     "an_lbl_static": _("Oddiy javoblar", "Standard replies", "Обычные ответы"),
+    "an_lbl_automation": _("Automation javoblari", "Automation replies", "Ответы Automation"),
     "an_lbl_sleep": _("Sleep Mode javoblari", "Sleep Mode replies", "Ответы Sleep Mode"),
     "an_lbl_none": _("Ma'lumot yo'q", "No data", "Нет данных"),
     "an_lbl_hour": _("Soat", "Hour", "Час"),
