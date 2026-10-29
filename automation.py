@@ -1,4 +1,4 @@
-"""Automation Engine v1.1: "AGAR xabarda kalit so'z bo'lsa (VA hafta kuni/vaqt mos bo'lsa), UNDA maxsus javob yuborilsin".
+"""Automation Engine v1.2: "AGAR xabarda kalit so'z (yoki bir nechtasidan istalgani — YOKI) bo'lsa (VA hafta kuni/vaqt mos bo'lsa), UNDA maxsus javob".
 
 Toza modul: bazaga ham, Telegramga ham bog'lanmaydi — shuning uchun alohida oson sinaladi.
 Qoida (bazada JSONB):
@@ -6,6 +6,8 @@ Qoida (bazada JSONB):
                                                {"type": "days_of_week", "value": [0, 1, 2, 3, 4]},          # ixtiyoriy
                                                {"type": "time_between", "value": {"start": 540, "end": 1080}}]}  # ixtiyoriy
     action     = {"type": "send_reply", "text": "..."}
+  v1.2: kalit so'z sharti ikki xil bo'lishi mumkin (ikkalasi birga EMAS): "keyword_contains" (bitta kalit so'z) yoki
+        "keyword_any" (2-5 kalit so'z, ISTALGANI mos kelsa yetadi — YOKI); qolgan shartlar VA bo'lib qoladi.
 
 Kalit so'z mosligi (Smart FAQ bilan bir xil normallashtirish — logic.faq_tokens):
   - sukut bo'yicha BUTUN so'z/ibora: "narx" -> "narx" mos, "narxi" yoki "unarxon" mos EMAS;
@@ -16,15 +18,18 @@ Kalit so'z mosligi (Smart FAQ bilan bir xil normallashtirish — logic.faq_token
 from logic import _NEGATIONS, ALL_DAYS_MASK, SCHEDULE_ALL_DAY, days_mask, faq_tokens, schedule_active, valid_schedule_time
 
 ALLOWED_OPERATORS = frozenset({"all"})
-KEYWORD, DAYS, TIME = "keyword_contains", "days_of_week", "time_between"
-ALLOWED_CONDITIONS = frozenset({KEYWORD, DAYS, TIME})
-CANONICAL_ORDER = (KEYWORD, DAYS, TIME)  # saqlashda tartib: kalit so'z, kunlar, vaqt
+KEYWORD, KEYWORD_ANY, DAYS, TIME = "keyword_contains", "keyword_any", "days_of_week", "time_between"
+ALLOWED_CONDITIONS = frozenset({KEYWORD, KEYWORD_ANY, DAYS, TIME})
+KEYWORD_KINDS = (KEYWORD, KEYWORD_ANY)
+CANONICAL_ORDER = (KEYWORD, KEYWORD_ANY, DAYS, TIME)  # saqlashda tartib: kalit so'z(lar), kunlar, vaqt
 MAX_CONDITIONS = 3
 ALLOWED_ACTIONS = frozenset({"send_reply"})
 
 MAX_NAME_LENGTH = 60
 MAX_KEYWORD_LENGTH = 50
 MAX_KEYWORD_TOKENS = 5
+MAX_ANY_KEYWORDS = 5  # keyword_any ichida ko'pi bilan 5 ta kalit so'z
+MIN_ANY_KEYWORDS = 2
 MIN_PREFIX_LENGTH = 3  # "a*" kabi hamma narsaga mos keladigan qisqa prefikslar rad etiladi
 MAX_REPLY_LENGTH = 500
 PRIORITY_MIN, PRIORITY_MAX = 0, 10000
@@ -75,15 +80,34 @@ def _validate_conditions(conditions) -> list[dict]:
         if kind in by_type:
             raise AutomationError("duplicate_condition")
         by_type[kind] = _clean_condition_value(kind, item["value"])
-    if KEYWORD not in by_type:
+    if KEYWORD in by_type and KEYWORD_ANY in by_type:
+        raise AutomationError("duplicate_condition")  # kalit so'z sharti bitta bo'ladi: yoki bitta, yoki YOKI ro'yxati
+    if KEYWORD not in by_type and KEYWORD_ANY not in by_type:
         raise AutomationError("keyword_required")
     return [{"type": kind, "value": by_type[kind]} for kind in CANONICAL_ORDER if kind in by_type]
+
+
+def _clean_keyword_list(value) -> list[str]:
+    """keyword_any: 2-5 ta kalit so'z, har biri parse_keyword() dan o'tadi; takrorlar (normallashtirilgach) rad etiladi."""
+    if not isinstance(value, list) or not MIN_ANY_KEYWORDS <= len(value) <= MAX_ANY_KEYWORDS:
+        raise AutomationError("keyword_count")
+    cleaned, seen = [], set()
+    for raw in value:
+        words, prefix = parse_keyword(raw)
+        key = (tuple(words), prefix)
+        if key in seen:
+            raise AutomationError("keyword_duplicate")
+        seen.add(key)
+        cleaned.append(raw.strip())
+    return cleaned
 
 
 def _clean_condition_value(kind: str, value):
     if kind == KEYWORD:
         parse_keyword(value)
         return value.strip()
+    if kind == KEYWORD_ANY:
+        return _clean_keyword_list(value)
     if kind == DAYS:
         if not isinstance(value, list) or not value or len(value) > 7:
             raise AutomationError("days")
@@ -98,9 +122,14 @@ def _clean_condition_value(kind: str, value):
     return {"start": start, "end": end}
 
 
-def build_conditions(keyword: str, days=None, time_range=None) -> dict:
-    """Panel/buyruq uchun yordamchi: kalit so'z + ixtiyoriy kunlar (0=Dushanba) + ixtiyoriy (boshlanish, tugash) daqiqalari."""
-    items = [{"type": KEYWORD, "value": keyword}]
+def build_conditions(keyword, days=None, time_range=None) -> dict:
+    """Panel/buyruq uchun yordamchi: kalit so'z (str) yoki kalit so'zlar ro'yxati (2+ ta bo'lsa YOKI) + ixtiyoriy kunlar
+    (0=Dushanba) + ixtiyoriy (boshlanish, tugash) daqiqalari. Bitta elementli ro'yxat — oddiy kalit so'z."""
+    if isinstance(keyword, (list, tuple)):
+        keyword = list(keyword)
+        items = [{"type": KEYWORD_ANY, "value": keyword}] if len(keyword) != 1 else [{"type": KEYWORD, "value": keyword[0]}]
+    else:
+        items = [{"type": KEYWORD, "value": keyword}]
     if days:
         items.append({"type": DAYS, "value": sorted(days)})
     if time_range is not None:
@@ -124,10 +153,28 @@ def split_conditions(rule: dict) -> tuple[str | None, list[int] | None, tuple[in
     return keyword, days, time_range
 
 
+def split_keywords(rule: dict) -> list[str]:
+    """Qoidadagi kalit so'zlar ro'yxati: keyword_contains -> [bitta], keyword_any -> hammasi. Buzuq ma'lumotda — []."""
+    try:
+        for item in rule["conditions"]["items"]:
+            if item["type"] == KEYWORD and isinstance(item["value"], str):
+                return [item["value"]]
+            if item["type"] == KEYWORD_ANY and isinstance(item["value"], list):
+                return [v for v in item["value"] if isinstance(v, str)]
+    except (KeyError, TypeError, AttributeError):
+        pass
+    return []
+
+
 def has_smart_conditions(rule: dict) -> bool:
-    """Qoidada hafta kuni yoki vaqt sharti bormi (tarif cheklovi shu uchun)."""
+    """Qoida kengaytirilgan shartlardan birini ishlatadimi: hafta kuni, vaqt yoki YOKI (bir nechta kalit so'z).
+    Tarif cheklovi (Pro/Ultra) shu uchun."""
     _, days, time_range = split_conditions(rule)
-    return days is not None or time_range is not None
+    try:
+        has_or = any(item["type"] == KEYWORD_ANY for item in rule["conditions"]["items"])
+    except (KeyError, TypeError, AttributeError):
+        has_or = False
+    return has_or or days is not None or time_range is not None
 
 
 def validate_automation(name, conditions, action, priority=DEFAULT_PRIORITY) -> dict:
@@ -187,6 +234,13 @@ def matches_keyword(message: str | None, keyword) -> bool:
     return False
 
 
+def matches_any_keyword(message: str | None, keywords) -> bool:
+    """YOKI: ro'yxatdagi kalit so'zlardan ISTALGANI mos kelsa True (har biri matches_keyword qoidasi bilan)."""
+    if not isinstance(keywords, (list, tuple)) or not keywords:
+        return False
+    return any(matches_keyword(message, kw) for kw in keywords)
+
+
 def _schedule_ok(days, time_range, when) -> bool:
     """Hafta kuni va vaqt BIRGALIKDA hisoblanadi (logic.schedule_active): yarim tundan o'tadigan oraliq (Du 22:00 -> Se 06:00)
     boshlangan kuniga tegishli. Faqat kunlar — butun kun; faqat vaqt — har kuni. `when` = (weekday, daqiqa), 0 = Dushanba."""
@@ -212,7 +266,7 @@ def rule_matches(message: str | None, rule: dict, when=None, allow_smart: bool =
         items = conditions["items"]
         if not isinstance(items, list) or not items or len(items) > MAX_CONDITIONS:
             return False
-        keyword, days, time_range = None, None, None
+        keyword, any_keywords, days, time_range = None, None, None, None
         seen = set()
         for item in items:
             kind = item["type"]
@@ -221,13 +275,19 @@ def rule_matches(message: str | None, rule: dict, when=None, allow_smart: bool =
             seen.add(kind)
             if kind == KEYWORD:
                 keyword = item["value"]
+            elif kind == KEYWORD_ANY:
+                any_keywords = item["value"]
             elif kind == DAYS:
                 days = item["value"]
             else:
                 value = item["value"]
                 time_range = (value["start"], value["end"])
-        if keyword is None or not matches_keyword(message, keyword):
+        if (keyword is None) == (any_keywords is None):
+            return False  # kalit so'z sharti aynan bitta bo'lishi kerak
+        if keyword is not None and not matches_keyword(message, keyword):
             return False
+        if any_keywords is not None and not (allow_smart and matches_any_keyword(message, any_keywords)):
+            return False  # YOKI faqat Pro/Ultra: tarif tushgan bo'lsa qoida to'xtaydi
         if (days is not None or time_range is not None) and not (allow_smart and _schedule_ok(days, time_range, when)):
             return False
         action = rule["action"]
