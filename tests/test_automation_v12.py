@@ -304,6 +304,43 @@ class DbV12Tests(unittest.TestCase):
         with db.get_conn() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM automation_deleted_totals WHERE owner_user_id = ANY(%s)", (list(owners),))
 
+    def test_reply_sent_just_before_rule_deleted_is_not_lost(self):
+        """Poyga: javob yuborildi, sanagich fonda yoziladi, shu orada qoida o'chirildi -> hisob tarixiy jamga tushadi."""
+        rid = self.add(self.a)
+        self.addCleanup(lambda: self._del_totals(self.a, self.b))
+        self.assertTrue(db.delete_automation_rule(self.a, rid))          # o'chirish oldin o'tdi
+        bot._record_automation_sent_safe(self.a, rid)                    # kechikkan fon vazifasi
+        self.assertEqual(db.get_automation_deleted_sent(self.a), 1)
+
+    def test_no_double_count_when_rule_still_exists(self):
+        rid = self.add(self.a)
+        self.addCleanup(lambda: self._del_totals(self.a, self.b))
+        bot._record_automation_sent_safe(self.a, rid)                    # oddiy holat: qoida bor
+        self.assertEqual(db.get_automation_deleted_sent(self.a), 0)
+        db.delete_automation_rule(self.a, rid)                           # keyin o'chirildi: 1 marta, ko'chirilgan
+        self.assertEqual(db.get_automation_deleted_sent(self.a), 1)
+
+    def test_parallel_send_and_delete_counts_exactly_once(self):
+        import threading
+        for round_no in range(10):
+            rid = self.add(self.a)
+            self.addCleanup(lambda: self._del_totals(self.a, self.b))
+            before = db.get_automation_deleted_sent(self.a)
+            barrier = threading.Barrier(2)
+
+            def send():
+                barrier.wait()
+                bot._record_automation_sent_safe(self.a, rid)
+
+            def delete():
+                barrier.wait()
+                db.delete_automation_rule(self.a, rid)
+
+            ts = [threading.Thread(target=send), threading.Thread(target=delete)]
+            [x.start() for x in ts]
+            [x.join() for x in ts]
+            self.assertEqual(db.get_automation_deleted_sent(self.a) - before, 1, f"round {round_no}")
+
     def test_analytics_automation_kind_roundtrips(self):
         owner = self.a
         self.addCleanup(lambda: self._del_an(owner))
@@ -387,6 +424,22 @@ class OrFlowTests(FlowTests):
         m["gen"].assert_not_awaited()
         texts, _, _, _ = self.run_flow([OR(text="OR javobi")], text="boshqa savol", faq_answer="FAQ")
         self.assertEqual(texts, ["FAQ"])
+
+
+class SentCounterFallbackTests(unittest.TestCase):
+    def test_missing_rule_falls_back_to_history_once(self):
+        with patch.object(db, "record_automation_sent", return_value=False), patch.object(db, "add_automation_deleted_sent") as add:
+            bot._record_automation_sent_safe(OWNER, 5)
+        add.assert_called_once_with(OWNER, 1)
+
+    def test_existing_rule_does_not_touch_history(self):
+        with patch.object(db, "record_automation_sent", return_value=True), patch.object(db, "add_automation_deleted_sent") as add:
+            bot._record_automation_sent_safe(OWNER, 5)
+        add.assert_not_called()
+
+    def test_db_error_is_swallowed(self):
+        with patch.object(db, "record_automation_sent", side_effect=RuntimeError("db")):
+            bot._record_automation_sent_safe(OWNER, 5)  # javob oqimini buzmaydi
 
 
 class SendFailureTests(unittest.TestCase):
