@@ -1266,20 +1266,20 @@ T: dict[str, dict] = {
         "\U0001F4CA Automation statistikasi\n\n"
         "\U0001F9E9 Jami qoidalar: {total}\n✅ Faol qoidalar: {active}\n\n"
         "\U0001F4E8 Automation javoblari ({period}): {period_sent}\n"
-        "\U0001F4E8 Automation javoblari (jami): {all_sent}\n\n"
-        "\U0001F3C6 Eng ko'p ishlatilgan qoidalar (jami):\n{top}\n\n"
+        "\U0001F4E8 Automation javoblari (jami, {since} dan beri): {all_sent}\n\n"
+        "\U0001F3C6 Eng ko'p ishlatilgan mavjud qoidalar:\n{top}\n\n"
         "\U0001F512 Mijoz xabarlari yoki chat ID saqlanmaydi — faqat sonlar.",
         "\U0001F4CA Automation statistics\n\n"
         "\U0001F9E9 Total rules: {total}\n✅ Active rules: {active}\n\n"
         "\U0001F4E8 Automation replies ({period}): {period_sent}\n"
-        "\U0001F4E8 Automation replies (all time): {all_sent}\n\n"
-        "\U0001F3C6 Most used rules (all time):\n{top}\n\n"
+        "\U0001F4E8 Automation replies (total, since {since}): {all_sent}\n\n"
+        "\U0001F3C6 Most used existing rules:\n{top}\n\n"
         "\U0001F512 Customer messages and chat IDs are not stored — only counters.",
         "\U0001F4CA Статистика автоматизации\n\n"
         "\U0001F9E9 Всего правил: {total}\n✅ Активных правил: {active}\n\n"
         "\U0001F4E8 Ответов автоматизации ({period}): {period_sent}\n"
-        "\U0001F4E8 Ответов автоматизации (всего): {all_sent}\n\n"
-        "\U0001F3C6 Самые используемые правила (всего):\n{top}\n\n"
+        "\U0001F4E8 Ответов автоматизации (всего, с {since}): {all_sent}\n\n"
+        "\U0001F3C6 Самые используемые существующие правила:\n{top}\n\n"
         "\U0001F512 Сообщения клиентов и ID чатов не хранятся — только счётчики.",
     ),
     "au_stats_top_none": _("Hali javob yuborilmagan.", "No replies sent yet.", "Пока нет отправленных ответов."),
