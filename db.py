@@ -1402,6 +1402,20 @@ def delete_automation_rule(owner_user_id: int, rule_id: int) -> bool:
         return cur.fetchone()[0] > 0
 
 
+def add_automation_deleted_sent(owner_user_id: int, n: int = 1) -> None:
+    """Javob yuborilgan, lekin uning qoidasi shu orada o'chirilgan bo'lsa: sanoq yo'qolmasin deb egasining tarixiy jamiga qo'shiladi."""
+    if n <= 0:
+        return
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO automation_deleted_totals (owner_user_id, sent_count) VALUES (%s, %s)
+            ON CONFLICT (owner_user_id) DO UPDATE SET sent_count = automation_deleted_totals.sent_count + EXCLUDED.sent_count
+            """,
+            (owner_user_id, n),
+        )
+
+
 def get_automation_deleted_sent(owner_user_id: int) -> int:
     """Egasining o'chirilgan qoidalari bo'yicha tarixiy yuborilgan javoblar soni."""
     with get_conn() as conn, conn.cursor() as cur:
