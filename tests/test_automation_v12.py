@@ -265,6 +265,45 @@ class DbV12Tests(unittest.TestCase):
         self.assertIsNotNone(r["last_sent_at"])
         self.assertFalse(db.record_automation_sent(self.a, rid + 99999))
 
+    def test_deleting_rule_keeps_its_sent_count_in_history(self):
+        a, b = self.add(self.a, name="Narxlar"), self.add(self.a, name="Ish")
+        for _ in range(3):
+            db.record_automation_sent(self.a, a)
+        db.record_automation_sent(self.a, b)
+        self.addCleanup(lambda: self._del_totals(self.a, self.b))
+        self.assertEqual(db.get_automation_deleted_sent(self.a), 0)
+        self.assertTrue(db.delete_automation_rule(self.a, a))
+        self.assertEqual(db.get_automation_deleted_sent(self.a), 3)
+        self.assertFalse(db.delete_automation_rule(self.a, a))            # ikkinchi o'chirish ikki marta qo'shmaydi
+        self.assertEqual(db.get_automation_deleted_sent(self.a), 3)
+        self.assertTrue(db.delete_automation_rule(self.a, b))
+        self.assertEqual(db.get_automation_deleted_sent(self.a), 4)
+        self.assertEqual(db.get_automation_deleted_sent(self.b), 0)       # boshqa egasiga tegmaydi
+
+    def test_other_owner_delete_changes_nothing(self):
+        rid = self.add(self.a)
+        db.record_automation_sent(self.a, rid)
+        self.addCleanup(lambda: self._del_totals(self.a, self.b))
+        self.assertFalse(db.delete_automation_rule(self.b, rid))
+        self.assertEqual(db.get_automation_deleted_sent(self.b), 0)
+        self.assertEqual(db.get_automation_deleted_sent(self.a), 0)
+        self.assertEqual(db.count_automation_rules(self.a), 1)
+
+    def test_zero_sent_rule_delete_and_counters_since(self):
+        rid = self.add(self.a)
+        self.addCleanup(lambda: self._del_totals(self.a, self.b))
+        self.assertTrue(db.delete_automation_rule(self.a, rid))
+        self.assertEqual(db.get_automation_deleted_sent(self.a), 0)
+        since = db.get_automation_counters_since()
+        self.assertIsNotNone(since)
+        db.init_db()                                                       # qayta migratsiya sanani o'zgartirmaydi
+        self.assertEqual(db.get_automation_counters_since(), since)
+
+    @staticmethod
+    def _del_totals(*owners):
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM automation_deleted_totals WHERE owner_user_id = ANY(%s)", (list(owners),))
+
     def test_analytics_automation_kind_roundtrips(self):
         owner = self.a
         self.addCleanup(lambda: self._del_an(owner))
@@ -456,6 +495,21 @@ class V12PanelBase(PanelBase):
             return False
 
         self.fake.update_calls = []
+        self.deleted_totals = {}
+        orig_delete = db.delete_automation_rule
+
+        def delete(owner, rid):
+            for r in self.fake.rows:
+                if r["owner_user_id"] == owner and r["id"] == rid:
+                    self.deleted_totals[owner] = self.deleted_totals.get(owner, 0) + (r.get("sent_count") or 0)
+            return orig_delete(owner, rid)
+
+        for name, fn in (("delete_automation_rule", delete),
+                         ("get_automation_deleted_sent", lambda owner: self.deleted_totals.get(owner, 0)),
+                         ("get_automation_counters_since", lambda: datetime(2026, 10, 29, tzinfo=UTC))):
+            q = patch.object(db, name, side_effect=fn)
+            q.start()
+            self.addCleanup(q.stop)
         p = patch.object(db, "update_automation_rule", side_effect=update)
         p.start()
         self.addCleanup(p.stop)
@@ -697,6 +751,34 @@ class EditFlowTests(V12PanelBase):
         self.assertEqual(au.split_conditions(self.rule(rid))[1], [1])
         self.assertIn(t("uz", "feature_automation_conditions"), self.shown(q))
 
+    def test_free_after_plan_drop_cannot_finish_any_text_edit(self):
+        """Tahrirlash paytida tarif Bepulga tushsa: nom/javob/ustuvorlik/kalit so'z yozilmaydi, sessiya bekor."""
+        for field, value in (("name", "Yangi nom"), ("reply", "Yangi javob"), ("prio", "5"), ("kw", "yangi")):
+            self.plan = "plus"
+            bot._au_edits.clear()
+            rid = self.make(("narx",), name="Asl", reply="Asl javob", prio=100)
+            self.edit(field, rid)
+            self.plan = "free"
+            reply = self.say(value)
+            r = self.rule(rid)
+            self.assertEqual((r["name"], r["action"]["text"], r["priority"], au.split_keywords(r)), ("Asl", "Asl javob", 100, ["narx"]), field)
+            self.assertIn(t("uz", "feature_automation"), reply.await_args.args[0], field)
+            self.assertIsNone(bot._au_edit(USER), field)
+            self.assertIsNone(bot.get_pending_action(USER), field)
+        self.assertEqual(self.fake.update_calls, [])
+
+    def test_free_after_plan_drop_cannot_use_day_buttons_or_hint_path(self):
+        self.plan = "plus"
+        self.plan = "pro"
+        rid = self.make(("narx",), days=[1])
+        _, e = self.edit("days", rid)
+        self.plan = "free"
+        self.say("dushanba")                                   # matnli yo'l ham yopiq
+        self.assertIsNone(bot._au_edit(USER))
+        q = self.press(f"au_edone:{e['id']}")
+        self.assertEqual(au.split_conditions(self.rule(rid))[1], [1])
+        self.assertEqual(self.fake.update_calls, [])
+
     def test_cannot_edit_someone_elses_rule(self):
         rid = self.make(owner=OTHER, name="Boshqaniki")
         q = self.press(f"au_edit:{rid}")
@@ -827,6 +909,25 @@ class StatsTests(V12PanelBase):
         self.assertNotIn("Jim —", text)
         self.assertIn(self.keyboard(q)[-1], ("au_menu",))
 
+    def test_deleted_rules_stay_in_historical_total(self):
+        a = self.make(name="Narxlar", sent=100)
+        self.make(name="Ish vaqti", sent=50)
+        self.make(name="Yetkazib berish", sent=30)
+        with patch.object(bot, "analytics_summary", return_value={"kinds": {"automation": 0}}):
+            self.assertIn("180", self.shown(self.press("au_stats")))
+            self.press(f"au_del:{a}")
+            confirm = bot._au_del_confirms[USER]
+            self.press(f"au_del_yes:{a}:{confirm['token']}")
+            text = self.shown(self.press("au_stats"))
+        self.assertIn("180", text)                      # 100 yo'qolmadi
+        self.assertNotIn("Narxlar", text)               # o'chirilgan qoida «eng ko'p» ro'yxatda emas
+        self.assertIn("29.10.2026", text)               # hisob qaysi sanadan boshlangani ko'rsatiladi
+
+    def test_stats_survive_missing_history_reads(self):
+        self.make(sent=2)
+        with patch.object(db, "get_automation_deleted_sent", side_effect=RuntimeError("db")):
+            self.assertIn("2", self.shown(self.press("au_stats")))
+
     def test_stats_empty(self):
         q = self.press("au_stats")
         self.assertIn(t("uz", "au_stats_top_none"), self.shown(q))
@@ -860,9 +961,9 @@ class StatsTests(V12PanelBase):
 
     def test_stats_text_in_three_languages(self):
         for lang in ("uz", "en", "ru"):
-            text = t(lang, "au_stats", total=1, active=1, period="p", period_sent=2, all_sent=3, top="1. x — 3")
+            text = t(lang, "au_stats", total=1, active=1, period="p", period_sent=2, all_sent=3, since="01.10.2026", top="1. x — 3")
             self.assertIn("1. x — 3", text)
-        self.assertIn("Статистика", t("ru", "au_stats", total=1, active=1, period="p", period_sent=2, all_sent=3, top="-"))
+        self.assertIn("Статистика", t("ru", "au_stats", total=1, active=1, period="p", period_sent=2, all_sent=3, since="01.10.2026", top="-"))
 
 
 class PlanTextTests(unittest.TestCase):
