@@ -2243,7 +2243,9 @@ def _record_analytics_safe(owner_id: int, kind: str):
 
 def _record_automation_sent_safe(owner_id: int, rule_id: int):
     try:
-        db.record_automation_sent(owner_id, rule_id)
+        if not db.record_automation_sent(owner_id, rule_id):
+            # Qoida yuborish bilan sanash orasida o'chirilgan: javob tarixiy jamda hisoblansin (o'chirish atomik, ikki marta sanalmaydi)
+            db.add_automation_deleted_sent(owner_id, 1)
     except Exception:
         logger.warning("Automation sanagichi yozilmadi (owner=%s, rule=%s)", owner_id, rule_id, exc_info=True)
 
