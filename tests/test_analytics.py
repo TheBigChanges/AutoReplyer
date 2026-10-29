@@ -567,7 +567,7 @@ class I18nTests(unittest.TestCase):
         for k in keys:
             for lang in ("uz", "en", "ru"):
                 self.assertTrue(i18n.t(lang, k, **{n: 1 for n in ("period", "incoming", "sent", "faq", "ai", "static", "sleep", "peak",
-                                                                   "rate", "skipped", "avg", "best_day", "hours", "days", "name")}))
+                                                                   "rate", "skipped", "avg", "best_day", "hours", "days", "name", "automation")}))
 
 
 if __name__ == "__main__":
