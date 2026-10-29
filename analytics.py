@@ -13,12 +13,12 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-SENT_KINDS = ("faq", "ai", "static", "sleep")
+SENT_KINDS = ("faq", "ai", "static", "sleep", "automation")
 CHART_CACHE_SECONDS = 60
 MAX_CONCURRENT_RENDERS = 2
 
 # Grafik ranglari (yorqin, kontrastli)
-_COLORS = {"incoming": "#4C78A8", "sent": "#54A24B", "faq": "#F58518", "ai": "#B279A2", "static": "#4C78A8", "sleep": "#7F7F7F"}
+_COLORS = {"incoming": "#4C78A8", "sent": "#54A24B", "faq": "#F58518", "ai": "#B279A2", "static": "#4C78A8", "sleep": "#7F7F7F", "automation": "#E45756"}
 
 
 def period_start(days: int, tz, now: datetime | None = None) -> datetime:
@@ -32,7 +32,7 @@ def summarize(rows, days: int, tz, now: datetime | None = None) -> dict:
     """rows: [(bucket_ts, kind, count)]. Natija: jami sonlar, kunlar kesimi, soatlar kesimi, eng faol oyna va h.k."""
     start = period_start(days, tz, now)
     start_ts = start.timestamp()
-    kinds = {"incoming": 0, "faq": 0, "ai": 0, "static": 0, "sleep": 0, "skipped": 0}
+    kinds = {"incoming": 0, "faq": 0, "ai": 0, "static": 0, "sleep": 0, "automation": 0, "skipped": 0}
     day_in: dict = {}
     day_sent: dict = {}
     hourly_in = [0] * 24
@@ -151,9 +151,9 @@ def render_line_chart(summary: dict, labels: dict) -> bytes:
 
 
 def render_pie_chart(summary: dict, labels: dict) -> bytes:
-    """Javob turlari ulushi (Smart FAQ / AI / Oddiy / Uxlash rejimi)."""
+    """Javob turlari ulushi (Smart FAQ / AI / Oddiy / Uxlash rejimi / Automation)."""
     fig, ax = _new_fig((6, 4.6))
-    items = [(labels[k], summary["kinds"][k], _COLORS[k]) for k in ("faq", "ai", "static", "sleep") if summary["kinds"][k] > 0]
+    items = [(labels[k], summary["kinds"][k], _COLORS[k]) for k in ("faq", "ai", "static", "sleep", "automation") if summary["kinds"][k] > 0]
     if not items:
         items = [(labels["none"], 1, "#CCCCCC")]
     names, values, colors = zip(*items)
