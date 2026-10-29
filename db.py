@@ -248,6 +248,12 @@ def init_db():
         # v1.2: qoida bo'yicha statistika (faqat son va vaqt — mijoz xabarlari/chat ID saqlanmaydi)
         cur.execute("ALTER TABLE automation_rules ADD COLUMN IF NOT EXISTS sent_count BIGINT NOT NULL DEFAULT 0")
         cur.execute("ALTER TABLE automation_rules ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMPTZ")
+        # O'chirilgan qoidalarning javoblari yo'qolmasligi uchun egasi bo'yicha tarixiy jami + hisob boshlangan sana
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS automation_deleted_totals (owner_user_id BIGINT PRIMARY KEY, sent_count BIGINT NOT NULL DEFAULT 0)"
+        )
+        cur.execute("CREATE TABLE IF NOT EXISTS automation_meta (key TEXT PRIMARY KEY, value TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+        cur.execute("INSERT INTO automation_meta (key) VALUES ('counters_since') ON CONFLICT (key) DO NOTHING")
         # AI Knowledge Base: har egasining ma'lumotlari alohida (hamma so'rov owner_user_id bilan cheklangan)
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS kb_enabled BOOLEAN NOT NULL DEFAULT TRUE")
         cur.execute(
@@ -1377,9 +1383,39 @@ def set_automation_rule_enabled(owner_user_id: int, rule_id: int, enabled: bool)
 
 
 def delete_automation_rule(owner_user_id: int, rule_id: int) -> bool:
+    """Qoidani o'chiradi; uning yuborilgan javoblar soni egasining tarixiy jamiga ATOMIK qo'shiladi (bitta so'rov) —
+    statistikadagi «jami» qoida o'chirilgach kamayib ketmaydi."""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM automation_rules WHERE owner_user_id = %s AND id = %s", (owner_user_id, rule_id))
-        return cur.rowcount > 0
+        cur.execute(
+            """
+            WITH d AS (
+                DELETE FROM automation_rules WHERE owner_user_id = %s AND id = %s RETURNING sent_count
+            ), u AS (
+                INSERT INTO automation_deleted_totals (owner_user_id, sent_count)
+                SELECT %s, sent_count FROM d WHERE sent_count > 0
+                ON CONFLICT (owner_user_id) DO UPDATE SET sent_count = automation_deleted_totals.sent_count + EXCLUDED.sent_count
+            )
+            SELECT COUNT(*) FROM d
+            """,
+            (owner_user_id, rule_id, owner_user_id),
+        )
+        return cur.fetchone()[0] > 0
+
+
+def get_automation_deleted_sent(owner_user_id: int) -> int:
+    """Egasining o'chirilgan qoidalari bo'yicha tarixiy yuborilgan javoblar soni."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT sent_count FROM automation_deleted_totals WHERE owner_user_id = %s", (owner_user_id,))
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+
+
+def get_automation_counters_since():
+    """Qoida sanagichlari (v1.2) hisoblana boshlagan vaqt: undan oldingi javoblar tiklanmaydi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT value FROM automation_meta WHERE key = 'counters_since'")
+        row = cur.fetchone()
+        return row[0] if row else None
 
 
 def list_faq_entries(owner_user_id: int) -> list[dict]:
@@ -2057,7 +2093,7 @@ def retry_on_disconnect(fn):
 for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
-    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_faq_entry", "count_faq_entries",
+    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_faq_entry", "count_faq_entries",
     "get_analytics_rows", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
