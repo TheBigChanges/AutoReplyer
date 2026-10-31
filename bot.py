@@ -765,6 +765,12 @@ PLAN_KEYS = tuple(k for k, _, _ in PLANS)
 PAYMENT_CARD_NUMBER = os.environ.get("PAYMENT_CARD_NUMBER", "").strip()
 PAYMENT_CARD_HOLDER = os.environ.get("PAYMENT_CARD_HOLDER", "Malika Abdukarimova").strip()
 # Payments v1.0: Telegram Stars (asosiy usul) va eski karta+admin tasdig'i. Ikkalasini muhit o'zgaruvchisi bilan tez o'chirish mumkin.
+def _is_paysupport(message) -> bool:
+    """/paysupport (Telegram talabi) kanal obunasi va blokdan qat'i nazar har doim ishlaydi: avval to'lagan odam yordamsiz qolmasin."""
+    text = (getattr(message, "text", None) or "").strip()
+    return isinstance(text, str) and text.split("@", 1)[0].split(" ", 1)[0] == "/paysupport"
+
+
 def _env_flag(name: str, default: bool = True) -> bool:
     raw = os.environ.get(name, "").strip().lower()
     if not raw:
@@ -5446,6 +5452,13 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         text, markup = build_pay_quote_view(owner_id, plan, months)
         await query.edit_message_text(text, reply_markup=markup)
         return
+    snap_exp = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
+    if db.get_reusable_order(owner_id, plan, months, q.pay, state.plan, snap_exp, now) is not None:
+        await query.answer(t(lang, "pay_invoice_active"), show_alert=True)  # xuddi shu buyurtma uchun invoice allaqachon yuborilgan
+        return
+    if not _pay_rate_ok(owner_id, now):
+        await query.answer(t(lang, "pay_rate_limited"), show_alert=True)
+        return
     token = "P" + secrets.token_hex(6).upper()
     stale_msgs = db.list_pending_invoice_msgs(owner_id)  # yangi buyurtma eskilarini bekor qiladi — ularning invoice xabarlari ham o'chadi
     db.create_payment_order(owner_id, token, q, state, PAYMENT_ORDER_TTL_SECONDS, now)
@@ -5471,6 +5484,25 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         logger.exception("Invoice xabar ID'sini saqlab bo'lmadi (order=%s)", token)
     await query.answer()
     await context.bot.send_message(owner_id, t(lang, "pay_invoice_sent", minutes=PAYMENT_ORDER_TTL_SECONDS // 60, token=token))
+
+
+_pay_rate: dict = {}
+PAY_RATE_MAX = 5           # shu vaqt oralig'ida eng ko'pi bilan nechta yangi buyurtma
+PAY_RATE_WINDOW = 600.0    # soniya
+
+
+def _pay_rate_ok(user_id: int, now: float) -> bool:
+    """Foydalanuvchi uchun yangi buyurtmalar tezligi cheklovi (xotirada, qisqa muddatli)."""
+    stamps = [x for x in _pay_rate.get(user_id, []) if now - x < PAY_RATE_WINDOW]
+    if len(stamps) >= PAY_RATE_MAX:
+        _pay_rate[user_id] = stamps
+        return False
+    stamps.append(now)
+    _pay_rate[user_id] = stamps
+    if len(_pay_rate) > 5000:  # xotira cheklovi: eskirganlarini tozalash
+        for uid in [u for u, v in _pay_rate.items() if not v or now - v[-1] >= PAY_RATE_WINDOW]:
+            _pay_rate.pop(uid, None)
+    return True
 
 
 async def _delete_message(bot, chat_id: int, message_id: int) -> None:
@@ -6292,7 +6324,7 @@ async def subscribe_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     else:
         text = (message.text or "").strip()
-        if text.split("@", 1)[0].split(" ", 1)[0] == "/start":
+        if text.split("@", 1)[0].split(" ", 1)[0] == "/start" or _is_paysupport(message):
             return
     if await is_subscribed_cached(context.bot, user.id):
         return
@@ -6321,6 +6353,8 @@ async def block_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if update.message is not None and update.message.successful_payment is not None:
         return  # tasdiqlangan to'lov bloklangan foydalanuvchi uchun ham yo'qolmasin
+    if update.message is not None and _is_paysupport(update.message):
+        return  # to'lov bo'yicha yordam bloklangan foydalanuvchiga ham ochiq (boshqa funksiyalar yopiq qoladi)
     user = update.effective_user
     if user is None or user.id == ADMIN_ID:
         return
