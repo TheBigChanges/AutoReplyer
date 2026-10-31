@@ -773,7 +773,7 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 PAYMENTS_STARS_ENABLED = _env_flag("PAYMENTS_STARS_ENABLED", True)
-PAYMENTS_CARD_ENABLED = _env_flag("PAYMENTS_CARD_ENABLED", True)
+PAYMENTS_CARD_ENABLED = _env_flag("PAYMENTS_CARD_ENABLED", False)  # Telegram qoidalari: standart holatda faqat Stars; karta yoqish uchun =1
 PAYMENT_ORDER_TTL_SECONDS = 30 * 60
 
 
@@ -5535,25 +5535,43 @@ async def on_successful_payment(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def process_payment(bot, user_id: int, token: str, charge_id: str, amount: int, currency: str, notify_user: bool = True) -> str:
-    """Kelgan to'lovni qayta ishlaydi. Natija: 'activated' | 'duplicate' | 'unmatched' | 'deferred' (baza xatosi — keyinroq qayta uriniladi)."""
+    """Kelgan to'lovni qayta ishlaydi. Natija: 'activated' | 'duplicate' | 'unmatched' | 'deferred' (baza xatosi — keyinroq qayta uriniladi).
+    Hodisa avval bazadagi inbox'ga yoziladi: qayta ishlanmaguncha (server qayta ishga tushsa ham) saqlanadi va payment_retry_job uni yakunlaydi."""
     lang = get_lang(user_id)
+    try:
+        db.record_payment_event(user_id, token, charge_id, amount, currency)
+    except Exception:
+        logger.exception("To'lov hodisasini inbox'ga yozib bo'lmadi (charge=%s)", charge_id)
     try:
         res = db.activate_payment(token, charge_id, user_id, amount, _add_months, time.time(), currency)
     except Exception:
         logger.exception("To'lovni faollashtirishda xato (charge=%s) — qayta uriniladi", charge_id)
+        first_time = notify_user and not any(p["charge_id"] == charge_id for p in _pending_payments)
         if not any(p["charge_id"] == charge_id for p in _pending_payments) and len(_pending_payments) < PENDING_PAYMENTS_MAX:
             _pending_payments.append({"user_id": user_id, "token": token, "charge_id": charge_id, "amount": amount, "currency": currency})
+        if not first_time:
+            return "deferred"  # takroriy urinishda xabarlar qayta yuborilmaydi
         if notify_user:
             await _try_send(bot, user_id, t(lang, "pay_delayed"))
         await _notify_admin(bot, f"⚠️ To'lov qabul qilindi, lekin baza xatosi — qayta uriniladi.\n{user_id}, {amount} ⭐, charge: {charge_id}, order: {token}")
         return "deferred"
+    try:
+        db.mark_payment_event_done(charge_id)
+    except Exception:
+        logger.exception("Inbox yozuvini yopib bo'lmadi (charge=%s)", charge_id)
     status = res["status"]
     if status == "activated":
         plan = res["plan"]
+        if res.get("review"):  # muddatsiz tarif: o'zgarmadi, to'lov esa olingan — admin hal qiladi
+            if notify_user:
+                await _try_send(bot, user_id, t(lang, "pay_unmatched"))
+            await _notify_admin(bot, f"🚨 To'lov olindi, lekin foydalanuvchida muddatsiz {plan} tarif bor — tarif o'zgartirilmadi: {_label_for(user_id)}\n{amount} ⭐, charge: {charge_id}\nQaytarish: /refund {charge_id}")
+            return status
         if notify_user:
             await _try_send(bot, user_id, t(lang, "pay_success", name=t(lang, "plan_name_" + plan),
                                             date=format_plan_date(res["expires_at"]) if res["expires_at"] else "∞", token=token))
-        await _notify_admin(bot, f"⭐ To'lov: {_label_for(user_id)}\n{plan}, {amount} ⭐, order {token}\ncharge: {charge_id}")
+        note = "\n⚠️ Buyurtmadan keyin tarif holati o'zgargan edi — mavjud huquqlar saqlab qolindi, to'langan qiymat qo'shildi." if res.get("state_changed") else ""
+        await _notify_admin(bot, f"⭐ To'lov: {_label_for(user_id)}\n{plan}, {amount} ⭐, order {token}\ncharge: {charge_id}{note}")
     elif status == "unmatched":
         if notify_user:
             await _try_send(bot, user_id, t(lang, "pay_unmatched"))
@@ -5562,22 +5580,21 @@ async def process_payment(bot, user_id: int, token: str, charge_id: str, amount:
 
 
 async def payment_retry_job(context: ContextTypes.DEFAULT_TYPE):
+    """Xotiradagi navbat (baza uzilgan paytdagilar) va bazadagi qayta ishlanmagan to'lovlar (server qayta ishga tushgandan keyin ham)."""
     for _ in range(len(_pending_payments)):
         item = _pending_payments.popleft()
-        try:
-            res = db.activate_payment(item["token"], item["charge_id"], item["user_id"], item["amount"], _add_months, time.time(), item["currency"])
-        except Exception:
-            _pending_payments.append(item)
-            logger.warning("To'lovni qayta urinish muvaffaqiyatsiz (charge=%s)", item["charge_id"])
-            return  # baza hali ishlamayapti — keyingi urinishgacha kutamiz
-        lang = get_lang(item["user_id"])
-        if res["status"] == "activated":
-            await _try_send(context.bot, item["user_id"], t(lang, "pay_success", name=t(lang, "plan_name_" + res["plan"]),
-                                                            date=format_plan_date(res["expires_at"]) if res["expires_at"] else "∞", token=item["token"]))
-            await _notify_admin(context.bot, f"⭐ Kechikkan to'lov faollashtirildi: {_label_for(item['user_id'])}\n{res['plan']}, {item['amount']} ⭐, charge: {item['charge_id']}")
-        elif res["status"] == "unmatched":
-            await _try_send(context.bot, item["user_id"], t(lang, "pay_unmatched"))
-            await _notify_admin(context.bot, f"🚨 Mos kelmagan to'lov ({res.get('reason')}): {_label_for(item['user_id'])}\ncharge: {item['charge_id']}\nQaytarish: /refund {item['charge_id']}")
+        if await process_payment(context.bot, item["user_id"], item["token"], item["charge_id"], item["amount"], item["currency"]) == "deferred":
+            return  # baza hali ishlamayapti — keyingi urinishgacha kutamiz (process_payment navbatga qayta qo'ydi)
+    try:
+        events = db.list_unprocessed_payment_events(older_than_seconds=20)
+    except Exception:
+        logger.warning("Inbox'ni o'qib bo'lmadi")
+        return
+    for ev in events:
+        if any(p["charge_id"] == ev["charge_id"] for p in _pending_payments):
+            continue
+        if await process_payment(context.bot, ev["user_id"], ev["token"], ev["charge_id"], ev["amount"], ev["currency"]) == "deferred":
+            return
 
 
 async def payment_orders_job(context: ContextTypes.DEFAULT_TYPE):
@@ -5587,33 +5604,67 @@ async def payment_orders_job(context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Eskirgan buyurtmalarni yopishda xato")
 
 
+RECON_OVERLAP_SECONDS = 6 * 3600
+RECON_MAX_PAGES = 60  # 100 tadan: oxirgi belgisi yo'q bo'lsa ham keng qamrov
+
+
 async def payment_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
-    """Telegram tranzaksiyalari bilan solishtirish: bot o'chiq turganda yoki xato tufayli o'tkazib yuborilgan to'lovlarni topib faollashtiradi."""
+    """Telegram tranzaksiyalari bilan solishtirish. Oxirgi MUVAFFAQIYATLI solishtirish vaqti bazada saqlanadi: server uzoq o'chiq tursa ham
+    o'sha vaqtdan beri (zaxira bilan) barcha tranzaksiyalar ko'riladi. Belgi faqat hamma kirim qayta ishlangandagina yangilanadi.
+      * kirim, bazada yo'q  -> faollashtiriladi;
+      * qaytarish (refund), bazada 'paid' -> tarifdan shu xarid ulushi ayriladi (tashqi refund)."""
     if not PAYMENTS_STARS_ENABLED:
         return
+    started = time.time()
     try:
-        incoming, refunded_ids = [], set()
+        mark = db.get_payment_recon_mark()
+        horizon = (mark - RECON_OVERLAP_SECONDS) if mark else 0.0
+        incoming, refunds = [], {}
         offset = 0
-        for _ in range(5):  # oxirgi ~500 tranzaksiya
+        for _ in range(RECON_MAX_PAGES):
             batch = await context.bot.get_star_transactions(offset=offset, limit=100)
             txs = list(batch.transactions)
             for tx in txs:
                 if tx.receiver is not None:
-                    refunded_ids.add(tx.id)
+                    refunds[tx.id] = tx
                 elif isinstance(tx.source, TransactionPartnerUser) and tx.source.invoice_payload:
                     incoming.append(tx)
-            if len(txs) < 100:
+            if len(txs) < 100 or (txs and min(tx.date.timestamp() for tx in txs) < horizon):
                 break
             offset += len(txs)
+        ok = True
         for tx in incoming:
-            if tx.id in refunded_ids or any(p["charge_id"] == tx.id for p in _pending_payments):
+            if tx.id in refunds or any(p["charge_id"] == tx.id for p in _pending_payments):
                 continue
             if db.get_payment_by_charge(tx.id) is not None:
                 continue
-            await process_payment(context.bot, tx.source.user.id, tx.source.invoice_payload, tx.id, tx.amount, "XTR")
+            if await process_payment(context.bot, tx.source.user.id, tx.source.invoice_payload, tx.id, tx.amount, "XTR") == "deferred":
+                ok = False
+                continue
             db.audit_event(tx.source.user.id, None, "reconciled", f"charge={tx.id}")
+        for charge_id in refunds:
+            row = db.get_payment_by_charge(charge_id)
+            if row is not None and row["status"] == "paid":
+                await _apply_external_refund(context.bot, row)
+        if ok:
+            db.set_payment_recon_mark(started)
     except Exception:
         logger.exception("To'lovlarni solishtirishda xato")
+
+
+async def _apply_external_refund(bot, row) -> None:
+    """Telegram tomonida qaytarilgan (bot orqali emas) to'lov: bazada ham 'refunded' qilib, tarifdan xarid ulushini ayiradi."""
+    begun, _ = db.begin_refund(row["charge_id"])
+    if begun is None:
+        return
+    new_state = db.finish_refund(begun["id"])
+    db.audit_event(row["user_id"], row["id"], "external_refund", f"charge={row['charge_id']}")
+    lang = get_lang(row["user_id"])
+    if new_state is not None:
+        status = t(lang, "pay_refunded_free") if new_state.plan == "free" else ""
+        await _try_send(bot, row["user_id"], t(lang, "pay_refunded", stars=row["stars"], status=status))
+    await _notify_admin(bot, f"↩️ Tashqi qaytarish aniqlandi: {_label_for(row['user_id'])}, {row['stars']} ⭐, charge {row['charge_id']} — tarif moslashtirildi"
+                        + (f": {new_state.plan}" if new_state else ""))
 
 
 async def cmd_refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
