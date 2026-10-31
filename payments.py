@@ -17,6 +17,7 @@ Qoidalar:
   * refund: qaytarilgan Stars qiymati joriy kunlik qiymat bo'yicha kunlarga aylantirilib, tarif muddatidan ayriladi.
 """
 from dataclasses import dataclass
+from typing import NamedTuple
 
 PLAN_RANK = {"free": 0, "plus": 1, "pro": 2, "ultra": 3}
 STARS_PRICE_1M = {"plus": 15, "pro": 35, "ultra": 70}  # 1 oylik narx, Stars
@@ -137,6 +138,67 @@ def apply_refund(state: PlanState, stars: int, now: float) -> PlanState:
     if not is_active(state, now) or state.expires_at is None:
         return state
     end = state.expires_at - stars / rate_of(state) * DAY
+    if end <= now:
+        return PlanState("free", None, None)
+    return PlanState(state.plan, end, state.rate)
+
+
+class Grant(NamedTuple):
+    new_state: PlanState
+    start: float          # bu to'lov qo'shgan davrning boshi
+    end: float            # ... va oxiri (refund shu oraliqning foydalanilmagan ulushini oladi)
+    review: bool = False  # True: tarif o'zgarmadi (muddatsiz tarif) — admin qo'lda ko'rib chiqishi kerak
+
+
+def normalize(state: PlanState, now: float) -> PlanState:
+    """Muddati o'tgan tarif — Bepul."""
+    return state if is_active(state, now) else PlanState()
+
+
+def grant(state: PlanState, snapshot_ok: bool, kind: str, plan: str, months: int, stars: int, credit: int, now: float, add_months) -> Grant:
+    """To'langan buyurtmani qo'llaydi. Buyurtma yaratilgandagi holat (snapshot) hali o'zgarmagan bo'lsa — kelishilgan hisob (apply_order).
+    O'zgargan bo'lsa (eski invoice kechikib to'langan) — foydalanuvchining amaldagi huquqlari YO'QOTILMAYDI: haqiqatan to'langan Stars qiymati
+    (credit hisobga olinmaydi, chunki u endi eski tarifga tayanmaydi) joriy holatga qo'shiladi:
+      bo'sh/tugagan -> yangi davr; o'sha tarif -> uzaytirish; yuqoriroq joriy tarif -> uning kunlariga aylantiriladi;
+      pastroq joriy tarif -> buyurtma tarifiga o'tadi, joriy qolgan qiymat kunlarga aylanib qo'shiladi; muddatsiz -> tegilmaydi (review)."""
+    state = normalize(state, now)
+    if snapshot_ok:
+        new = apply_order(state, kind, plan, months, stars, credit, now, add_months)
+        extended = kind == "extend" and state.plan == plan and state.expires_at is not None
+        return Grant(new, state.expires_at if extended else now, new.expires_at)
+    if is_unlimited(state, now):
+        return Grant(state, now, now, True)
+    price = stars_price(plan, months)
+    period_days = _days(now, add_months(now, months))
+    seconds = period_days * min(stars / price, 1.0) * DAY
+    if state.plan == "free":
+        end = now + seconds
+        return Grant(PlanState(plan, end, stars / _days(now, end)), now, end)
+    rem = remaining_value(state, now)
+    if state.plan == plan:
+        end = state.expires_at + seconds
+        return Grant(PlanState(plan, end, (rem + stars) / _days(now, end)), state.expires_at, end)
+    if PLAN_RANK[state.plan] > PLAN_RANK[plan]:
+        end = state.expires_at + stars / list_rate(state.plan) * DAY
+        return Grant(PlanState(state.plan, end, (rem + stars) / _days(now, end)), state.expires_at, end)
+    end = now + seconds + rem / list_rate(plan) * DAY
+    return Grant(PlanState(plan, end, (rem + stars) / _days(now, end)), now, end)
+
+
+def apply_refund_purchase(state: PlanState, stars: int, grant_start, grant_end, now: float) -> PlanState:
+    """Aynan shu xarid bo'yicha refund: xarid davrining HALI FOYDALANILMAGAN ulushi qiymati joriy tarifdan ayriladi.
+    Xarid davri allaqachon o'tib ketgan bo'lsa — hech narsa ayrilmaydi (boshqa, yangi obunaga tegilmaydi).
+    grant_* yo'q (eski yozuv) bo'lsa — oddiy apply_refund."""
+    if grant_start is None or grant_end is None:
+        return apply_refund(state, stars, now)
+    if not is_active(state, now) or state.expires_at is None:
+        return state
+    span = grant_end - grant_start
+    unused = grant_end - max(now, grant_start)
+    if span <= 0 or unused <= 0:
+        return state
+    value = stars * min(unused / span, 1.0)
+    end = state.expires_at - value / rate_of(state) * DAY
     if end <= now:
         return PlanState("free", None, None)
     return PlanState(state.plan, end, state.rate)
