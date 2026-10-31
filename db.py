@@ -280,6 +280,8 @@ def init_db():
         )
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS grant_start DOUBLE PRECISION")
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS grant_end DOUBLE PRECISION")
+        cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS grant_value DOUBLE PRECISION")
+        cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS invoice_msg_id BIGINT")
         # Kelgan to'lov hodisalari (inbox): qayta ishlanmaguncha saqlanadi — server qayta ishga tushsa ham yo'qolmaydi
         cur.execute(
             """
@@ -888,7 +890,7 @@ def expire_plans(now: float | None = None):
 # --------------------------------------------------------------------------
 PAYMENT_STATUSES = ("pending", "paid", "refunding", "refunded", "expired", "cancelled", "switched", "unmatched")
 _PAYMENT_COLS = ("id, token, user_id, kind, plan, months, stars, credit, status, charge_id, snap_plan, snap_expires, "
-                 "created_at, expires_at, paid_at, refunded_at, grant_start, grant_end")
+                 "created_at, expires_at, paid_at, refunded_at, grant_start, grant_end, grant_value, invoice_msg_id")
 
 
 def _audit(cur, user_id, payment_id, event, detail=None, now=None):
@@ -922,6 +924,20 @@ def _write_user_state(cur, user_id: int, state: "payments.PlanState") -> None:
             "UPDATE users SET plan = %s, plan_expires_at = %s, plan_stars_per_day = %s WHERE user_id = %s",
             (state.plan, state.expires_at, state.rate, user_id),
         )
+
+
+def _repoint_purchases(cur, user_id: int, exclude_id, now: float, new_end: float) -> None:
+    """Tarif almashganda (pastga/yuqoriga) eski xaridlarning hali foydalanilmagan qiymati yangi davrga ko'chadi: shu qiymat endi
+    [now, new_end] oralig'ida sarflanadi. Shunda keyingi refund ko'chirilgan qiymatni ham to'g'ri ayiradi."""
+    cur.execute(
+        f"SELECT {_PAYMENT_COLS} FROM payments WHERE user_id = %s AND status = 'paid' AND grant_end IS NOT NULL AND grant_end > %s AND id <> %s FOR UPDATE",
+        (user_id, now, exclude_id if exclude_id is not None else -1),
+    )
+    for r in cur.fetchall():
+        value = payments.carried_value(r["stars"], r["grant_value"], r["grant_start"], r["grant_end"], now)
+        if value <= 0:
+            continue
+        cur.execute("UPDATE payments SET grant_value = %s, grant_start = %s, grant_end = %s WHERE id = %s", (value, now, new_end, r["id"]))
 
 
 def _run_tx(fn):
@@ -1004,12 +1020,44 @@ def list_recent_payments(limit: int = 15):
     return rows, pending
 
 
-def expire_old_orders(now: float | None = None) -> int:
-    """Muddati o'tgan to'lanmagan buyurtmalarni yopadi."""
+def expire_old_orders(now: float | None = None):
+    """Muddati o'tgan to'lanmagan buyurtmalarni yopadi. Qaytaradi: [{user_id, token, invoice_msg_id}] — invoice xabarlarini o'chirish uchun."""
     now = time.time() if now is None else now
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "UPDATE payments SET status = 'expired' WHERE status = 'pending' AND expires_at <= %s RETURNING user_id, token, invoice_msg_id", (now,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def set_invoice_message(token: str, message_id: int) -> None:
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("UPDATE payments SET status = 'expired' WHERE status = 'pending' AND expires_at <= %s", (now,))
-        return cur.rowcount
+        cur.execute("UPDATE payments SET invoice_msg_id = %s WHERE token = %s", (message_id, token))
+
+
+def list_pending_invoice_msgs(user_id: int):
+    """Foydalanuvchining to'lanmagan buyurtmalari invoice xabarlari (yangi invoice yuborilganda eskilarini o'chirish uchun)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT invoice_msg_id FROM payments WHERE user_id = %s AND status = 'pending' AND invoice_msg_id IS NOT NULL", (user_id,))
+        return [r[0] for r in cur.fetchall()]
+
+
+def cancel_order(token: str, user_id: int):
+    """Foydalanuvchi o'z kutilayotgan buyurtmasini bekor qiladi. Bekor qilingan buyurtma qatori yoki None (topilmadi / sizniki emas / allaqachon yopilgan)."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "UPDATE payments SET status = 'cancelled' WHERE token = %s AND user_id = %s AND status = 'pending' RETURNING id, token, invoice_msg_id",
+            (token, user_id),
+        )
+        row = cur.fetchone()
+        if row:
+            _audit(cur, user_id, row["id"], "order_cancelled")
+        return dict(row) if row else None
+
+
+def list_refunding(older_than_seconds: float = 0.0):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE status = 'refunding' ORDER BY id")
+        return [dict(r) for r in cur.fetchall()]
 
 
 def activate_payment(token: str, charge_id: str, user_id: int, total_amount: int, add_months, now: float | None = None,
@@ -1060,9 +1108,11 @@ def activate_payment(token: str, charge_id: str, user_id: int, total_amount: int
         snapshot_ok = state.plan == (order["snap_plan"] or "free") and snap_exp == (int(order["snap_expires"]) if order["snap_expires"] is not None else None)
         g = payments.grant(state, snapshot_ok, order["kind"], order["plan"], order["months"], order["stars"], order["credit"], now, add_months)
         if not g.review:
+            if state.plan != "free" and g.start == now:  # yangi davr eski faol tarifning ustiga o'tdi: eski xaridlar qiymati ko'chadi
+                _repoint_purchases(cur, user_id, order["id"], now, g.end)
             _write_user_state(cur, user_id, g.new_state)
-        cur.execute("UPDATE payments SET status = 'paid', charge_id = %s, paid_at = %s, grant_start = %s, grant_end = %s WHERE id = %s",
-                    (charge_id, now, g.start, g.end, order["id"]))
+        cur.execute("UPDATE payments SET status = 'paid', charge_id = %s, paid_at = %s, grant_start = %s, grant_end = %s, grant_value = %s WHERE id = %s",
+                    (charge_id, now, g.start, g.end, order["stars"], order["id"]))
         _audit(cur, user_id, order["id"], "paid_review" if g.review else "paid" if snapshot_ok else "paid_state_changed",
                f"{order['kind']} {order['plan']} {order['months']}m stars={order['stars']} was={state.plan} now={g.new_state.plan}", now)
         return {"status": "activated", "payment_id": order["id"], "plan": g.new_state.plan, "expires_at": g.new_state.expires_at,
@@ -1084,6 +1134,8 @@ def switch_plan(user_id: int, snap_plan: str, snap_expires: int | None, quote: "
         cur_expires = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
         if state.plan != snap_plan or cur_expires != snap_expires:
             return False
+        if quote.new_state.expires_at is not None:
+            _repoint_purchases(cur, user_id, None, now, quote.new_state.expires_at)
         _write_user_state(cur, user_id, quote.new_state)
         cur.execute(
             """
@@ -1106,7 +1158,7 @@ def begin_refund(ref: str):
         row = cur.fetchone()
         if row is None:
             return None, "not_found"
-        if row["status"] != "paid" or not row["charge_id"]:
+        if row["status"] not in ("paid", "unmatched") or not row["charge_id"]:
             return None, "not_paid:" + row["status"]
         cur.execute("UPDATE payments SET status = 'refunding' WHERE id = %s", (row["id"],))
         _audit(cur, row["user_id"], row["id"], "refund_started", f"stars={row['stars']}")
@@ -1128,8 +1180,11 @@ def finish_refund(payment_id: int, now: float | None = None):
         if row is None or row["status"] != "refunding":
             return None
         state = _lock_user_state(cur, row["user_id"])
-        new_state = payments.apply_refund_purchase(state, row["stars"], row["grant_start"], row["grant_end"], now)
-        _write_user_state(cur, row["user_id"], new_state)
+        if row["kind"] == "unmatched":  # tarif berilmagan to'lov: Stars qaytariladi, obunaga tegilmaydi
+            new_state = payments.normalize(state, now)
+        else:
+            new_state = payments.apply_refund_purchase(state, row["stars"], row["grant_start"], row["grant_end"], now, row["grant_value"])
+            _write_user_state(cur, row["user_id"], new_state)
         cur.execute("UPDATE payments SET status = 'refunded', refunded_at = %s WHERE id = %s", (now, payment_id))
         _audit(cur, row["user_id"], payment_id, "refunded", f"stars={row['stars']} {state.plan}->{new_state.plan}", now)
         return new_state
@@ -1140,7 +1195,7 @@ def finish_refund(payment_id: int, now: float | None = None):
 def fail_refund(payment_id: int) -> None:
     """Telegram refundni rad etdi: to'lov 'paid' holatiga qaytariladi."""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("UPDATE payments SET status = 'paid' WHERE id = %s AND status = 'refunding'", (payment_id,))
+        cur.execute("UPDATE payments SET status = CASE WHEN kind = 'unmatched' THEN 'unmatched' ELSE 'paid' END WHERE id = %s AND status = 'refunding'", (payment_id,))
         if cur.rowcount:
             _audit(cur, None, payment_id, "refund_failed")
 
