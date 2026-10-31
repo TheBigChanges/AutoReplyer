@@ -832,16 +832,28 @@ def get_user_plan(user_id: int) -> str:
 
 
 def set_user_plan(user_id: int, plan: str, expires_at: float | None = None) -> None:
-    """Tarifni yozadi (foydalanuvchi qatori bo'lmasa yaratadi). `expires_at=None` — muddatsiz."""
-    with get_conn() as conn, conn.cursor() as cur:
+    """Tarifni yozadi (foydalanuvchi qatori bo'lmasa yaratadi). `expires_at=None` — muddatsiz.
+    Siyosat: qo'lda (admin) belgilangan tarif avvalgi obunani ALMASHTIRADI — Stars xaridlarining hali foydalanilmagan qismi shu tarifdan
+    ajratiladi (grant_end hozirga qisqaradi), shuning uchun keyingi refund admin bergan tarifdan kun ayirmaydi (Stars qaytariladi)."""
+    now = time.time()
+
+    def work(cur):
         cur.execute(
             """
             INSERT INTO users (user_id, first_seen, plan, plan_expires_at, plan_stars_per_day) VALUES (%s, %s, %s, %s, NULL)
             ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan, plan_expires_at = EXCLUDED.plan_expires_at,
                                                 plan_stars_per_day = NULL
             """,
-            (user_id, time.time(), plan, None if plan == "free" else expires_at),
+            (user_id, now, plan, None if plan == "free" else expires_at),
         )
+        cur.execute(
+            "UPDATE payments SET grant_end = %s WHERE user_id = %s AND status IN ('paid', 'refunding') AND grant_end IS NOT NULL AND grant_end > %s",
+            (now, user_id, now),
+        )
+        if cur.rowcount:
+            _audit(cur, user_id, None, "admin_plan_detached_purchases", f"plan={plan} purchases={cur.rowcount}", now)
+
+    _run_tx(work)
 
 
 def list_plan_subscribers():
@@ -930,7 +942,7 @@ def _repoint_purchases(cur, user_id: int, exclude_id, now: float, new_end: float
     """Tarif almashganda (pastga/yuqoriga) eski xaridlarning hali foydalanilmagan qiymati yangi davrga ko'chadi: shu qiymat endi
     [now, new_end] oralig'ida sarflanadi. Shunda keyingi refund ko'chirilgan qiymatni ham to'g'ri ayiradi."""
     cur.execute(
-        f"SELECT {_PAYMENT_COLS} FROM payments WHERE user_id = %s AND status = 'paid' AND grant_end IS NOT NULL AND grant_end > %s AND id <> %s FOR UPDATE",
+        f"SELECT {_PAYMENT_COLS} FROM payments WHERE user_id = %s AND status IN ('paid', 'refunding') AND grant_end IS NOT NULL AND grant_end > %s AND id <> %s FOR UPDATE",
         (user_id, now, exclude_id if exclude_id is not None else -1),
     )
     for r in cur.fetchall():
@@ -1039,6 +1051,20 @@ def list_pending_invoice_msgs(user_id: int):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT invoice_msg_id FROM payments WHERE user_id = %s AND status = 'pending' AND invoice_msg_id IS NOT NULL", (user_id,))
         return [r[0] for r in cur.fetchall()]
+
+
+def get_reusable_order(user_id: int, plan: str, months: int, stars: int, snap_plan: str, snap_expires: int | None, now: float | None = None):
+    """Shu foydalanuvchining aynan shu (tarif, muddat, summa)dagi, hali amal qilayotgan, invoice'i yuborilgan va tarif holati o'zgarmagan
+    buyurtmasi — yangi buyurtma yaratmasdan qayta ishlatiladi."""
+    now = time.time() if now is None else now
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"SELECT {_PAYMENT_COLS} FROM payments WHERE user_id = %s AND status = 'pending' AND plan = %s AND months = %s AND stars = %s "
+            "AND expires_at > %s AND invoice_msg_id IS NOT NULL AND snap_plan = %s AND snap_expires IS NOT DISTINCT FROM %s ORDER BY id DESC LIMIT 1",
+            (user_id, plan, months, stars, now, snap_plan, snap_expires),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
 def cancel_order(token: str, user_id: int):
