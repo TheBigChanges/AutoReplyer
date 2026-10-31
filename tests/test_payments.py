@@ -1039,7 +1039,7 @@ class InvoiceLifecycleTests(BotBase):
         first = self._buy(b)
         b.send_invoice.return_value = MagicMock(message_id=888)
         b.delete_message.reset_mock()
-        second = self._buy(b)
+        second = self._buy(b, price=41, months=3)
         b.delete_message.assert_awaited_once_with(chat_id=self.u, message_id=777)
         self.assertEqual(db.get_payment(first)["status"], "cancelled")
         self.assertEqual(db.get_payment(second)["invoice_msg_id"], 888)
@@ -1185,6 +1185,116 @@ class AuditRound2Tests(BotBase):
         self.assertEqual(db.get_payment_recon_mark(), 1000.0)
         self.assertIn(999, [c.kwargs.get("chat_id") for c in b.send_message.await_args_list])
         bot._recon_alerted.clear()
+
+
+class AuditRound3Tests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def _buy(self, b, price=15, plan="plus", months=1):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(b), self.u, f"pay_buy:{plan}:{months}:{price}"))
+        return q
+
+    def test_plan_switch_during_pending_refund_preserves_correct_value(self):
+        now = time.time()
+        token, q = self.order(plan="ultra", now=now)
+        self.pay(token, q, charge="chPR", now=now)
+        row, _ = db.begin_refund("chPR")  # refund boshlandi (refunding), hali yakunlanmagan
+        self.assertEqual(row["status"], "refunding")
+        t0 = now + 60
+        state = db.get_user_plan_state(self.u)
+        qs = pay.quote(state, "plus", 1, t0, add_months)
+        self.assertTrue(db.switch_plan(self.u, "ultra", int(state.expires_at), qs, "SPR", t0))
+        self.assertAlmostEqual(db.get_payment(token)["grant_start"], t0, delta=1)  # refunding xarid ham ko'chirildi
+        later = now + 35 * DAY
+        new = db.finish_refund(row["id"], later)
+        self.assertTrue(new.plan == "free" or new.expires_at - later < 2 * DAY, new)
+
+    def test_manual_admin_plan_not_reduced_by_old_stars_refund(self):
+        now = time.time()
+        token, q = self.order(now=now)
+        self.pay(token, q, charge="chADM", now=now)  # Stars orqali Plus, hozir
+        db.set_user_plan(self.u, "ultra", now + 30 * DAY)  # admin Ultra berdi
+        before = self.plan()
+        row, _ = db.begin_refund("chADM")
+        new = db.finish_refund(row["id"], now + 1)
+        self.assertEqual(db.get_payment(token)["status"], "refunded")
+        self.assertEqual(new.plan, "ultra")
+        self.assertAlmostEqual(self.plan().expires_at, before.expires_at, delta=1)
+
+    def test_admin_plan_after_purchase_with_refunding_also_detached(self):
+        now = time.time()
+        token, q = self.order(now=now)
+        self.pay(token, q, charge="chAD2", now=now)
+        row, _ = db.begin_refund("chAD2")
+        db.set_user_plan(self.u, "pro", now + 30 * DAY)
+        db.finish_refund(row["id"], now + 1)
+        self.assertEqual(self.plan().plan, "pro")
+        self.assertAlmostEqual(self.plan().expires_at, now + 30 * DAY, delta=1)
+
+    def _gate_update(self, text):
+        upd = MagicMock()
+        upd.callback_query = None
+        upd.effective_user.id = self.u
+        upd.effective_user.is_bot = False
+        upd.effective_chat.type = "private"
+        upd.message.text = text
+        upd.message.successful_payment = None
+        upd.message.reply_text = AsyncMock()
+        return upd
+
+    def test_paysupport_available_to_unsubscribed_and_blocked_users(self):
+        with patch.object(bot, "REQUIRED_CHANNEL_ID", -100), patch.object(bot, "_sub_exempt", return_value=False), \
+                patch.object(bot, "is_subscribed_cached", AsyncMock(return_value=False)):
+            for text in ("/paysupport", "/paysupport@SomeBot", "/paysupport 123"):
+                run(bot.subscribe_gate(self._gate_update(text), MagicMock()))  # to'xtatilmaydi
+            with self.assertRaises(ApplicationHandlerStop):
+                run(bot.subscribe_gate(self._gate_update("/stats"), MagicMock()))
+            with self.assertRaises(ApplicationHandlerStop):
+                run(bot.subscribe_gate(self._gate_update("/paysupportx"), MagicMock()))
+        with patch.object(db, "get_block", return_value={"reason": "x"}):
+            run(bot.block_gate(self._gate_update("/paysupport"), MagicMock()))
+            with patch.object(bot, "handle_blocked_update", AsyncMock()), self.assertRaises(ApplicationHandlerStop):
+                run(bot.block_gate(self._gate_update("/start"), MagicMock()))
+
+    def test_same_active_order_is_reused_not_duplicated(self):
+        b = _bot_mock()
+        self._buy(b)
+        first = b.send_invoice.await_args.kwargs["payload"]
+        q = self._buy(b)  # xuddi shu tugma qayta bosildi
+        self.assertEqual(b.send_invoice.await_count, 1)
+        self.assertTrue(q.answer.await_args.kwargs.get("show_alert"))
+        self.assertEqual(db.get_payment(first)["status"], "pending")
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM payments WHERE user_id = %s", (self.u,))
+            self.assertEqual(cur.fetchone()[0], 1)
+
+    def test_not_reused_after_cancel_or_when_plan_changed(self):
+        b = _bot_mock()
+        self._buy(b)
+        first = b.send_invoice.await_args.kwargs["payload"]
+        db.cancel_order(first, self.u)
+        self._buy(b)
+        self.assertEqual(b.send_invoice.await_count, 2)
+        db.set_user_plan(self.u, "pro", time.time() + 10 * DAY)  # holat o'zgardi: eski buyurtma yaroqsiz
+        cur = self.plan()
+        self.assertIsNone(db.get_reusable_order(self.u, "plus", 1, 15, cur.plan, int(cur.expires_at)))
+
+    def test_new_orders_rate_limited_per_user(self):
+        bot._pay_rate.pop(self.u, None)
+        self.addCleanup(lambda: bot._pay_rate.pop(self.u, None))
+        b = _bot_mock()
+        # har safar boshqa (tarif, muddat) — qayta ishlatilmaydi, lekin tezlik cheklovi ishlaydi
+        combos = [("plus", 1, 15), ("plus", 3, 41), ("plus", 6, 77), ("plus", 12, 144), ("pro", 1, 35), ("pro", 3, 95)]
+        for plan, months, price in combos:
+            self._buy(b, price=price, plan=plan, months=months)
+        self.assertEqual(b.send_invoice.await_count, bot.PAY_RATE_MAX)
+        self.assertFalse(bot._pay_rate_ok(self.u, time.time()))
+        self.assertTrue(bot._pay_rate_ok(self.u, time.time() + bot.PAY_RATE_WINDOW + 1))
 
 
 class CardDefaultTests(unittest.TestCase):
