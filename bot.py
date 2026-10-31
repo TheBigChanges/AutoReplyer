@@ -29,7 +29,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, TransactionPartnerUser, Update
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
@@ -38,6 +38,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    PreCheckoutQueryHandler,
     TypeHandler,
     filters,
 )
@@ -48,6 +49,7 @@ import ai
 import analytics
 import automation
 import db
+import payments
 from i18n import DEFAULT_LANG, LANG_NAMES, LANGS, all_defaults, is_lang, t
 from logic import (
     ALL_DAYS_MASK,
@@ -762,6 +764,17 @@ PLAN_KEYS = tuple(k for k, _, _ in PLANS)
 # To'lov kartasi Render muhit o'zgaruvchilarida saqlanadi (kodga yozilmaydi)
 PAYMENT_CARD_NUMBER = os.environ.get("PAYMENT_CARD_NUMBER", "").strip()
 PAYMENT_CARD_HOLDER = os.environ.get("PAYMENT_CARD_HOLDER", "Malika Abdukarimova").strip()
+# Payments v1.0: Telegram Stars (asosiy usul) va eski karta+admin tasdig'i. Ikkalasini muhit o'zgaruvchisi bilan tez o'chirish mumkin.
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "no", "off")
+
+
+PAYMENTS_STARS_ENABLED = _env_flag("PAYMENTS_STARS_ENABLED", True)
+PAYMENTS_CARD_ENABLED = _env_flag("PAYMENTS_CARD_ENABLED", True)
+PAYMENT_ORDER_TTL_SECONDS = 30 * 60
 
 
 def format_card_number(raw: str) -> str:
@@ -1313,6 +1326,9 @@ def build_plan_view(owner_id: int, key: str):
         return text, InlineKeyboardMarkup([back])
 
     title = esc(t(lang, "plan_title", emoji=emoji, name=name, price=plan_price_label(lang, price)))
+    stars_row = []
+    if PAYMENTS_STARS_ENABLED:
+        stars_row = [[InlineKeyboardButton(t(lang, "btn_pay_extend" if key == current else "btn_pay_stars"), callback_data=f"pay_p:{key}")]]
     if key == current:
         text = title + "\n\n" + features + "\n\n" + esc(t(lang, "plan_current"))
         try:
@@ -1321,17 +1337,24 @@ def build_plan_view(owner_id: int, key: str):
             expires_at = None
         if expires_at:
             text += "\n" + esc(t(lang, "plan_until", date=format_plan_date(expires_at)))
-        return text, InlineKeyboardMarkup([back])
-    if not PAYMENT_CARD_NUMBER:
-        pay = esc(t(lang, "plan_no_card"))
-    else:
-        pay = t(
-            lang, "plan_pay",
-            card="<code>" + esc(format_card_number(PAYMENT_CARD_NUMBER)) + "</code>",
-            holder=esc(PAYMENT_CARD_HOLDER),
-        )
-    rows = [[InlineKeyboardButton(t(lang, "support_btn_admin"), url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")], back]
-    return title + "\n\n" + features + "\n\n" + pay, InlineKeyboardMarkup(rows)
+        return text, InlineKeyboardMarkup(stars_row + [back])
+    parts = [title, features]
+    rows = list(stars_row)
+    if PAYMENTS_STARS_ENABLED:
+        parts.append(esc(t(lang, "pay_stars_hint")))
+    if PAYMENTS_CARD_ENABLED:
+        if not PAYMENT_CARD_NUMBER:
+            pay = esc(t(lang, "plan_no_card"))
+        else:
+            pay = t(
+                lang, "plan_pay",
+                card="<code>" + esc(format_card_number(PAYMENT_CARD_NUMBER)) + "</code>",
+                holder=esc(PAYMENT_CARD_HOLDER),
+            )
+        parts.append((esc(t(lang, "pay_card_title")) + "\n" if PAYMENTS_STARS_ENABLED else "") + pay)
+        rows.append([InlineKeyboardButton(t(lang, "support_btn_admin"), url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")])
+    rows.append(back)
+    return "\n\n".join(parts), InlineKeyboardMarkup(rows)
 
 
 SUPPORT_CHANNEL_LINK = "https://t.me/+P_Uv4zsFGE03NmI6"
@@ -3600,6 +3623,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(t(lang, "main_menu"), reply_markup=main_menu_markup(owner_id))
         return
 
+    if data.startswith("pay_"):
+        await handle_pay_callback(query, context, owner_id, data)
+        return
+
     if data == "plans":
         text, markup = build_plans_menu(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
@@ -5309,6 +5336,366 @@ async def plan_expiry_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info("Tarif muddati tugadi: %d foydalanuvchi bepulga qaytdi", len(expired))
 
 
+# ---------------------------------------------------------------------------
+# Payments v1.0 — Telegram Stars (XTR)
+# ---------------------------------------------------------------------------
+_pending_payments: deque = deque()  # baza vaqtincha ishlamaganda: kelgan, lekin hali qayta ishlanmagan to'lovlar
+PENDING_PAYMENTS_MAX = 500
+
+
+def _add_months(ts: float, n: int) -> float:
+    return add_plan_duration(ts, n, "month", TASHKENT_TZ)
+
+
+def _snap_exp(state) -> int:
+    return int(state.expires_at) if state.expires_at is not None and state.plan != "free" else 0
+
+
+def _quote_lines(lang: str, q) -> str:
+    lines = [t(lang, "pay_l_price", v=q.price)]
+    if q.credit and q.kind == "upgrade":
+        lines.append(t(lang, "pay_l_credit", v=q.credit))
+    lines.append(t(lang, "pay_l_total", v=q.pay) if q.pay else t(lang, "pay_l_free"))
+    return "\n".join(lines)
+
+
+def build_pay_duration_view(owner_id: int, plan: str):
+    lang = get_lang(owner_id)
+    rows = []
+    for months in payments.DURATIONS:
+        price = payments.stars_price(plan, months)
+        pct = payments.DURATION_DISCOUNT[months]
+        label = t(lang, "btn_pay_months_off" if pct else "btn_pay_months", n=months, price=price, pct=pct)
+        rows.append([InlineKeyboardButton(label, callback_data=f"pay_q:{plan}:{months}")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"plan:{plan}")])
+    return t(lang, "pay_choose", name=t(lang, "plan_name_" + plan)), InlineKeyboardMarkup(rows)
+
+
+def build_pay_quote_view(owner_id: int, plan: str, months: int):
+    """(matn, tugmalar) yoki (xato_matni, None)."""
+    lang = get_lang(owner_id)
+    now = time.time()
+    state = db.get_user_plan_state(owner_id)
+    try:
+        q = payments.quote(state, plan, months, now, _add_months)
+    except payments.PaymentError as e:
+        return t(lang, "pay_unlimited" if str(e) == "unlimited" else "pay_bad_button"), None
+    note = t(lang, "pay_note_" + q.kind)
+    text = t(lang, "pay_quote", name=t(lang, "plan_name_" + plan), months=months, lines=_quote_lines(lang, q),
+             date=format_plan_date(q.new_state.expires_at), note=note)
+    if q.pay > 0:
+        go = InlineKeyboardButton(t(lang, "btn_pay_go", pay=f"{q.pay} ⭐"), callback_data=f"pay_buy:{plan}:{months}:{q.pay}")
+    else:
+        go = InlineKeyboardButton(t(lang, "btn_pay_switch"), callback_data=f"pay_swy:{plan}:{months}:{state.plan}:{_snap_exp(state)}")
+    return text, InlineKeyboardMarkup([[go], [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"pay_p:{plan}")]])
+
+
+async def handle_pay_callback(query, context, owner_id: int, data: str):
+    lang = get_lang(owner_id)
+    parts = data.split(":")
+    action = parts[0]
+    try:
+        plan = parts[1] if len(parts) > 1 else ""
+        months = int(parts[2]) if len(parts) > 2 else 0
+    except ValueError:
+        plan, months = "", 0
+    valid = plan in payments.STARS_PRICE_1M and (action == "pay_p" or months in payments.DURATIONS)
+    if action not in ("pay_p", "pay_q", "pay_buy", "pay_swy") or not valid:
+        await query.answer(t(lang, "pay_bad_button"), show_alert=True)
+        return
+    if not PAYMENTS_STARS_ENABLED:
+        await query.answer(t(lang, "pay_disabled"), show_alert=True)
+        return
+    try:
+        if action == "pay_p":
+            await query.answer()
+            text, markup = build_pay_duration_view(owner_id, plan)
+            await query.edit_message_text(text, reply_markup=markup)
+        elif action == "pay_q":
+            await query.answer()
+            text, markup = build_pay_quote_view(owner_id, plan, months)
+            await query.edit_message_text(text, reply_markup=markup)
+        elif action == "pay_buy":
+            await _pay_buy(query, context, owner_id, plan, months, parts[3] if len(parts) > 3 else "")
+        else:
+            await _pay_switch(query, context, owner_id, plan, months, parts[3:5])
+    except TelegramError as e:
+        logger.info("To'lov ekrani xatosi (user=%s): %s", owner_id, e)
+    except Exception:
+        logger.exception("To'lov tugmasida xato (user=%s, data=%s)", owner_id, data)
+        try:
+            await query.answer(t(lang, "pay_err_try_later"), show_alert=True)
+        except TelegramError:
+            pass
+
+
+async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown: str):
+    lang = get_lang(owner_id)
+    now = time.time()
+    state = db.get_user_plan_state(owner_id)
+    try:
+        q = payments.quote(state, plan, months, now, _add_months)
+    except payments.PaymentError:
+        await query.answer(t(lang, "pay_unlimited"), show_alert=True)
+        return
+    if q.pay <= 0 or str(q.pay) != shown:  # foydalanuvchi ko'rgan narx o'zgargan — yangi hisobni ko'rsatamiz
+        await query.answer(t(lang, "pay_state_changed"), show_alert=True)
+        text, markup = build_pay_quote_view(owner_id, plan, months)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+    token = "P" + secrets.token_hex(6).upper()
+    db.create_payment_order(owner_id, token, q, state, PAYMENT_ORDER_TTL_SECONDS, now)
+    name = t(lang, "plan_name_" + plan)
+    await context.bot.send_invoice(
+        chat_id=owner_id,
+        title=t(lang, "pay_invoice_title", name=name, months=months),
+        description=t(lang, "pay_invoice_desc", name=name, months=months),
+        payload=token,
+        currency="XTR",
+        prices=[LabeledPrice(t(lang, "pay_invoice_title", name=name, months=months), q.pay)],
+        provider_token="",
+    )
+    await query.answer()
+    await context.bot.send_message(owner_id, t(lang, "pay_invoice_sent", minutes=PAYMENT_ORDER_TTL_SECONDS // 60, token=token))
+
+
+async def _pay_switch(query, context, owner_id: int, plan: str, months: int, snap):
+    lang = get_lang(owner_id)
+    try:
+        snap_plan, snap_exp = snap[0], int(snap[1])
+    except (IndexError, ValueError):
+        await query.answer(t(lang, "pay_bad_button"), show_alert=True)
+        return
+    now = time.time()
+    state = db.get_user_plan_state(owner_id)
+    try:
+        q = payments.quote(state, plan, months, now, _add_months)
+    except payments.PaymentError:
+        await query.answer(t(lang, "pay_unlimited"), show_alert=True)
+        return
+    if q.pay != 0 or state.plan != snap_plan or _snap_exp(state) != snap_exp:
+        await query.answer(t(lang, "pay_state_changed"), show_alert=True)
+        text, markup = build_pay_quote_view(owner_id, plan, months)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+    token = "S" + secrets.token_hex(6).upper()
+    if not db.switch_plan(owner_id, snap_plan, snap_exp or None, q, token, now):
+        await query.answer(t(lang, "pay_state_changed"), show_alert=True)
+        return
+    await query.answer()
+    await query.edit_message_text(t(lang, "pay_switched", name=t(lang, "plan_name_" + plan), date=format_plan_date(q.new_state.expires_at)))
+    await _notify_admin(context.bot, f"🔁 Tarif almashtirildi (to'lovsiz): {_label_for(owner_id)}\n{snap_plan} → {plan}, {months} oy ({token})")
+
+
+async def _notify_admin(bot, text: str):
+    if ADMIN_ID:
+        await _try_send(bot, ADMIN_ID, text)
+
+
+async def on_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Telegram to'lovdan oldin 10 soniya ichida javob so'raydi. Faqat o'zimiz yaratgan, shu foydalanuvchining, kutilayotgan,
+    muddati o'tmagan, summasi mos va tarif holati o'zgarmagan buyurtma uchun ruxsat beramiz."""
+    q = update.pre_checkout_query
+    lang = get_lang(q.from_user.id)
+
+    async def answer(ok: bool, key: str | None = None):
+        try:
+            await q.answer(ok=ok, error_message=None if ok else t(lang, key))
+        except TelegramError as e:
+            logger.info("pre_checkout javobi yuborilmadi: %s", e)
+
+    try:
+        if not PAYMENTS_STARS_ENABLED:
+            return await answer(False, "pay_disabled")
+        if q.from_user.id != ADMIN_ID and db.get_block(q.from_user.id) is not None:
+            return await answer(False, "pay_err_blocked")
+        order = db.get_payment(q.invoice_payload or "")
+        if order is None or order["user_id"] != q.from_user.id:
+            return await answer(False, "pay_err_order")
+        if order["status"] != "pending":
+            return await answer(False, "pay_err_expired" if order["status"] in ("expired", "cancelled") else "pay_err_order")
+        if (order["expires_at"] or 0) <= time.time():
+            return await answer(False, "pay_err_expired")
+        if q.currency != "XTR" or q.total_amount != order["stars"]:
+            return await answer(False, "pay_err_order")
+        state = db.get_user_plan_state(q.from_user.id)
+        snap_exp = order["snap_expires"] or 0
+        if state.plan != order["snap_plan"] or _snap_exp(state) != snap_exp:
+            return await answer(False, "pay_err_changed")
+    except Exception:
+        logger.exception("pre_checkout xatosi")
+        return await answer(False, "pay_err_try_later")
+    await answer(True)
+
+
+async def on_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sp = update.message.successful_payment
+    await process_payment(context.bot, update.effective_user.id, sp.invoice_payload, sp.telegram_payment_charge_id,
+                          sp.total_amount, sp.currency)
+
+
+async def process_payment(bot, user_id: int, token: str, charge_id: str, amount: int, currency: str, notify_user: bool = True) -> str:
+    """Kelgan to'lovni qayta ishlaydi. Natija: 'activated' | 'duplicate' | 'unmatched' | 'deferred' (baza xatosi — keyinroq qayta uriniladi)."""
+    lang = get_lang(user_id)
+    try:
+        res = db.activate_payment(token, charge_id, user_id, amount, _add_months, time.time(), currency)
+    except Exception:
+        logger.exception("To'lovni faollashtirishda xato (charge=%s) — qayta uriniladi", charge_id)
+        if not any(p["charge_id"] == charge_id for p in _pending_payments) and len(_pending_payments) < PENDING_PAYMENTS_MAX:
+            _pending_payments.append({"user_id": user_id, "token": token, "charge_id": charge_id, "amount": amount, "currency": currency})
+        if notify_user:
+            await _try_send(bot, user_id, t(lang, "pay_delayed"))
+        await _notify_admin(bot, f"⚠️ To'lov qabul qilindi, lekin baza xatosi — qayta uriniladi.\n{user_id}, {amount} ⭐, charge: {charge_id}, order: {token}")
+        return "deferred"
+    status = res["status"]
+    if status == "activated":
+        plan = res["plan"]
+        if notify_user:
+            await _try_send(bot, user_id, t(lang, "pay_success", name=t(lang, "plan_name_" + plan),
+                                            date=format_plan_date(res["expires_at"]) if res["expires_at"] else "∞", token=token))
+        await _notify_admin(bot, f"⭐ To'lov: {_label_for(user_id)}\n{plan}, {amount} ⭐, order {token}\ncharge: {charge_id}")
+    elif status == "unmatched":
+        if notify_user:
+            await _try_send(bot, user_id, t(lang, "pay_unmatched"))
+        await _notify_admin(bot, f"🚨 Mos kelmagan to'lov ({res.get('reason')}): {_label_for(user_id)}\n{amount} {currency}, order {token}\ncharge: {charge_id}\nQaytarish: /refund {charge_id}")
+    return status
+
+
+async def payment_retry_job(context: ContextTypes.DEFAULT_TYPE):
+    for _ in range(len(_pending_payments)):
+        item = _pending_payments.popleft()
+        try:
+            res = db.activate_payment(item["token"], item["charge_id"], item["user_id"], item["amount"], _add_months, time.time(), item["currency"])
+        except Exception:
+            _pending_payments.append(item)
+            logger.warning("To'lovni qayta urinish muvaffaqiyatsiz (charge=%s)", item["charge_id"])
+            return  # baza hali ishlamayapti — keyingi urinishgacha kutamiz
+        lang = get_lang(item["user_id"])
+        if res["status"] == "activated":
+            await _try_send(context.bot, item["user_id"], t(lang, "pay_success", name=t(lang, "plan_name_" + res["plan"]),
+                                                            date=format_plan_date(res["expires_at"]) if res["expires_at"] else "∞", token=item["token"]))
+            await _notify_admin(context.bot, f"⭐ Kechikkan to'lov faollashtirildi: {_label_for(item['user_id'])}\n{res['plan']}, {item['amount']} ⭐, charge: {item['charge_id']}")
+        elif res["status"] == "unmatched":
+            await _try_send(context.bot, item["user_id"], t(lang, "pay_unmatched"))
+            await _notify_admin(context.bot, f"🚨 Mos kelmagan to'lov ({res.get('reason')}): {_label_for(item['user_id'])}\ncharge: {item['charge_id']}\nQaytarish: /refund {item['charge_id']}")
+
+
+async def payment_orders_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        db.expire_old_orders()
+    except Exception:
+        logger.exception("Eskirgan buyurtmalarni yopishda xato")
+
+
+async def payment_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
+    """Telegram tranzaksiyalari bilan solishtirish: bot o'chiq turganda yoki xato tufayli o'tkazib yuborilgan to'lovlarni topib faollashtiradi."""
+    if not PAYMENTS_STARS_ENABLED:
+        return
+    try:
+        incoming, refunded_ids = [], set()
+        offset = 0
+        for _ in range(5):  # oxirgi ~500 tranzaksiya
+            batch = await context.bot.get_star_transactions(offset=offset, limit=100)
+            txs = list(batch.transactions)
+            for tx in txs:
+                if tx.receiver is not None:
+                    refunded_ids.add(tx.id)
+                elif isinstance(tx.source, TransactionPartnerUser) and tx.source.invoice_payload:
+                    incoming.append(tx)
+            if len(txs) < 100:
+                break
+            offset += len(txs)
+        for tx in incoming:
+            if tx.id in refunded_ids or any(p["charge_id"] == tx.id for p in _pending_payments):
+                continue
+            if db.get_payment_by_charge(tx.id) is not None:
+                continue
+            await process_payment(context.bot, tx.source.user.id, tx.source.invoice_payload, tx.id, tx.amount, "XTR")
+            db.audit_event(tx.source.user.id, None, "reconciled", f"charge={tx.id}")
+    except Exception:
+        logger.exception("To'lovlarni solishtirishda xato")
+
+
+async def cmd_refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /refund <charge_id | buyurtma_tokeni> — Stars'ni qaytaradi va tarifdan shu to'lovga mos kunlarni ayiradi."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if len(context.args or []) != 1:
+        await update.message.reply_text("Foydalanish:\n/refund <charge_id yoki buyurtma raqami>\nRo'yxat: /payments")
+        return
+    ref = context.args[0].strip()
+    row, reason = db.begin_refund(ref)
+    if row is None and reason == "not_paid:refunding":  # oldingi urinish yarim qolgan: qayta davom ettiramiz
+        row = db.get_payment_by_charge(ref) or db.get_payment(ref)
+    elif row is None:
+        msg = "To'lov topilmadi." if reason == "not_found" else f"Bu to'lovni qaytarib bo'lmaydi (holati: {reason.split(':', 1)[-1]})."
+        await update.message.reply_text(msg)
+        return
+    try:
+        await context.bot.refund_star_payment(user_id=row["user_id"], telegram_payment_charge_id=row["charge_id"])
+    except TelegramError as e:
+        if "ALREADY_REFUNDED" not in str(e).upper().replace(" ", "_"):
+            db.fail_refund(row["id"])
+            await update.message.reply_text(f"❌ Telegram qaytarishni rad etdi: {e}\nTo'lov holati o'zgarmadi.")
+            return
+    new_state = None
+    for attempt in range(3):
+        try:
+            new_state = db.finish_refund(row["id"])
+            break
+        except Exception:
+            logger.exception("finish_refund xatosi (payment=%s, urinish=%s)", row["id"], attempt + 1)
+            await asyncio.sleep(1)
+    else:
+        await update.message.reply_text(
+            f"⚠️ Stars qaytarildi, lekin bazani yangilab bo'lmadi. Baza tiklangach shu buyruqni qayta yuboring: /refund {row['charge_id']}")
+        return
+    label = _label_for(row["user_id"])
+    if new_state is None:
+        await update.message.reply_text(f"{label}: bu to'lov allaqachon qayta ishlangan.")
+        return
+    lang = get_lang(row["user_id"])
+    status = t(lang, "pay_refunded_free") if new_state.plan == "free" else t(
+        lang, "plan_activated_until", name=t(lang, "plan_name_" + new_state.plan),
+        date=format_plan_date(new_state.expires_at)) if new_state.expires_at else ""
+    notified = await _try_send(context.bot, row["user_id"], t(lang, "pay_refunded", stars=row["stars"], status=status))
+    await update.message.reply_text(
+        f"✅ Qaytarildi: {label}, {row['stars']} ⭐. Tarif: {new_state.plan}"
+        + (f" ({format_plan_date(new_state.expires_at)} gacha)" if new_state.expires_at else "")
+        + ("" if notified else "\nFoydalanuvchiga xabar yuborib bo'lmadi.")
+    )
+
+
+async def cmd_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    rows, pending = db.list_recent_payments(15)
+    lines = [f"💳 So'nggi to'lovlar (kutilayotgan buyurtmalar: {pending})"]
+    for r in rows:
+        when = datetime.fromtimestamp(r["created_at"], TASHKENT_TZ).strftime("%d.%m %H:%M")
+        lines.append(f"{when} | {_label_for(r['user_id'])} | {r['plan'] or '-'} {r['months'] or ''} | {r['stars']}⭐ | {r['status']}\n   {r['token']}" + (f" | {r['charge_id']}" if r["charge_id"] else ""))
+    if not rows:
+        lines.append("Hali to'lovlar yo'q.")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_paysupport(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Telegram talabi: to'lovlar bo'yicha yordam buyrug'i."""
+    user = update.effective_user
+    lang = get_lang(user.id)
+    try:
+        rows = db.list_user_payments(user.id, 5)
+    except Exception:
+        rows = []
+    items = []
+    for r in rows:
+        if r["status"] == "pending":
+            continue
+        what = f"{t(lang, 'plan_name_' + r['plan'])} {r['months']}" if r["plan"] else "—"
+        items.append(f"• {r['token']} — {what} — {r['stars']} ⭐ — {t(lang, 'pay_st_' + r['status'])}")
+    await update.message.reply_text(t(lang, "pay_support", admin=SUPPORT_ADMIN_USERNAME, list="\n".join(items) or t(lang, "pay_support_none")))
+
+
 async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -5780,6 +6167,8 @@ async def subscribe_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if query is None and message is None:
         return
+    if message is not None and message.successful_payment is not None:
+        return  # pul allaqachon olingan: obuna holatidan qat'i nazar to'lov qayta ishlanadi
     user = update.effective_user
     chat = update.effective_chat
     if user is None or user.is_bot or _sub_exempt(user.id) or (chat is not None and chat.type != "private"):
@@ -5817,6 +6206,8 @@ async def block_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     xabarlari) bu yerda e'tiborga olinmaydi — ular bot foydalanuvchisi emas."""
     if update.message is None and update.callback_query is None:
         return
+    if update.message is not None and update.message.successful_payment is not None:
+        return  # tasdiqlangan to'lov bloklangan foydalanuvchi uchun ham yo'qolmasin
     user = update.effective_user
     if user is None or user.id == ADMIN_ID:
         return
@@ -6081,6 +6472,11 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("reklama_status", cmd_reklama_status, filters=only_messages))
     app.add_handler(CommandHandler("reklama_retry", cmd_reklama_retry, filters=only_messages))
     app.add_handler(CommandHandler("cancel", cmd_cancel, filters=only_messages))
+    app.add_handler(CommandHandler("refund", cmd_refund, filters=only_messages))
+    app.add_handler(CommandHandler("payments", cmd_payments, filters=only_messages))
+    app.add_handler(CommandHandler("paysupport", cmd_paysupport, filters=only_messages))
+    app.add_handler(PreCheckoutQueryHandler(on_pre_checkout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT & only_messages, on_successful_payment))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & only_messages, on_text))
     app.add_handler(MessageHandler(~filters.TEXT & only_messages & filters.ChatType.PRIVATE, on_other_message))
@@ -6112,6 +6508,10 @@ def build_app() -> Application:
         app.job_queue.run_once(profile_backfill_job, when=20)
         # Muddati tugagan tariflarni Bepulga qaytarish (har 10 daqiqada)
         app.job_queue.run_repeating(plan_expiry_job, interval=600, first=30)
+        # Payments: kutilayotgan to'lovlarni qayta urinish, eskirgan buyurtmalarni yopish, Telegram tranzaksiyalari bilan solishtirish
+        app.job_queue.run_repeating(payment_retry_job, interval=30, first=40)
+        app.job_queue.run_repeating(payment_orders_job, interval=300, first=60)
+        app.job_queue.run_repeating(payment_reconcile_job, interval=1800, first=75)
         # Ism soati/BIO egalarining kanal a'zoligini yangilab turish (har daqiqada, faqat eskirganlarni)
         app.job_queue.run_repeating(subscription_refresh_job, interval=60, first=45)
         # Bepul tarifdagi ism soati egalarining "Edit bio" ruxsatini tekshirish (har 5 daqiqada)
