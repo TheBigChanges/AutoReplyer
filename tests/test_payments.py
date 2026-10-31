@@ -132,6 +132,66 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(back.plan, "free")
 
 
+class GrantTests(unittest.TestCase):
+    def g(self, state, snap_ok, kind, plan, months, stars, credit=0, now=NOW):
+        return pay.grant(state, snap_ok, kind, plan, months, stars, credit, now, add_months)
+
+    def test_snapshot_ok_matches_old_behaviour(self):
+        st = PlanState("plus", NOW + 10 * DAY, None)
+        g = self.g(st, True, "extend", "plus", 1, 15)
+        self.assertEqual((g.start, g.end), (NOW + 10 * DAY, NOW + 40 * DAY))
+
+    def test_stale_pro_invoice_does_not_overwrite_ultra(self):
+        ultra = PlanState("ultra", NOW + 30 * DAY, None)
+        g = self.g(ultra, False, "new", "pro", 1, 35)
+        self.assertEqual(g.new_state.plan, "ultra")
+        self.assertGreater(g.new_state.expires_at, ultra.expires_at)  # to'langan qiymat Ultra kunlariga qo'shildi
+        self.assertAlmostEqual((g.new_state.expires_at - ultra.expires_at) / DAY, 35 / (70 / 30), places=3)
+
+    def test_stale_invoice_on_lower_plan_upgrades_and_keeps_value(self):
+        plus = PlanState("plus", NOW + 30 * DAY, None)  # qolgan qiymat 15
+        g = self.g(plus, False, "new", "pro", 1, 35)
+        self.assertEqual(g.new_state.plan, "pro")
+        self.assertAlmostEqual((g.new_state.expires_at - NOW) / DAY, 30 + 15 / (35 / 30), places=3)
+
+    def test_stale_same_plan_extends(self):
+        st = PlanState("pro", NOW + 5 * DAY, None)
+        g = self.g(st, False, "new", "pro", 1, 35)
+        self.assertEqual(g.new_state.expires_at, NOW + 35 * DAY)
+
+    def test_stale_upgrade_credit_is_not_trusted(self):
+        # credit bilan to'langan upgrade (pay=28 < price=35), lekin eski tarif endi yo'q: faqat to'langan 28 ning ulushi
+        g = self.g(PlanState(), False, "upgrade", "pro", 1, 28, credit=7)
+        self.assertAlmostEqual((g.new_state.expires_at - NOW) / DAY, 30 * 28 / 35, places=3)
+
+    def test_unlimited_is_never_touched(self):
+        st = PlanState("ultra", None, None)
+        g = self.g(st, False, "new", "pro", 1, 35)
+        self.assertEqual(g.new_state, st)
+        self.assertTrue(g.review)
+
+
+class PurchaseRefundTests(unittest.TestCase):
+    def test_expired_old_purchase_preserves_unrelated_subscription(self):
+        pro = PlanState("pro", NOW + 30 * DAY, 35 / 30)
+        new = pay.apply_refund_purchase(pro, 15, NOW - 60 * DAY, NOW - 30 * DAY, NOW)  # eski Plus davri o'tib ketgan
+        self.assertEqual(new, pro)
+
+    def test_partially_used_purchase_takes_only_unused_share(self):
+        st = PlanState("plus", NOW + 10 * DAY, 0.5)
+        new = pay.apply_refund_purchase(st, 15, NOW - 20 * DAY, NOW + 10 * DAY, NOW)  # 1/3 qolgan = 5 Stars = 10 kun
+        self.assertEqual(new.plan, "free")
+
+    def test_future_stacked_purchase_refunds_in_full(self):
+        st = PlanState("plus", NOW + 60 * DAY, 0.5)
+        new = pay.apply_refund_purchase(st, 15, NOW + 30 * DAY, NOW + 60 * DAY, NOW)
+        self.assertAlmostEqual((new.expires_at - NOW) / DAY, 30, places=3)
+
+    def test_legacy_row_without_grant_uses_old_rule(self):
+        st = PlanState("plus", NOW + 60 * DAY, 0.5)
+        self.assertAlmostEqual((pay.apply_refund_purchase(st, 15, None, None, NOW).expires_at - NOW) / DAY, 30, places=3)
+
+
 # --------------------------------------------------------------------------- baza
 @unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL kerak")
 class DbBase(unittest.TestCase):
@@ -147,6 +207,7 @@ class DbBase(unittest.TestCase):
     def _clean(self):
         with db.get_conn() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM payment_audit WHERE user_id IN (%s, %s)", (self.u, self.v))
+            cur.execute("DELETE FROM payment_inbox WHERE user_id IN (%s, %s)", (self.u, self.v))
             cur.execute("DELETE FROM payments WHERE user_id IN (%s, %s)", (self.u, self.v))
             cur.execute("DELETE FROM users WHERE user_id IN (%s, %s)", (self.u, self.v))
 
@@ -381,6 +442,71 @@ class RefundDbTests(DbBase):
         row, _ = db.begin_refund(charge)
         db.finish_refund(row["id"], now)
         self.assertEqual(self.plan(), PlanState("ultra", None, None))
+
+
+class StaleAndLedgerTests(DbBase):
+    def test_stale_invoice_does_not_overwrite_newer_subscription(self):
+        now = time.time()
+        token, q = self.order(plan="pro", now=now)  # Pro buyurtmasi (free holatda)
+        db.set_user_plan(self.u, "ultra", now + 30 * DAY)  # orada Ultra berildi
+        res, _ = self.pay(token, q, now=now)
+        self.assertEqual(res["status"], "activated")
+        self.assertTrue(res["state_changed"])
+        st = self.plan()
+        self.assertEqual(st.plan, "ultra")
+        self.assertGreater(st.expires_at, now + 30 * DAY)
+
+    def test_stale_invoice_on_unlimited_flags_review_and_changes_nothing(self):
+        now = time.time()
+        token, q = self.order(plan="pro", now=now)
+        db.set_user_plan(self.u, "ultra", None)
+        res, _ = self.pay(token, q, now=now)
+        self.assertTrue(res["review"])
+        self.assertEqual(self.plan(), PlanState("ultra", None, None))
+        self.assertEqual(db.get_payment(token)["status"], "paid")  # to'lov qayd etilgan, refund mumkin
+
+    def test_expired_but_not_yet_swept_plan_counts_as_free(self):
+        now = time.time()
+        db.set_user_plan(self.u, "plus", now - 5)  # o'tib ketgan, job hali tozalamagan
+        token, q = self.order(now=now)  # snapshot: free
+        res, _ = self.pay(token, q, now=now)
+        self.assertFalse(res["state_changed"])
+
+    def test_refund_expired_old_purchase_preserves_unrelated_subscription(self):
+        now = time.time()
+        t1, q1 = self.order(plan="plus", now=now - 90 * DAY)
+        self.pay(t1, q1, charge="chOLD", now=now - 90 * DAY)  # Plus: -90..-60 kun, o'tib ketgan
+        db.set_user_plan(self.u, "pro", now + 30 * DAY)
+        row, _ = db.begin_refund("chOLD")
+        db.finish_refund(row["id"], now)
+        st = self.plan()
+        self.assertEqual(st.plan, "pro")
+        self.assertAlmostEqual(st.expires_at, now + 30 * DAY, delta=1)
+        self.assertEqual(db.get_payment(t1)["status"], "refunded")
+
+    def test_grant_interval_stored(self):
+        now = time.time()
+        token, q = self.order(now=now)
+        self.pay(token, q, now=now)
+        row = db.get_payment(token)
+        self.assertAlmostEqual(row["grant_start"], now, delta=1)
+        self.assertAlmostEqual(row["grant_end"], now + 30 * DAY, delta=1)
+
+
+class InboxTests(DbBase):
+    def test_inbox_roundtrip(self):
+        db.record_payment_event(self.u, "TK", "chI1", 15, "XTR")
+        db.record_payment_event(self.u, "TK", "chI1", 15, "XTR")  # takror — bitta yozuv
+        evs = [e for e in db.list_unprocessed_payment_events() if e["user_id"] == self.u]
+        self.assertEqual(len(evs), 1)
+        db.mark_payment_event_done("chI1")
+        self.assertEqual([e for e in db.list_unprocessed_payment_events() if e["user_id"] == self.u], [])
+
+    def test_recon_mark(self):
+        db.set_payment_recon_mark(123.0, key="t_" + str(self.u))
+        self.assertEqual(db.get_payment_recon_mark("t_" + str(self.u)), 123.0)
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM payment_recon WHERE key = %s", ("t_" + str(self.u),))
 
 
 # --------------------------------------------------------------------------- bot
@@ -733,6 +859,119 @@ class ScreenTests(BotBase):
         upd.message.reply_text = AsyncMock()
         run(bot.cmd_payments(upd, MagicMock()))
         self.assertIn("chLIST", upd.message.reply_text.await_args.args[0])
+
+
+class RecoveryTests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def test_payment_recovered_after_process_restart(self):
+        token, q = self.order()
+        b = _bot_mock()
+        with patch.object(db, "activate_payment", side_effect=RuntimeError("db down")):
+            run(bot.process_payment(b, self.u, token, "chRST", q.pay, "XTR"))
+        self.assertEqual(self.plan().plan, "free")
+        bot._pending_payments.clear()  # server qayta ishga tushdi: xotira yo'qoldi
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE payment_inbox SET received_at = received_at - 100 WHERE charge_id = 'chRST'")
+        run(bot.payment_retry_job(self._ctx(b)))
+        self.assertEqual(self.plan().plan, "plus")
+        self.assertEqual([e for e in db.list_unprocessed_payment_events() if e["charge_id"] == "chRST"], [])
+
+    def test_repeated_db_failure_does_not_spam_admin(self):
+        token, q = self.order()
+        b = _bot_mock()
+        with patch.object(db, "activate_payment", side_effect=RuntimeError("down")):
+            run(bot.process_payment(b, self.u, token, "chSP", q.pay, "XTR"))
+            n = b.send_message.await_count
+            run(bot.process_payment(b, self.u, token, "chSP", q.pay, "XTR"))
+        self.assertEqual(b.send_message.await_count, n)
+
+    def _tx(self, charge, user, payload, amount, age_days=0.0, refund=False):
+        from telegram import TransactionPartnerUser
+        tx = MagicMock()
+        tx.id = charge
+        tx.amount = amount
+        tx.date = __import__("datetime").datetime.fromtimestamp(time.time() - age_days * DAY, __import__("datetime").timezone.utc)
+        if refund:
+            tx.receiver, tx.source = MagicMock(), None
+        else:
+            tx.receiver = None
+            tx.source = MagicMock(spec=TransactionPartnerUser)
+            tx.source.user.id = user
+            tx.source.invoice_payload = payload
+        return tx
+
+    def _batch(self, txs):
+        r = MagicMock()
+        r.transactions = txs
+        return r
+
+    def test_reconcile_finds_old_payment_beyond_500_after_long_downtime(self):
+        token, q = self.order()
+        db.set_payment_recon_mark(time.time() - 20 * DAY)
+        self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
+        filler = [self._tx(f"f{i}_{self.u}", self.v, "Pfiller", 1, age_days=1) for i in range(100)]  # boshqalar (bazada yo'q -> unmatched)
+        target = self._tx("chOLDER", self.u, token, q.pay, age_days=10)
+        pages = [self._batch(filler)] * 6 + [self._batch([target])]
+        b = _bot_mock()
+        b.get_star_transactions = AsyncMock(side_effect=pages)
+        run(bot.payment_reconcile_job(self._ctx(b)))
+        self.assertEqual(self.plan().plan, "plus")  # 600 ta tranzaksiyadan keyin topildi
+        self.assertGreater(db.get_payment_recon_mark(), time.time() - 5)  # belgi yangilandi
+        with db.get_conn() as conn, conn.cursor() as cur:  # filler uchun hosil bo'lgan unmatched yozuvlar tozalanadi
+            cur.execute("DELETE FROM payments WHERE charge_id LIKE %s", (f"f%_{self.u}",))
+
+    def test_reconcile_mark_not_advanced_when_processing_deferred(self):
+        token, q = self.order()
+        db.set_payment_recon_mark(1000.0)
+        self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
+        b = _bot_mock()
+        b.get_star_transactions = AsyncMock(return_value=self._batch([self._tx("chDEF", self.u, token, q.pay)]))
+        with patch.object(db, "activate_payment", side_effect=RuntimeError("down")):
+            run(bot.payment_reconcile_job(self._ctx(b)))
+        self.assertEqual(db.get_payment_recon_mark(), 1000.0)
+
+    def test_external_refund_reconciles_subscription(self):
+        now = time.time()
+        token, q = self.order(now=now)
+        self.pay(token, q, charge="chEXT", now=now)
+        self.assertEqual(self.plan().plan, "plus")
+        self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
+        b = _bot_mock()
+        b.get_star_transactions = AsyncMock(return_value=self._batch([
+            self._tx("chEXT", self.u, token, q.pay), self._tx("chEXT", self.u, token, q.pay, refund=True)]))
+        run(bot.payment_reconcile_job(self._ctx(b)))
+        self.assertEqual(db.get_payment(token)["status"], "refunded")
+        self.assertEqual(self.plan().plan, "free")
+        n = b.send_message.await_count
+        run(bot.payment_reconcile_job(self._ctx(b)))  # ikkinchi marta hech narsa ayrilmaydi
+        self.assertEqual(b.send_message.await_count, n)
+
+    def test_external_refund_of_old_purchase_keeps_other_subscription(self):
+        now = time.time()
+        t1, q1 = self.order(now=now - 90 * DAY)
+        self.pay(t1, q1, charge="chEX2", now=now - 90 * DAY)
+        db.set_user_plan(self.u, "pro", now + 30 * DAY)
+        self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
+        b = _bot_mock()
+        b.get_star_transactions = AsyncMock(return_value=self._batch([self._tx("chEX2", self.u, t1, q1.pay, refund=True)]))
+        run(bot.payment_reconcile_job(self._ctx(b)))
+        self.assertEqual(self.plan().plan, "pro")
+        self.assertEqual(db.get_payment(t1)["status"], "refunded")
+
+
+class CardDefaultTests(unittest.TestCase):
+    def test_card_route_off_by_default_stars_on(self):
+        import importlib
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PAYMENTS_CARD_ENABLED", None)
+            os.environ.pop("PAYMENTS_STARS_ENABLED", None)
+            self.assertFalse(bot._env_flag("PAYMENTS_CARD_ENABLED", False))
+            self.assertTrue(bot._env_flag("PAYMENTS_STARS_ENABLED", True))
+        self.assertFalse(bot.PAYMENTS_CARD_ENABLED)  # test muhitida o'zgaruvchi berilmagan
 
 
 class HandlerRegistrationTests(unittest.TestCase):
