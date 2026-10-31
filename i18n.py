@@ -1107,6 +1107,18 @@ T: dict[str, dict] = {
         "⚠️ Состояние вашего тарифа изменилось. Выберите тариф заново.",
     ),
     "pay_bad_button": _("Bu tugma eskirgan. Tariflar bo'limidan qaytadan boshlang.", "This button is out of date. Start again from the Plans section.", "Эта кнопка устарела. Начните заново из раздела «Тарифы»."),
+    "btn_pay_cancel": _("❌ Bekor qilish", "❌ Cancel", "❌ Отменить"),
+    "pay_cancelled": _("Buyurtma bekor qilindi.", "The order has been cancelled.", "Заказ отменён."),
+    "pay_cancel_na": _(
+        "Bu buyurtmani bekor qilib bo'lmaydi (allaqachon to'langan yoki muddati o'tgan).",
+        "This order can't be cancelled (already paid or expired).",
+        "Этот заказ нельзя отменить (уже оплачен или истёк).",
+    ),
+    "pay_order_expired": _(
+        "⌛ To'lov muddati ({minutes} daqiqa) tugadi — buyurtma bekor qilindi. Kerak bo'lsa, tarifni qaytadan tanlang.",
+        "⌛ The payment window ({minutes} min) has ended — the order was cancelled. Choose the plan again if you still want it.",
+        "⌛ Время на оплату ({minutes} мин) истекло — заказ отменён. При необходимости выберите тариф заново.",
+    ),
     "pay_err_order": _("Buyurtma topilmadi yoki sizniki emas.", "The order was not found or is not yours.", "Заказ не найден или принадлежит не вам."),
     "pay_err_expired": _("Buyurtma muddati tugagan. Tarifni qaytadan tanlang.", "The order has expired. Please choose the plan again.", "Срок заказа истёк. Выберите тариф заново."),
     "pay_err_changed": _("Tarifingiz o'zgargan. Tarifni qaytadan tanlang.", "Your plan has changed. Please choose the plan again.", "Ваш тариф изменился. Выберите тариф заново."),
