@@ -19,6 +19,7 @@ import psycopg2.extras
 import psycopg2.pool
 
 import automation
+import payments
 from logic import DEFAULT_SLEEP_MESSAGE
 
 
@@ -254,6 +255,43 @@ def init_db():
         )
         cur.execute("CREATE TABLE IF NOT EXISTS automation_meta (key TEXT PRIMARY KEY, value TIMESTAMPTZ NOT NULL DEFAULT NOW())")
         cur.execute("INSERT INTO automation_meta (key) VALUES ('counters_since') ON CONFLICT (key) DO NOTHING")
+        # Payments v1.0 (Telegram Stars): buyurtmalar (har buyurtma bir marta to'lanadi) va audit jurnali
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS payments (
+                id BIGSERIAL PRIMARY KEY,
+                token TEXT NOT NULL UNIQUE,
+                user_id BIGINT NOT NULL,
+                kind TEXT NOT NULL,
+                plan TEXT,
+                months INTEGER NOT NULL DEFAULT 0,
+                stars INTEGER NOT NULL DEFAULT 0,
+                credit INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                charge_id TEXT UNIQUE,
+                snap_plan TEXT,
+                snap_expires DOUBLE PRECISION,
+                created_at DOUBLE PRECISION NOT NULL,
+                expires_at DOUBLE PRECISION,
+                paid_at DOUBLE PRECISION,
+                refunded_at DOUBLE PRECISION
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments (user_id, id DESC)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments (status, expires_at)")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS payment_audit (
+                id BIGSERIAL PRIMARY KEY,
+                ts DOUBLE PRECISION NOT NULL,
+                user_id BIGINT,
+                payment_id BIGINT,
+                event TEXT NOT NULL,
+                detail TEXT
+            )
+            """
+        )
         # AI Knowledge Base: har egasining ma'lumotlari alohida (hamma so'rov owner_user_id bilan cheklangan)
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS kb_enabled BOOLEAN NOT NULL DEFAULT TRUE")
         cur.execute(
@@ -368,6 +406,8 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT")
         # Tarif tugash vaqti (epoch); NULL — muddatsiz
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expires_at DOUBLE PRECISION")
+        # Stars to'lovlari: tarifning Stars'dagi kunlik qiymati (almashtirishda qolgan qiymatni hisoblash uchun); NULL — ro'yxat narxi
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_stars_per_day DOUBLE PRECISION")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_users_first_seen ON users (first_seen DESC)")
         cur.execute(
             """
@@ -777,8 +817,9 @@ def set_user_plan(user_id: int, plan: str, expires_at: float | None = None) -> N
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO users (user_id, first_seen, plan, plan_expires_at) VALUES (%s, %s, %s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan, plan_expires_at = EXCLUDED.plan_expires_at
+            INSERT INTO users (user_id, first_seen, plan, plan_expires_at, plan_stars_per_day) VALUES (%s, %s, %s, %s, NULL)
+            ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan, plan_expires_at = EXCLUDED.plan_expires_at,
+                                                plan_stars_per_day = NULL
             """,
             (user_id, time.time(), plan, None if plan == "free" else expires_at),
         )
@@ -816,13 +857,274 @@ def expire_plans(now: float | None = None):
                   AND plan_expires_at IS NOT NULL AND plan_expires_at <= %s
                 FOR UPDATE
             )
-            UPDATE users u SET plan = 'free', plan_expires_at = NULL
+            UPDATE users u SET plan = 'free', plan_expires_at = NULL, plan_stars_per_day = NULL
             FROM old WHERE u.user_id = old.user_id
             RETURNING u.user_id, old.plan
             """,
             (now,),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
+
+
+# --------------------------------------------------------------------------
+# Payments v1.0 (Telegram Stars)
+# --------------------------------------------------------------------------
+PAYMENT_STATUSES = ("pending", "paid", "refunding", "refunded", "expired", "cancelled", "switched", "unmatched")
+_PAYMENT_COLS = ("id, token, user_id, kind, plan, months, stars, credit, status, charge_id, snap_plan, snap_expires, "
+                 "created_at, expires_at, paid_at, refunded_at")
+
+
+def _audit(cur, user_id, payment_id, event, detail=None, now=None):
+    cur.execute(
+        "INSERT INTO payment_audit (ts, user_id, payment_id, event, detail) VALUES (%s, %s, %s, %s, %s)",
+        (time.time() if now is None else now, user_id, payment_id, event, detail),
+    )
+
+
+def _state_from_row(row) -> "payments.PlanState":
+    if isinstance(row, dict):  # RealDictCursor (_run_tx)
+        row = (row["plan"], row["plan_expires_at"], row["plan_stars_per_day"])
+    plan, expires_at, rate = row
+    if not plan:
+        return payments.PlanState("free", None, None)
+    return payments.PlanState(plan, expires_at, rate)
+
+
+def _lock_user_state(cur, user_id: int) -> "payments.PlanState":
+    """Foydalanuvchi qatorini qulflaydi (yo'q bo'lsa yaratadi) va tarif holatini qaytaradi."""
+    cur.execute("INSERT INTO users (user_id, first_seen) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING", (user_id, time.time()))
+    cur.execute("SELECT plan, plan_expires_at, plan_stars_per_day FROM users WHERE user_id = %s FOR UPDATE", (user_id,))
+    return _state_from_row(cur.fetchone())
+
+
+def _write_user_state(cur, user_id: int, state: "payments.PlanState") -> None:
+    if state.plan == "free" or state.plan not in payments.STARS_PRICE_1M:
+        cur.execute("UPDATE users SET plan = 'free', plan_expires_at = NULL, plan_stars_per_day = NULL WHERE user_id = %s", (user_id,))
+    else:
+        cur.execute(
+            "UPDATE users SET plan = %s, plan_expires_at = %s, plan_stars_per_day = %s WHERE user_id = %s",
+            (state.plan, state.expires_at, state.rate, user_id),
+        )
+
+
+def _run_tx(fn):
+    """fn(cur) ni bitta tranzaksiyada bajaradi (xatoda ROLLBACK)."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("BEGIN")
+        try:
+            result = fn(cur)
+            cur.execute("COMMIT")
+            return result
+        except BaseException:
+            try:
+                cur.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+
+
+def get_user_plan_state(user_id: int) -> "payments.PlanState":
+    """Foydalanuvchining tarif holati (muddati o'tgan bo'lsa — Bepul)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT plan, plan_expires_at, plan_stars_per_day FROM users WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+    state = _state_from_row(row) if row else payments.PlanState()
+    if state.plan != "free" and state.expires_at is not None and state.expires_at <= time.time():
+        return payments.PlanState()
+    return state
+
+
+def create_payment_order(user_id: int, token: str, quote: "payments.Quote", state: "payments.PlanState",
+                         ttl_seconds: float, now: float | None = None) -> int:
+    """Yangi buyurtma yaratadi; foydalanuvchining oldingi to'lanmagan buyurtmalari bekor qilinadi (yangi invoice ularning o'rnini bosadi).
+    Buyurtma shu paytdagi tarif holati (snapshot) bilan bog'lanadi: holat o'zgarsa, to'lov rad etiladi."""
+    now = time.time() if now is None else now
+    snap_expires = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
+
+    def work(cur):
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext('payments_user'), (%s %% 2147483647)::int)", (user_id,))
+        cur.execute("UPDATE payments SET status = 'cancelled' WHERE user_id = %s AND status = 'pending'", (user_id,))
+        cur.execute(
+            """
+            INSERT INTO payments (token, user_id, kind, plan, months, stars, credit, status, snap_plan, snap_expires, created_at, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s) RETURNING id
+            """,
+            (token, user_id, quote.kind, quote.target, quote.months, quote.pay, quote.credit, state.plan, snap_expires, now, now + ttl_seconds),
+        )
+        pid = cur.fetchone()["id"]
+        _audit(cur, user_id, pid, "order_created", f"{quote.kind} {quote.target} {quote.months}m stars={quote.pay} credit={quote.credit}", now)
+        return pid
+
+    return _run_tx(work)
+
+
+def get_payment(token: str):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE token = %s", (token,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_payment_by_charge(charge_id: str):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE charge_id = %s", (charge_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def list_user_payments(user_id: int, limit: int = 5):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE user_id = %s AND status <> 'cancelled' ORDER BY id DESC LIMIT %s", (user_id, limit))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def list_recent_payments(limit: int = 15):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE status NOT IN ('cancelled', 'expired') ORDER BY id DESC LIMIT %s", (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT COUNT(*) AS n FROM payments WHERE status = 'pending' AND expires_at > %s", (time.time(),))
+        pending = cur.fetchone()["n"]
+    return rows, pending
+
+
+def expire_old_orders(now: float | None = None) -> int:
+    """Muddati o'tgan to'lanmagan buyurtmalarni yopadi."""
+    now = time.time() if now is None else now
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE payments SET status = 'expired' WHERE status = 'pending' AND expires_at <= %s", (now,))
+        return cur.rowcount
+
+
+def activate_payment(token: str, charge_id: str, user_id: int, total_amount: int, add_months, now: float | None = None,
+                     currency: str = "XTR") -> dict:
+    """Muvaffaqiyatli to'lovni ATOMIK qo'llaydi. Qaytaradi {"status": ..., ...}:
+      activated — tarif berildi (plan, expires_at, payment_id);
+      duplicate — bu charge_id allaqachon qayta ishlangan (hech narsa o'zgarmadi);
+      unmatched — buyurtma topilmadi / boshqa foydalanuvchiniki / summa yoki valyuta mos emas / buyurtma allaqachon boshqa to'lov
+                  bilan yopilgan: pul kelgan, lekin tarif berilmaydi — qo'lda ko'rib chiqish uchun saqlanadi (admin xabardor qilinadi).
+    Foydalanuvchi qatori va buyurtma qatori qulflanadi: parallel kelgan takroriy hodisalar faqat bir marta faollashtiradi."""
+    now = time.time() if now is None else now
+
+    def unmatched(cur, reason, order_id=None):
+        cur.execute(
+            """
+            INSERT INTO payments (token, user_id, kind, stars, status, charge_id, created_at, paid_at)
+            VALUES (%s, %s, 'unmatched', %s, 'unmatched', %s, %s, %s) ON CONFLICT DO NOTHING RETURNING id
+            """,
+            ("unmatched:" + charge_id, user_id, total_amount, charge_id, now, now),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return {"status": "duplicate"}
+        _audit(cur, user_id, row["id"], "unmatched_payment", f"{reason} token={token} order={order_id} amount={total_amount}", now)
+        return {"status": "unmatched", "reason": reason, "payment_id": row["id"]}
+
+    def work(cur):
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE charge_id = %s", (charge_id,))
+        if cur.fetchone() is not None:
+            return {"status": "duplicate"}
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE token = %s FOR UPDATE", (token,))
+        order = cur.fetchone()
+        if order is None:
+            return unmatched(cur, "unknown_order")
+        # parallel hodisa buyurtmani biz kutgan paytda yopgan bo'lishi mumkin: qulfdan keyin qayta tekshiramiz
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE charge_id = %s", (charge_id,))
+        if cur.fetchone() is not None:
+            return {"status": "duplicate"}
+        if order["user_id"] != user_id:
+            return unmatched(cur, "wrong_user", order["id"])
+        if currency != "XTR" or total_amount != order["stars"]:
+            return unmatched(cur, "amount_mismatch", order["id"])
+        if order["status"] not in ("pending", "expired", "cancelled"):
+            return unmatched(cur, "order_closed:" + order["status"], order["id"])  # buyurtma boshqa to'lov bilan yopilgan (ikki marta to'langan)
+
+        state = _lock_user_state(cur, user_id)
+        new_state = payments.apply_order(state, order["kind"], order["plan"], order["months"], order["stars"], order["credit"], now, add_months)
+        _write_user_state(cur, user_id, new_state)
+        cur.execute("UPDATE payments SET status = 'paid', charge_id = %s, paid_at = %s WHERE id = %s", (charge_id, now, order["id"]))
+        _audit(cur, user_id, order["id"], "paid", f"{order['kind']} {order['plan']} {order['months']}m stars={order['stars']} was={state.plan}", now)
+        return {"status": "activated", "payment_id": order["id"], "plan": new_state.plan, "expires_at": new_state.expires_at}
+
+    return _run_tx(work)
+
+
+def switch_plan(user_id: int, snap_plan: str, snap_expires: int | None, quote: "payments.Quote", token: str,
+                now: float | None = None) -> bool:
+    """To'lovsiz almashtirish (pastga yoki qolgan qiymat yetarli bo'lganda yuqoriga). Foydalanuvchi ko'rgan holat (snapshot)
+    o'zgargan bo'lsa — False (hech narsa yozilmaydi). Atomik: holat tekshiruvi va yozuv bitta tranzaksiyada."""
+    now = time.time() if now is None else now
+    if quote.pay != 0:
+        raise ValueError("switch_plan faqat to'lovsiz almashtirish uchun")
+
+    def work(cur):
+        state = _lock_user_state(cur, user_id)
+        cur_expires = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
+        if state.plan != snap_plan or cur_expires != snap_expires:
+            return False
+        _write_user_state(cur, user_id, quote.new_state)
+        cur.execute(
+            """
+            INSERT INTO payments (token, user_id, kind, plan, months, stars, credit, status, snap_plan, snap_expires, created_at, paid_at)
+            VALUES (%s, %s, %s, %s, %s, 0, %s, 'switched', %s, %s, %s, %s) RETURNING id
+            """,
+            (token, user_id, quote.kind, quote.target, quote.months, quote.credit, snap_plan, snap_expires, now, now),
+        )
+        _audit(cur, user_id, cur.fetchone()["id"], "switched", f"{quote.kind} {snap_plan}->{quote.target}", now)
+        return True
+
+    return _run_tx(work)
+
+
+def begin_refund(ref: str):
+    """Refund boshlash: to'lov ('paid' holatida) atomik 'refunding' ga o'tadi (ikkinchi /refund uni qayta qo'ya olmaydi).
+    `ref` — charge_id yoki buyurtma tokeni. (qator, None) yoki (None, sabab: 'not_found' | 'not_paid:<holat>')."""
+    def work(cur):
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE charge_id = %s OR token = %s FOR UPDATE", (ref, ref))
+        row = cur.fetchone()
+        if row is None:
+            return None, "not_found"
+        if row["status"] != "paid" or not row["charge_id"]:
+            return None, "not_paid:" + row["status"]
+        cur.execute("UPDATE payments SET status = 'refunding' WHERE id = %s", (row["id"],))
+        _audit(cur, row["user_id"], row["id"], "refund_started", f"stars={row['stars']}")
+        row = dict(row)
+        row["status"] = "refunding"
+        return row, None
+
+    return _run_tx(work)
+
+
+def finish_refund(payment_id: int, now: float | None = None):
+    """Telegram refundni qabul qilgach: tarif muddatidan qaytarilgan Stars qiymati ayriladi va to'lov 'refunded' bo'ladi
+    (bitta tranzaksiyada). Yangi PlanState qaytaradi; to'lov 'refunding' holatida bo'lmasa — None (ikki marta ayirilmaydi)."""
+    now = time.time() if now is None else now
+
+    def work(cur):
+        cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE id = %s FOR UPDATE", (payment_id,))
+        row = cur.fetchone()
+        if row is None or row["status"] != "refunding":
+            return None
+        state = _lock_user_state(cur, row["user_id"])
+        new_state = payments.apply_refund(state, row["stars"], now)
+        _write_user_state(cur, row["user_id"], new_state)
+        cur.execute("UPDATE payments SET status = 'refunded', refunded_at = %s WHERE id = %s", (now, payment_id))
+        _audit(cur, row["user_id"], payment_id, "refunded", f"stars={row['stars']} {state.plan}->{new_state.plan}", now)
+        return new_state
+
+    return _run_tx(work)
+
+
+def fail_refund(payment_id: int) -> None:
+    """Telegram refundni rad etdi: to'lov 'paid' holatiga qaytariladi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE payments SET status = 'paid' WHERE id = %s AND status = 'refunding'", (payment_id,))
+        if cur.rowcount:
+            _audit(cur, None, payment_id, "refund_failed")
+
+
+def audit_event(user_id, payment_id, event: str, detail: str | None = None) -> None:
+    with get_conn() as conn, conn.cursor() as cur:
+        _audit(cur, user_id, payment_id, event, detail)
 
 
 # --------------------------------------------------------------------------
@@ -2107,7 +2409,7 @@ def retry_on_disconnect(fn):
 for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
-    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_faq_entry", "count_faq_entries",
+    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_user_plan_state", "get_payment", "get_payment_by_charge", "list_user_payments", "list_recent_payments", "get_faq_entry", "count_faq_entries",
     "get_analytics_rows", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
