@@ -1051,6 +1051,11 @@ T: dict[str, dict] = {
         "⭐ {name} plan — {months} mo\n\n{lines}\n\n⏳ Valid until: {date}\n\n{note}",
         "⭐ Тариф {name} — {months} мес\n\n{lines}\n\n⏳ Действует до: {date}\n\n{note}",
     ),
+    "pay_quote_dg": _(
+        "⭐ {name} tarifiga o'tish\n\nJoriy tarifingizning qolgan qiymati: {value} ⭐\nBu qiymat {name} tarifining taxminan {days} kuniga aylanadi.\nTo'lov kerak emas; oy tanlanmaydi — muddat qolgan qiymatdan avtomatik hisoblanadi.\n\n⏳ Amal qilish muddati: {date} gacha\n\n{note}",
+        "⭐ Switch to the {name} plan\n\nRemaining value of your current plan: {value} ⭐\nIt is converted into about {days} days of the {name} plan.\nNo payment is needed; you don't choose months — the period is calculated automatically from the remaining value.\n\n⏳ Valid until: {date}\n\n{note}",
+        "⭐ Переход на тариф {name}\n\nОстаток по текущему тарифу: {value} ⭐\nОн превращается примерно в {days} дн. тарифа {name}.\nОплата не нужна; месяцы не выбираются — срок рассчитывается автоматически из остатка.\n\n⏳ Действует до: {date}\n\n{note}",
+    ),
     "pay_l_price": _("Narx: {v} ⭐", "Price: {v} ⭐", "Цена: {v} ⭐"),
     "pay_l_credit": _("Joriy tarifning qolgan qiymati: −{v} ⭐", "Remaining value of your current plan: −{v} ⭐", "Остаток по текущему тарифу: −{v} ⭐"),
     "pay_l_total": _("To'lanadi: {v} ⭐", "To pay: {v} ⭐", "К оплате: {v} ⭐"),
