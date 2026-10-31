@@ -1111,6 +1111,8 @@ def activate_payment(token: str, charge_id: str, user_id: int, total_amount: int
         return {"status": "unmatched", "reason": reason, "payment_id": row["id"]}
 
     def work(cur):
+        # Qulf tartibi (barcha to'lov funksiyalarida bir xil, deadlock bo'lmasligi uchun): AVVAL users qatori, KEYIN payments qatorlari
+        locked_state = _lock_user_state(cur, user_id)
         cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE charge_id = %s", (charge_id,))
         if cur.fetchone() is not None:
             return {"status": "duplicate"}
@@ -1129,7 +1131,7 @@ def activate_payment(token: str, charge_id: str, user_id: int, total_amount: int
         if order["status"] not in ("pending", "expired", "cancelled"):
             return unmatched(cur, "order_closed:" + order["status"], order["id"])  # buyurtma boshqa to'lov bilan yopilgan (ikki marta to'langan)
 
-        state = payments.normalize(_lock_user_state(cur, user_id), now)
+        state = payments.normalize(locked_state, now)
         snap_exp = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
         snapshot_ok = state.plan == (order["snap_plan"] or "free") and snap_exp == (int(order["snap_expires"]) if order["snap_expires"] is not None else None)
         g = payments.grant(state, snapshot_ok, order["kind"], order["plan"], order["months"], order["stars"], order["credit"], now, add_months)
@@ -1201,11 +1203,16 @@ def finish_refund(payment_id: int, now: float | None = None):
     now = time.time() if now is None else now
 
     def work(cur):
+        # qulf tartibi: avval users, keyin payments (set_user_plan / switch_plan / activate_payment bilan bir xil)
+        cur.execute("SELECT user_id FROM payments WHERE id = %s", (payment_id,))
+        owner = cur.fetchone()
+        if owner is None:
+            return None
+        state = _lock_user_state(cur, owner["user_id"])
         cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE id = %s FOR UPDATE", (payment_id,))
         row = cur.fetchone()
         if row is None or row["status"] != "refunding":
             return None
-        state = _lock_user_state(cur, row["user_id"])
         if row["kind"] == "unmatched":  # tarif berilmagan to'lov: Stars qaytariladi, obunaga tegilmaydi
             new_state = payments.normalize(state, now)
         else:
