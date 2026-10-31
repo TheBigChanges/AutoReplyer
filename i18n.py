@@ -1107,6 +1107,16 @@ T: dict[str, dict] = {
         "⚠️ Состояние вашего тарифа изменилось. Выберите тариф заново.",
     ),
     "pay_bad_button": _("Bu tugma eskirgan. Tariflar bo'limidan qaytadan boshlang.", "This button is out of date. Start again from the Plans section.", "Эта кнопка устарела. Начните заново из раздела «Тарифы»."),
+    "pay_invoice_active": _(
+        "Bu buyurtma uchun to'lov hisobi allaqachon yuborilgan — pastdagi xabarga qarang yoki uni bekor qiling.",
+        "The invoice for this order has already been sent — see the message below or cancel it.",
+        "Счёт по этому заказу уже отправлен — посмотрите сообщение ниже или отмените его.",
+    ),
+    "pay_rate_limited": _(
+        "Juda ko'p urinish. Bir necha daqiqadan keyin qayta urinib ko'ring.",
+        "Too many attempts. Please try again in a few minutes.",
+        "Слишком много попыток. Повторите через несколько минут.",
+    ),
     "btn_pay_cancel": _("❌ Bekor qilish", "❌ Cancel", "❌ Отменить"),
     "pay_cancelled": _("Buyurtma bekor qilindi.", "The order has been cancelled.", "Заказ отменён."),
     "pay_cancel_na": _(
