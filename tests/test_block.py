@@ -265,6 +265,7 @@ def _msg_update(user_id=TARGET, text="salom"):
     update.effective_user.username = "example"
     update.effective_user.full_name = "Ex Ample"
     update.message.text = text
+    update.message.successful_payment = None
     update.message.reply_text = AsyncMock()
     return update
 
