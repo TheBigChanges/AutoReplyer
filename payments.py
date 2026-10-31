@@ -185,19 +185,29 @@ def grant(state: PlanState, snapshot_ok: bool, kind: str, plan: str, months: int
     return Grant(PlanState(plan, end, (rem + stars) / _days(now, end)), now, end)
 
 
-def apply_refund_purchase(state: PlanState, stars: int, grant_start, grant_end, now: float) -> PlanState:
-    """Aynan shu xarid bo'yicha refund: xarid davrining HALI FOYDALANILMAGAN ulushi qiymati joriy tarifdan ayriladi.
-    Xarid davri allaqachon o'tib ketgan bo'lsa — hech narsa ayrilmaydi (boshqa, yangi obunaga tegilmaydi).
+def carried_value(stars: int, grant_value, grant_start, grant_end, now: float) -> float:
+    """Xarid qiymatidan hozir hali foydalanilmagan ulush (Stars). grant_value — qiymat grant_start paytida qancha edi (None — stars)."""
+    if grant_start is None or grant_end is None:
+        return float(stars)
+    span = grant_end - grant_start
+    unused = grant_end - max(now, grant_start)
+    if span <= 0 or unused <= 0:
+        return 0.0
+    return (stars if grant_value is None else grant_value) * min(unused / span, 1.0)
+
+
+def apply_refund_purchase(state: PlanState, stars: int, grant_start, grant_end, now: float, grant_value=None) -> PlanState:
+    """Aynan shu xarid bo'yicha refund: xaridning HALI FOYDALANILMAGAN qiymati joriy tarifdan ayriladi.
+    Xarid qiymati boshqa tarifga ko'chirilgan bo'lsa (pastga/yuqoriga o'tish), db uning oralig'ini yangi davrga ko'chirib qo'yadi
+    (grant_start/grant_end/grant_value), shuning uchun bu yerda faqat chiziqli hisob qoladi. Davri o'tib ketgan xarid — hech narsa ayrilmaydi.
     grant_* yo'q (eski yozuv) bo'lsa — oddiy apply_refund."""
     if grant_start is None or grant_end is None:
         return apply_refund(state, stars, now)
     if not is_active(state, now) or state.expires_at is None:
         return state
-    span = grant_end - grant_start
-    unused = grant_end - max(now, grant_start)
-    if span <= 0 or unused <= 0:
+    value = carried_value(stars, grant_value, grant_start, grant_end, now)
+    if value <= 0:
         return state
-    value = stars * min(unused / span, 1.0)
     end = state.expires_at - value / rate_of(state) * DAY
     if end <= now:
         return PlanState("free", None, None)
