@@ -513,7 +513,8 @@ class InboxTests(DbBase):
 def _bot_mock():
     b = MagicMock()
     b.send_message = AsyncMock()
-    b.send_invoice = AsyncMock()
+    b.send_invoice = AsyncMock(return_value=MagicMock(message_id=777))
+    b.delete_message = AsyncMock()
     b.refund_star_payment = AsyncMock(return_value=True)
     return b
 
@@ -961,6 +962,229 @@ class RecoveryTests(BotBase):
         run(bot.payment_reconcile_job(self._ctx(b)))
         self.assertEqual(self.plan().plan, "pro")
         self.assertEqual(db.get_payment(t1)["status"], "refunded")
+
+
+class InvoiceLifecycleTests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def _buy(self, b, price=15, plan="plus", months=1):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(b), self.u, f"pay_buy:{plan}:{months}:{price}"))
+        return b.send_invoice.await_args.kwargs["payload"]
+
+    def test_ttl_is_15_minutes(self):
+        self.assertEqual(bot.PAYMENT_ORDER_TTL_SECONDS, 900)
+        token = self._buy(_bot_mock())
+        o = db.get_payment(token)
+        self.assertAlmostEqual(o["expires_at"] - o["created_at"], 900, delta=1)
+
+    def test_invoice_has_pay_button_first_then_cancel_and_message_id_saved(self):
+        b = _bot_mock()
+        token = self._buy(b)
+        rows = b.send_invoice.await_args.kwargs["reply_markup"].inline_keyboard
+        self.assertTrue(rows[0][0].pay)
+        self.assertEqual(rows[1][0].callback_data, f"pay_cx:{token}")
+        self.assertEqual(db.get_payment(token)["invoice_msg_id"], 777)
+
+    def _cancel(self, token, user=None):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        q.message.message_id = 777
+        q.message.delete = AsyncMock()
+        b = _bot_mock()
+        run(bot.handle_pay_callback(q, self._ctx(b), user or self.u, f"pay_cx:{token}"))
+        return q, b
+
+    def test_cancel_button_cancels_order_and_removes_invoice(self):
+        token = self._buy(_bot_mock())
+        q, b = self._cancel(token)
+        self.assertEqual(db.get_payment(token)["status"], "cancelled")
+        b.delete_message.assert_awaited_once_with(chat_id=self.u, message_id=777)
+        order = db.get_payment(token)
+        self.assertFalse(self.pre(token, amount=order["stars"])["ok"])  # bekor qilingan buyurtma to'lanmaydi
+
+    def test_cancel_foreign_or_paid_order_is_refused(self):
+        token = self._buy(_bot_mock())
+        q, b = self._cancel(token, user=self.v)
+        self.assertEqual(db.get_payment(token)["status"], "pending")
+        b.delete_message.assert_not_awaited()
+        self.assertTrue(q.answer.await_args.kwargs.get("show_alert"))
+        order = db.get_payment(token)
+        db.activate_payment(token, "chCX", self.u, order["stars"], add_months)
+        self._cancel(token)
+        self.assertEqual(db.get_payment(token)["status"], "paid")
+        self.assertEqual(self.plan().plan, "plus")
+
+    def test_expiry_job_closes_order_deletes_invoice_and_notifies(self):
+        b = _bot_mock()
+        token = self._buy(b)
+        fresh = db.get_payment(token)
+        run(bot.payment_orders_job(self._ctx(b)))  # hali muddati o'tmagan
+        self.assertEqual(db.get_payment(token)["status"], "pending")
+        b.delete_message.assert_not_awaited()
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE payments SET expires_at = %s WHERE token = %s", (time.time() - 1, token))
+        run(bot.payment_orders_job(self._ctx(b)))
+        self.assertEqual(db.get_payment(token)["status"], "expired")
+        b.delete_message.assert_awaited_once_with(chat_id=self.u, message_id=777)
+        self.assertIn(self.u, [c.kwargs.get("chat_id") for c in b.send_message.await_args_list])
+        self.assertEqual(self.plan().plan, "free")
+
+    def test_new_invoice_removes_previous_invoice_message(self):
+        b = _bot_mock()
+        first = self._buy(b)
+        b.send_invoice.return_value = MagicMock(message_id=888)
+        b.delete_message.reset_mock()
+        second = self._buy(b)
+        b.delete_message.assert_awaited_once_with(chat_id=self.u, message_id=777)
+        self.assertEqual(db.get_payment(first)["status"], "cancelled")
+        self.assertEqual(db.get_payment(second)["invoice_msg_id"], 888)
+
+
+class AuditRound2Tests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def _refund(self, ref, b=None):
+        b = b or _bot_mock()
+        upd = MagicMock()
+        upd.effective_user.id = 999
+        upd.message.reply_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.args = [ref]
+        ctx.bot = b
+        run(bot.cmd_refund(upd, ctx))
+        return upd.message.reply_text.await_args.args[0], b
+
+    def test_unmatched_payment_can_be_refunded_without_changing_subscription(self):
+        now = time.time()
+        db.set_user_plan(self.u, "pro", now + 20 * DAY)
+        before = self.plan()
+        b = _bot_mock()
+        self.assertEqual(run(bot.process_payment(b, self.u, "PGHOST", "chUNM", 15, "XTR")), "unmatched")
+        msg, b2 = self._refund("chUNM")
+        b2.refund_star_payment.assert_awaited_once_with(user_id=self.u, telegram_payment_charge_id="chUNM")
+        self.assertIn("✅", msg)
+        self.assertEqual(db.get_payment_by_charge("chUNM")["status"], "refunded")
+        self.assertEqual(self.plan(), before)
+
+    def test_unmatched_refund_api_failure_restores_unmatched(self):
+        run(bot.process_payment(_bot_mock(), self.u, "PGHOST", "chUN2", 15, "XTR"))
+        b = _bot_mock()
+        b.refund_star_payment.side_effect = TelegramError("CHARGE_NOT_FOUND")
+        self._refund("chUN2", b)
+        self.assertEqual(db.get_payment_by_charge("chUN2")["status"], "unmatched")
+
+    def test_refund_after_downgrade_removes_remaining_transferred_credit(self):
+        now = time.time()
+        token, q = self.order(plan="ultra", now=now)
+        self.pay(token, q, charge="chULT", now=now)  # Ultra, 70 Stars, hozir
+        t0 = now + 60  # bir daqiqadan keyin Plus ga o'tadi
+        state = db.get_user_plan_state(self.u)
+        qs = pay.quote(state, "plus", 1, t0, add_months)
+        self.assertEqual(qs.kind, "downgrade")
+        self.assertTrue(db.switch_plan(self.u, "ultra", int(state.expires_at), qs, "SDW", t0))
+        plus = self.plan()
+        self.assertEqual(plus.plan, "plus")
+        self.assertGreater(plus.expires_at, now + 130 * DAY)  # ~140 kun
+        later = now + 35 * DAY  # 35 kundan keyin asl Ultra xarid refund qilinadi
+        row, _ = db.begin_refund("chULT")
+        new = db.finish_refund(row["id"], later)
+        # asl xaridning grant_end (30 kun) o'tib ketgan, lekin qiymati Plus'da ishlatilmoqda: ~105 kun ayrilishi kerak
+        self.assertTrue(new.plan == "free" or new.expires_at - later < 2 * DAY, new)
+
+    def test_refund_after_upgrade_credit_transfer(self):
+        now = time.time()
+        t1, q1 = self.order(plan="plus", now=now)
+        self.pay(t1, q1, charge="chUP1", now=now)  # Plus 15
+        t2, q2 = self.order(plan="pro", now=now)  # upgrade: credit ~14, pay ~21
+        self.assertEqual(q2.kind, "upgrade")
+        self.pay(t2, q2, charge="chUP2", now=now)
+        row, _ = db.begin_refund("chUP1")
+        db.finish_refund(row["id"], now)
+        st = self.plan()
+        self.assertEqual(st.plan, "pro")
+        self.assertLess(st.expires_at - now, 18 * DAY)  # Pro ~30 kundan Plus qiymatiga mos ~12-14 kun ayrildi
+
+    def test_upgrade_moves_old_purchase_value_into_new_period(self):
+        now = time.time()
+        t1, q1 = self.order(plan="plus", now=now)
+        self.pay(t1, q1, charge="chMV1", now=now)  # Plus 15, hozir
+        at = now + 15 * DAY  # 15 kundan keyin Pro ga yuqoriga o'tish
+        st = db.get_user_plan_state(self.u)
+        q2 = pay.quote(st, "pro", 1, at, add_months)
+        self.assertEqual(q2.kind, "upgrade")
+        db.create_payment_order(self.u, "UP2", q2, st, 900, at)
+        self.assertEqual(db.activate_payment("UP2", "chMV2", self.u, q2.pay, add_months, at)["status"], "activated")
+        old = db.get_payment("UP2")  # yangi xarid davri
+        row = db.get_payment(t1)
+        self.assertAlmostEqual(row["grant_start"], at, delta=1)  # eski xarid qiymati yangi davrga ko'chdi
+        self.assertAlmostEqual(row["grant_end"], old["grant_end"], delta=1)
+        self.assertAlmostEqual(row["grant_value"], 7.5, delta=0.2)
+        before = self.plan().expires_at
+        refund_at = at + 15 * DAY
+        rrow, _ = db.begin_refund("chMV1")
+        db.finish_refund(rrow["id"], refund_at)
+        self.assertGreater(before - self.plan().expires_at, 2 * DAY)  # asl davr o'tib ketgan bo'lsa ham ko'chirilgan qiymat ayrildi
+
+    def test_external_refund_recovers_after_database_failure(self):
+        now = time.time()
+        token, q = self.order(now=now)
+        self.pay(token, q, charge="chRCV", now=now)
+        self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
+        b = _bot_mock()
+        tx = MagicMock()
+        tx.id, tx.receiver, tx.source = "chRCV", MagicMock(), None
+        tx.date = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        batch = MagicMock()
+        batch.transactions = [tx]
+        b.get_star_transactions = AsyncMock(return_value=batch)
+        with patch.object(db, "finish_refund", side_effect=RuntimeError("db down")):
+            run(bot.payment_reconcile_job(self._ctx(b)))
+        self.assertEqual(db.get_payment(token)["status"], "refunding")  # yarim qoldi
+        run(bot.payment_reconcile_job(self._ctx(b)))  # baza tiklandi
+        self.assertEqual(db.get_payment(token)["status"], "refunded")
+        self.assertEqual(self.plan().plan, "free")
+
+    def test_stuck_refunding_without_visible_telegram_refund_alerts_admin_once(self):
+        now = time.time()
+        token, q = self.order(now=now)
+        self.pay(token, q, charge="chSTK", now=now)
+        db.begin_refund("chSTK")
+        self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
+        bot._recon_alerted.discard("chSTK")
+        b = _bot_mock()
+        b.get_star_transactions = AsyncMock(return_value=MagicMock(transactions=[]))
+        run(bot.payment_reconcile_job(self._ctx(b)))
+        n = b.send_message.await_count
+        self.assertGreaterEqual(n, 1)
+        run(bot.payment_reconcile_job(self._ctx(b)))
+        self.assertEqual(b.send_message.await_count, n)
+
+    def test_reconcile_not_marked_ok_when_page_limit_hit(self):
+        db.set_payment_recon_mark(1000.0)
+        self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
+        bot._recon_alerted.clear()
+        dt = __import__("datetime")
+        txs = []
+        for i in range(100):
+            tx = MagicMock()
+            tx.id, tx.receiver, tx.source = f"zz{i}", MagicMock(), None
+            tx.date = dt.datetime.now(dt.timezone.utc)  # hammasi yangi: eski belgigacha yetib bo'lmaydi
+            txs.append(tx)
+        b = _bot_mock()
+        b.get_star_transactions = AsyncMock(return_value=MagicMock(transactions=txs))
+        run(bot.payment_reconcile_job(self._ctx(b)))
+        self.assertEqual(b.get_star_transactions.await_count, bot.RECON_MAX_PAGES)
+        self.assertEqual(db.get_payment_recon_mark(), 1000.0)
+        self.assertIn(999, [c.kwargs.get("chat_id") for c in b.send_message.await_args_list])
+        bot._recon_alerted.clear()
 
 
 class CardDefaultTests(unittest.TestCase):
