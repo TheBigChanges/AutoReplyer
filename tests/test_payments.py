@@ -1171,6 +1171,7 @@ class AuditRound2Tests(BotBase):
         db.set_payment_recon_mark(1000.0)
         self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
         bot._recon_alerted.clear()
+        bot._recon_page_limit_alerted.clear()
         dt = __import__("datetime")
         txs = []
         for i in range(100):
@@ -1185,6 +1186,7 @@ class AuditRound2Tests(BotBase):
         self.assertEqual(db.get_payment_recon_mark(), 1000.0)
         self.assertIn(999, [c.kwargs.get("chat_id") for c in b.send_message.await_args_list])
         bot._recon_alerted.clear()
+        bot._recon_page_limit_alerted.clear()
 
 
 class AuditRound3Tests(BotBase):
@@ -1342,6 +1344,125 @@ class AuditRound4Tests(BotBase):
         run(bot.handle_pay_callback(q, self._ctx(_bot_mock()), self.u, "pay_p:pro"))
         data = [b.callback_data for r in q.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard for b in r]
         self.assertEqual(data[:4], [f"pay_q:pro:{m}" for m in (1, 3, 6, 12)])
+
+
+class AuditRound5Tests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def test_page_limit_alert_not_suppressed_by_refund_alert(self):
+        bot._recon_alerted.add("someOldCharge")  # oldin boshqa turdagi ogohlantirish yuborilgan
+        bot._recon_page_limit_alerted.clear()
+        self.addCleanup(bot._recon_alerted.discard, "someOldCharge")
+        self.addCleanup(bot._recon_page_limit_alerted.clear)
+        db.set_payment_recon_mark(1000.0)
+        self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
+        dt = __import__("datetime")
+        txs = []
+        for i in range(100):
+            tx = MagicMock()
+            tx.id, tx.receiver, tx.source = f"yy{i}", MagicMock(), None
+            tx.date = dt.datetime.now(dt.timezone.utc)
+            txs.append(tx)
+        b = _bot_mock()
+        b.get_star_transactions = AsyncMock(return_value=MagicMock(transactions=txs))
+        run(bot.payment_reconcile_job(self._ctx(b)))
+        self.assertIn(999, [c.kwargs.get("chat_id") for c in b.send_message.await_args_list])
+
+    def test_parallel_refund_and_admin_plan_change_no_deadlock(self):
+        errors = []
+        for i in range(25):
+            now = time.time()
+            token, q = self.order(now=now)
+            self.pay(token, q, charge=f"chDL{i}_{self.u}", now=now)
+            row, _ = db.begin_refund(f"chDL{i}_{self.u}")
+            barrier = threading.Barrier(2)
+
+            def refund():
+                try:
+                    barrier.wait()
+                    db.finish_refund(row["id"], now + 1)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(repr(e))
+
+            def admin():
+                try:
+                    barrier.wait()
+                    db.set_user_plan(self.u, "pro", now + 30 * DAY)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(repr(e))
+
+            ts = [threading.Thread(target=refund), threading.Thread(target=admin)]
+            [x.start() for x in ts]
+            [x.join() for x in ts]
+            db.set_user_plan(self.u, "free")
+        self.assertEqual(errors, [])
+
+    def test_lock_order_users_before_payments_deterministic(self):
+        """finish_refund users qatori band bo'lsa, payments qatorini QULFLAMASDAN kutishi kerak (users -> payments tartibi)."""
+        import psycopg2
+        now = time.time()
+        token, q = self.order(now=now)
+        self.pay(token, q, charge="chLO", now=now)
+        row, _ = db.begin_refund("chLO")
+        holder = psycopg2.connect(os.environ["DATABASE_URL"])
+        probe = psycopg2.connect(os.environ["DATABASE_URL"])
+        try:
+            holder.autocommit = False
+            hc = holder.cursor()
+            hc.execute("SELECT 1 FROM users WHERE user_id = %s FOR UPDATE", (self.u,))  # admin tarif o'zgartirmoqda (users qulfi)
+            result = []
+            th = threading.Thread(target=lambda: result.append(db.finish_refund(row["id"], now + 1)))
+            th.start()
+            time.sleep(0.5)  # finish_refund users qulfida kutib turibdi
+            pc = probe.cursor()
+            pc.execute("SELECT 1 FROM payments WHERE id = %s FOR UPDATE NOWAIT", (row["id"],))  # payments qatori bo'sh bo'lishi shart
+            probe.rollback()
+            holder.rollback()
+            th.join(10)
+            self.assertFalse(th.is_alive())
+            self.assertIsNotNone(result[0])
+        finally:
+            holder.close()
+            probe.close()
+
+    def test_parallel_activate_switch_and_admin_no_deadlock(self):
+        errors = []
+        for i in range(15):
+            now = time.time()
+            token, q = self.order(now=now)
+            barrier = threading.Barrier(3)
+            st = db.get_user_plan_state(self.u)
+
+            def act():
+                try:
+                    barrier.wait()
+                    db.activate_payment(token, f"chAS{i}_{self.u}", self.u, q.pay, add_months, now)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(repr(e))
+
+            def sw():
+                try:
+                    barrier.wait()
+                    qq = pay.quote(PlanState("ultra", now + 30 * DAY, None), "plus", 1, now, add_months)
+                    db.switch_plan(self.u, "ultra", int(now + 30 * DAY), qq, f"SW{i}_{self.u}", now)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(repr(e))
+
+            def admin():
+                try:
+                    barrier.wait()
+                    db.set_user_plan(self.u, "pro", now + 30 * DAY)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(repr(e))
+
+            ts = [threading.Thread(target=f) for f in (act, sw, admin)]
+            [x.start() for x in ts]
+            [x.join() for x in ts]
+            db.set_user_plan(self.u, "free")
+        self.assertEqual(errors, [])
 
 
 class CardDefaultTests(unittest.TestCase):
