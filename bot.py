@@ -774,7 +774,7 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 PAYMENTS_STARS_ENABLED = _env_flag("PAYMENTS_STARS_ENABLED", True)
 PAYMENTS_CARD_ENABLED = _env_flag("PAYMENTS_CARD_ENABLED", False)  # Telegram qoidalari: standart holatda faqat Stars; karta yoqish uchun =1
-PAYMENT_ORDER_TTL_SECONDS = 30 * 60
+PAYMENT_ORDER_TTL_SECONDS = 15 * 60  # to'lanmagan buyurtma/invoice 15 daqiqadan keyin avtomatik bekor bo'ladi
 
 
 def format_card_number(raw: str) -> str:
@@ -5394,6 +5394,9 @@ async def handle_pay_callback(query, context, owner_id: int, data: str):
     lang = get_lang(owner_id)
     parts = data.split(":")
     action = parts[0]
+    if action == "pay_cx":
+        await _pay_cancel(query, context, owner_id, parts[1] if len(parts) > 1 else "")
+        return
     try:
         plan = parts[1] if len(parts) > 1 else ""
         months = int(parts[2]) if len(parts) > 2 else 0
@@ -5444,9 +5447,12 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         await query.edit_message_text(text, reply_markup=markup)
         return
     token = "P" + secrets.token_hex(6).upper()
+    stale_msgs = db.list_pending_invoice_msgs(owner_id)  # yangi buyurtma eskilarini bekor qiladi — ularning invoice xabarlari ham o'chadi
     db.create_payment_order(owner_id, token, q, state, PAYMENT_ORDER_TTL_SECONDS, now)
+    for mid in stale_msgs:
+        await _delete_message(context.bot, owner_id, mid)
     name = t(lang, "plan_name_" + plan)
-    await context.bot.send_invoice(
+    invoice = await context.bot.send_invoice(
         chat_id=owner_id,
         title=t(lang, "pay_invoice_title", name=name, months=months),
         description=t(lang, "pay_invoice_desc", name=name, months=months),
@@ -5454,9 +5460,44 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         currency="XTR",
         prices=[LabeledPrice(t(lang, "pay_invoice_title", name=name, months=months), q.pay)],
         provider_token="",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(t(lang, "btn_pay_go", pay=f"{q.pay} ⭐"), pay=True)],  # invoice'dagi birinchi tugma majburan "to'lash" bo'lishi kerak
+            [InlineKeyboardButton(t(lang, "btn_pay_cancel"), callback_data=f"pay_cx:{token}")],
+        ]),
     )
+    try:
+        db.set_invoice_message(token, invoice.message_id)
+    except Exception:
+        logger.exception("Invoice xabar ID'sini saqlab bo'lmadi (order=%s)", token)
     await query.answer()
     await context.bot.send_message(owner_id, t(lang, "pay_invoice_sent", minutes=PAYMENT_ORDER_TTL_SECONDS // 60, token=token))
+
+
+async def _delete_message(bot, chat_id: int, message_id: int) -> None:
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except TelegramError as e:
+        logger.info("Invoice xabarini o'chirib bo'lmadi (chat=%s): %s", chat_id, e)
+
+
+async def _pay_cancel(query, context, owner_id: int, token: str):
+    """Invoice'dagi "Bekor qilish": buyurtma yopiladi, invoice xabari o'chadi (to'lov tugmasi yo'qoladi)."""
+    lang = get_lang(owner_id)
+    try:
+        row = db.cancel_order(token, owner_id)
+    except Exception:
+        logger.exception("Buyurtmani bekor qilishda xato")
+        await query.answer(t(lang, "pay_err_try_later"), show_alert=True)
+        return
+    if row is None:  # allaqachon to'langan, muddati o'tgan yoki sizniki emas
+        await query.answer(t(lang, "pay_cancel_na"), show_alert=True)
+        try:
+            await query.message.delete()
+        except TelegramError:
+            pass
+        return
+    await query.answer(t(lang, "pay_cancelled"))
+    await _delete_message(context.bot, owner_id, row["invoice_msg_id"] or query.message.message_id)
 
 
 async def _pay_switch(query, context, owner_id: int, plan: str, months: int, snap):
@@ -5599,11 +5640,17 @@ async def payment_retry_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def payment_orders_job(context: ContextTypes.DEFAULT_TYPE):
     try:
-        db.expire_old_orders()
+        expired = db.expire_old_orders()
     except Exception:
         logger.exception("Eskirgan buyurtmalarni yopishda xato")
+        return
+    for row in expired:  # muddati o'tgan invoice: to'lov tugmasi yo'qoladi va foydalanuvchiga aytiladi
+        if row.get("invoice_msg_id"):
+            await _delete_message(context.bot, row["user_id"], row["invoice_msg_id"])
+        await _try_send(context.bot, row["user_id"], t(get_lang(row["user_id"]), "pay_order_expired", minutes=PAYMENT_ORDER_TTL_SECONDS // 60))
 
 
+_recon_alerted: set = set()  # bir xil ogohlantirishni qayta-qayta yubormaslik
 RECON_OVERLAP_SECONDS = 6 * 3600
 RECON_MAX_PAGES = 60  # 100 tadan: oxirgi belgisi yo'q bo'lsa ham keng qamrov
 
@@ -5621,6 +5668,7 @@ async def payment_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
         horizon = (mark - RECON_OVERLAP_SECONDS) if mark else 0.0
         incoming, refunds = [], {}
         offset = 0
+        reached = False  # ko'rib chiqish saqlangan belgigacha (yoki tranzaksiyalar oxirigacha) yetdimi
         for _ in range(RECON_MAX_PAGES):
             batch = await context.bot.get_star_transactions(offset=offset, limit=100)
             txs = list(batch.transactions)
@@ -5629,10 +5677,17 @@ async def payment_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
                     refunds[tx.id] = tx
                 elif isinstance(tx.source, TransactionPartnerUser) and tx.source.invoice_payload:
                     incoming.append(tx)
-            if len(txs) < 100 or (txs and min(tx.date.timestamp() for tx in txs) < horizon):
+            if len(txs) < 100 or min(tx.date.timestamp() for tx in txs) < horizon:
+                reached = True
                 break
             offset += len(txs)
-        ok = True
+        ok = reached
+        if not reached:
+            logger.warning("To'lovlarni solishtirish %d sahifa limitiga yetdi, belgigacha yetib bo'lmadi", RECON_MAX_PAGES)
+            if not _recon_alerted:
+                _recon_alerted.add(1)
+                await _notify_admin(context.bot, f"⚠️ To'lovlarni solishtirish {RECON_MAX_PAGES} sahifa limitiga yetdi, lekin oxirgi muvaffaqiyatli belgigacha yetib bo'lmadi. "
+                                                 "Belgi yangilanmadi; eski to'lovlarni Telegram Stars tranzaksiyalaridan qo'lda tekshiring.")
         for tx in incoming:
             if tx.id in refunds or any(p["charge_id"] == tx.id for p in _pending_payments):
                 continue
@@ -5644,8 +5699,12 @@ async def payment_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
             db.audit_event(tx.source.user.id, None, "reconciled", f"charge={tx.id}")
         for charge_id in refunds:
             row = db.get_payment_by_charge(charge_id)
-            if row is not None and row["status"] == "paid":
+            if row is not None and row["status"] in ("paid", "refunding", "unmatched"):  # 'refunding' — oldingi urinish baza xatosi tufayli yarim qolgan
                 await _apply_external_refund(context.bot, row)
+        for row in db.list_refunding():  # 'refunding'da qolgan, Telegram refundi esa bu oraliqda ko'rinmagan: admin ogohlantiriladi
+            if row["charge_id"] not in refunds and row["charge_id"] not in _recon_alerted:
+                _recon_alerted.add(row["charge_id"])
+                await _notify_admin(context.bot, f"⚠️ Refund yakunlanmay qolgan: {_label_for(row['user_id'])}, {row['stars']} ⭐\nYakunlash: /refund {row['charge_id']}")
         if ok:
             db.set_payment_recon_mark(started)
     except Exception:
@@ -5654,9 +5713,12 @@ async def payment_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def _apply_external_refund(bot, row) -> None:
     """Telegram tomonida qaytarilgan (bot orqali emas) to'lov: bazada ham 'refunded' qilib, tarifdan xarid ulushini ayiradi."""
-    begun, _ = db.begin_refund(row["charge_id"])
-    if begun is None:
-        return
+    if row["status"] == "refunding":  # oldingi urinish begin_refund'dan keyin uzilgan: Telegram refundni tasdiqlagan, yakunlaymiz
+        begun = row
+    else:
+        begun, _ = db.begin_refund(row["charge_id"])
+        if begun is None:
+            return
     new_state = db.finish_refund(begun["id"])
     db.audit_event(row["user_id"], row["id"], "external_refund", f"charge={row['charge_id']}")
     lang = get_lang(row["user_id"])
@@ -6561,7 +6623,7 @@ def build_app() -> Application:
         app.job_queue.run_repeating(plan_expiry_job, interval=600, first=30)
         # Payments: kutilayotgan to'lovlarni qayta urinish, eskirgan buyurtmalarni yopish, Telegram tranzaksiyalari bilan solishtirish
         app.job_queue.run_repeating(payment_retry_job, interval=30, first=40)
-        app.job_queue.run_repeating(payment_orders_job, interval=300, first=60)
+        app.job_queue.run_repeating(payment_orders_job, interval=60, first=60)
         app.job_queue.run_repeating(payment_reconcile_job, interval=1800, first=75)
         # Ism soati/BIO egalarining kanal a'zoligini yangilab turish (har daqiqada, faqat eskirganlarni)
         app.job_queue.run_repeating(subscription_refresh_job, interval=60, first=45)
