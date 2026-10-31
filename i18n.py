@@ -1024,6 +1024,148 @@ T: dict[str, dict] = {
         "⌛ Срок вашего тарифа {name} истёк, вы вернулись на Бесплатный тариф.\nЧтобы продлить, откройте раздел \U0001F3F7\uFE0F Тарифы.",
     ),
 
+    # ---------------- Payments v1.0 (Telegram Stars) ----------------
+    "btn_pay_stars": _("⭐ Sotib olish (Stars)", "⭐ Buy with Stars", "⭐ Купить за Stars"),
+    "btn_pay_extend": _("⭐ Uzaytirish (Stars)", "⭐ Extend with Stars", "⭐ Продлить за Stars"),
+    "btn_pay_months": _("{n} oy — {price} ⭐", "{n} mo — {price} ⭐", "{n} мес — {price} ⭐"),
+    "btn_pay_months_off": _("{n} oy — {price} ⭐ (−{pct}%)", "{n} mo — {price} ⭐ (−{pct}%)", "{n} мес — {price} ⭐ (−{pct}%)"),
+    "btn_pay_go": _("⭐ To'lash: {pay}", "⭐ Pay: {pay}", "⭐ Оплатить: {pay}"),
+    "btn_pay_switch": _("✅ Almashtirishni tasdiqlash", "✅ Confirm the switch", "✅ Подтвердить переход"),
+    "pay_choose": _(
+        "⭐ {name} tarifi\n\nMuddatni tanlang (uzoq muddatga chegirma bor):",
+        "⭐ {name} plan\n\nChoose the duration (longer periods are cheaper):",
+        "⭐ Тариф {name}\n\nВыберите срок (на длинный срок действует скидка):",
+    ),
+    "pay_card_title": _(
+        "\U0001F4B3 Yoki karta orqali (admin tasdig'i bilan):",
+        "\U0001F4B3 Or by card (confirmed by the admin):",
+        "\U0001F4B3 Или картой (с подтверждением админа):",
+    ),
+    "pay_stars_hint": _(
+        "⭐ Telegram Stars orqali to'lasangiz, tarif darhol faollashadi.",
+        "⭐ If you pay with Telegram Stars, the plan is activated instantly.",
+        "⭐ При оплате Telegram Stars тариф активируется сразу.",
+    ),
+    "pay_quote": _(
+        "⭐ {name} tarifi — {months} oy\n\n{lines}\n\n⏳ Amal qilish muddati: {date} gacha\n\n{note}",
+        "⭐ {name} plan — {months} mo\n\n{lines}\n\n⏳ Valid until: {date}\n\n{note}",
+        "⭐ Тариф {name} — {months} мес\n\n{lines}\n\n⏳ Действует до: {date}\n\n{note}",
+    ),
+    "pay_l_price": _("Narx: {v} ⭐", "Price: {v} ⭐", "Цена: {v} ⭐"),
+    "pay_l_credit": _("Joriy tarifning qolgan qiymati: −{v} ⭐", "Remaining value of your current plan: −{v} ⭐", "Остаток по текущему тарифу: −{v} ⭐"),
+    "pay_l_total": _("To'lanadi: {v} ⭐", "To pay: {v} ⭐", "К оплате: {v} ⭐"),
+    "pay_l_free": _("To'lov kerak emas", "No payment needed", "Оплата не требуется"),
+    "pay_note_new": _(
+        "Tarif to'lovdan so'ng darhol faollashadi.",
+        "The plan is activated right after payment.",
+        "Тариф активируется сразу после оплаты.",
+    ),
+    "pay_note_extend": _(
+        "Yangi muddat hozirgi muddat ustiga qo'shiladi — qolgan vaqt yo'qolmaydi.",
+        "The new period is added on top of your current one — no remaining time is lost.",
+        "Новый срок добавляется к текущему — оставшееся время не теряется.",
+    ),
+    "pay_note_upgrade": _(
+        "Joriy tarifingizning qolgan qiymati hisobga olindi.",
+        "The remaining value of your current plan has been taken into account.",
+        "Остаток по вашему текущему тарифу учтён.",
+    ),
+    "pay_note_switch": _(
+        "Joriy tarifingizning qolgan qiymati yangi tarif narxini qoplaydi, shuning uchun to'lov kerak emas. Ortiqcha qiymat qo'shimcha kunlarga aylantirildi.",
+        "The remaining value of your current plan covers the new plan, so no payment is needed. Any surplus is converted into extra days.",
+        "Остатка по текущему тарифу хватает на новый, поэтому оплата не нужна. Излишек превращён в дополнительные дни.",
+    ),
+    "pay_note_downgrade": _(
+        "Past tarifga o'tish to'lovsiz: joriy tarifning qolgan qiymati arzonroq tarif kunlariga aylantiriladi (pul qaytarilmaydi).",
+        "Switching to a cheaper plan is free: the remaining value of your current plan is converted into days of the cheaper plan (no money is refunded).",
+        "Переход на более дешёвый тариф бесплатный: остаток по текущему тарифу превращается в дни дешёвого (деньги не возвращаются).",
+    ),
+    "pay_invoice_title": _("{name} tarifi — {months} oy", "{name} plan — {months} mo", "Тариф {name} — {months} мес"),
+    "pay_invoice_desc": _(
+        "AutoReplyer: {name} tarifi, {months} oy. To'lovdan so'ng darhol faollashadi.",
+        "AutoReplyer: {name} plan, {months} mo. Activated right after payment.",
+        "AutoReplyer: тариф {name}, {months} мес. Активируется сразу после оплаты.",
+    ),
+    "pay_invoice_sent": _(
+        "⭐ To'lov hisobi yuborildi — {minutes} daqiqa ichida to'lang. Buyurtma: {token}",
+        "⭐ The invoice has been sent — please pay within {minutes} minutes. Order: {token}",
+        "⭐ Счёт отправлен — оплатите в течение {minutes} минут. Заказ: {token}",
+    ),
+    "pay_unlimited": _(
+        "Sizning tarifingiz muddatsiz — uni to'lov orqali o'zgartirib bo'lmaydi. Kerak bo'lsa admin bilan bog'laning.",
+        "Your plan has no expiry date, so it can't be changed by payment. Contact the admin if you need help.",
+        "Ваш тариф бессрочный — его нельзя изменить оплатой. При необходимости свяжитесь с админом.",
+    ),
+    "pay_disabled": _(
+        "⭐ Stars orqali to'lov hozircha o'chirilgan.",
+        "⭐ Payment with Stars is currently turned off.",
+        "⭐ Оплата Stars сейчас отключена.",
+    ),
+    "pay_state_changed": _(
+        "⚠️ Tarifingiz holati o'zgargan. Iltimos, tarifni qaytadan tanlang.",
+        "⚠️ Your plan status has changed. Please choose the plan again.",
+        "⚠️ Состояние вашего тарифа изменилось. Выберите тариф заново.",
+    ),
+    "pay_bad_button": _("Bu tugma eskirgan. Tariflar bo'limidan qaytadan boshlang.", "This button is out of date. Start again from the Plans section.", "Эта кнопка устарела. Начните заново из раздела «Тарифы»."),
+    "pay_err_order": _("Buyurtma topilmadi yoki sizniki emas.", "The order was not found or is not yours.", "Заказ не найден или принадлежит не вам."),
+    "pay_err_expired": _("Buyurtma muddati tugagan. Tarifni qaytadan tanlang.", "The order has expired. Please choose the plan again.", "Срок заказа истёк. Выберите тариф заново."),
+    "pay_err_changed": _("Tarifingiz o'zgargan. Tarifni qaytadan tanlang.", "Your plan has changed. Please choose the plan again.", "Ваш тариф изменился. Выберите тариф заново."),
+    "pay_err_blocked": _("To'lov qabul qilinmaydi.", "The payment can't be accepted.", "Платёж не может быть принят."),
+    "pay_err_try_later": _("Vaqtinchalik xatolik. Birozdan keyin qayta urinib ko'ring.", "A temporary error. Please try again in a moment.", "Временная ошибка. Повторите попытку чуть позже."),
+    "pay_success": _(
+        "✅ To'lov qabul qilindi!\n{name} tarifi faollashtirildi.\n⏳ Amal qilish muddati: {date} gacha\n\nBuyurtma: {token}",
+        "✅ Payment received!\nThe {name} plan has been activated.\n⏳ Valid until: {date}\n\nOrder: {token}",
+        "✅ Платёж получен!\nТариф {name} активирован.\n⏳ Действует до: {date}\n\nЗаказ: {token}",
+    ),
+    "pay_unmatched": _(
+        "⚠️ To'lovingiz qabul qilindi, lekin tarifni avtomatik faollashtirib bo'lmadi. Admin tez orada ko'rib chiqadi — /paysupport",
+        "⚠️ Your payment was received, but the plan could not be activated automatically. The admin will review it shortly — /paysupport",
+        "⚠️ Ваш платёж получен, но тариф не удалось активировать автоматически. Админ скоро проверит — /paysupport",
+    ),
+    "pay_delayed": _(
+        "⏳ To'lovingiz qabul qilindi. Tarif bir necha daqiqa ichida faollashadi. Agar bo'lmasa — /paysupport",
+        "⏳ Your payment was received. The plan will be activated within a few minutes. If it isn't — /paysupport",
+        "⏳ Ваш платёж получен. Тариф активируется в течение нескольких минут. Если нет — /paysupport",
+    ),
+    "pay_switched": _(
+        "✅ Tarif almashtirildi: {name}\n⏳ Amal qilish muddati: {date} gacha",
+        "✅ Plan switched: {name}\n⏳ Valid until: {date}",
+        "✅ Тариф изменён: {name}\n⏳ Действует до: {date}",
+    ),
+    "pay_refunded": _(
+        "↩️ To'lovingiz qaytarildi ({stars} ⭐). Tarif muddati shunga mos qisqartirildi.\n{status}",
+        "↩️ Your payment was refunded ({stars} ⭐). Your plan period was shortened accordingly.\n{status}",
+        "↩️ Ваш платёж возвращён ({stars} ⭐). Срок тарифа соответственно сокращён.\n{status}",
+    ),
+    "pay_refunded_free": _("Tarifingiz Bepulga qaytdi.", "You are back on the Free plan.", "Вы вернулись на Бесплатный тариф."),
+    "pay_support": _(
+        "\U0001F4AC To'lov bo'yicha yordam\n\n"
+        "To'lov bilan muammo bo'lsa, admin bilan bog'laning: @{admin}\nMurojaatda buyurtma raqamini yozing.\n\n"
+        "• Tarif Stars to'lovidan so'ng darhol faollashadi.\n"
+        "• To'lov qaytarilsa, tarifdan shu to'lovga mos kunlar ayriladi.\n"
+        "• Tarif muddati tugasa, Bepul tarifga qaytasiz.\n\n"
+        "So'nggi to'lovlaringiz:\n{list}",
+        "\U0001F4AC Payment support\n\n"
+        "If something is wrong with a payment, contact the admin: @{admin}\nInclude the order number in your message.\n\n"
+        "• The plan is activated right after a Stars payment.\n"
+        "• If a payment is refunded, the matching days are removed from your plan.\n"
+        "• When the plan period ends, you return to the Free plan.\n\n"
+        "Your recent payments:\n{list}",
+        "\U0001F4AC Помощь по платежам\n\n"
+        "Если с платежом что-то не так, свяжитесь с админом: @{admin}\nУкажите номер заказа.\n\n"
+        "• Тариф активируется сразу после оплаты Stars.\n"
+        "• Если платёж возвращён, из тарифа вычитаются соответствующие дни.\n"
+        "• Когда срок тарифа заканчивается, вы возвращаетесь на Бесплатный.\n\n"
+        "Ваши последние платежи:\n{list}",
+    ),
+    "pay_support_none": _("Hali to'lovlar yo'q.", "No payments yet.", "Платежей пока нет."),
+    "pay_st_paid": _("to'langan", "paid", "оплачен"),
+    "pay_st_refunded": _("qaytarilgan", "refunded", "возвращён"),
+    "pay_st_refunding": _("qaytarilmoqda", "refunding", "возвращается"),
+    "pay_st_switched": _("almashtirilgan", "switched", "переход"),
+    "pay_st_pending": _("kutilmoqda", "pending", "ожидает"),
+    "pay_st_expired": _("muddati o'tgan", "expired", "истёк"),
+    "pay_st_unmatched": _("tekshiruvda", "under review", "на проверке"),
     # ---------------- tarif cheklovlari ----------------
     "feature_bio": _("BIO hisoblagich", "BIO countdown", "Счётчик в BIO"),
     "feature_text": _("Xabar matnini o'zgartirish", "Changing the message text", "Изменение текста сообщения"),
