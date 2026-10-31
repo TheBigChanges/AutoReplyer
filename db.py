@@ -278,6 +278,23 @@ def init_db():
             )
             """
         )
+        cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS grant_start DOUBLE PRECISION")
+        cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS grant_end DOUBLE PRECISION")
+        # Kelgan to'lov hodisalari (inbox): qayta ishlanmaguncha saqlanadi — server qayta ishga tushsa ham yo'qolmaydi
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS payment_inbox (
+                charge_id TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                token TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                currency TEXT NOT NULL,
+                received_at DOUBLE PRECISION NOT NULL,
+                processed_at DOUBLE PRECISION
+            )
+            """
+        )
+        cur.execute("CREATE TABLE IF NOT EXISTS payment_recon (key TEXT PRIMARY KEY, value DOUBLE PRECISION NOT NULL)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments (user_id, id DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments (status, expires_at)")
         cur.execute(
@@ -871,7 +888,7 @@ def expire_plans(now: float | None = None):
 # --------------------------------------------------------------------------
 PAYMENT_STATUSES = ("pending", "paid", "refunding", "refunded", "expired", "cancelled", "switched", "unmatched")
 _PAYMENT_COLS = ("id, token, user_id, kind, plan, months, stars, credit, status, charge_id, snap_plan, snap_expires, "
-                 "created_at, expires_at, paid_at, refunded_at")
+                 "created_at, expires_at, paid_at, refunded_at, grant_start, grant_end")
 
 
 def _audit(cur, user_id, payment_id, event, detail=None, now=None):
@@ -1038,12 +1055,18 @@ def activate_payment(token: str, charge_id: str, user_id: int, total_amount: int
         if order["status"] not in ("pending", "expired", "cancelled"):
             return unmatched(cur, "order_closed:" + order["status"], order["id"])  # buyurtma boshqa to'lov bilan yopilgan (ikki marta to'langan)
 
-        state = _lock_user_state(cur, user_id)
-        new_state = payments.apply_order(state, order["kind"], order["plan"], order["months"], order["stars"], order["credit"], now, add_months)
-        _write_user_state(cur, user_id, new_state)
-        cur.execute("UPDATE payments SET status = 'paid', charge_id = %s, paid_at = %s WHERE id = %s", (charge_id, now, order["id"]))
-        _audit(cur, user_id, order["id"], "paid", f"{order['kind']} {order['plan']} {order['months']}m stars={order['stars']} was={state.plan}", now)
-        return {"status": "activated", "payment_id": order["id"], "plan": new_state.plan, "expires_at": new_state.expires_at}
+        state = payments.normalize(_lock_user_state(cur, user_id), now)
+        snap_exp = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
+        snapshot_ok = state.plan == (order["snap_plan"] or "free") and snap_exp == (int(order["snap_expires"]) if order["snap_expires"] is not None else None)
+        g = payments.grant(state, snapshot_ok, order["kind"], order["plan"], order["months"], order["stars"], order["credit"], now, add_months)
+        if not g.review:
+            _write_user_state(cur, user_id, g.new_state)
+        cur.execute("UPDATE payments SET status = 'paid', charge_id = %s, paid_at = %s, grant_start = %s, grant_end = %s WHERE id = %s",
+                    (charge_id, now, g.start, g.end, order["id"]))
+        _audit(cur, user_id, order["id"], "paid_review" if g.review else "paid" if snapshot_ok else "paid_state_changed",
+               f"{order['kind']} {order['plan']} {order['months']}m stars={order['stars']} was={state.plan} now={g.new_state.plan}", now)
+        return {"status": "activated", "payment_id": order["id"], "plan": g.new_state.plan, "expires_at": g.new_state.expires_at,
+                "review": g.review, "state_changed": not snapshot_ok}
 
     return _run_tx(work)
 
@@ -1105,7 +1128,7 @@ def finish_refund(payment_id: int, now: float | None = None):
         if row is None or row["status"] != "refunding":
             return None
         state = _lock_user_state(cur, row["user_id"])
-        new_state = payments.apply_refund(state, row["stars"], now)
+        new_state = payments.apply_refund_purchase(state, row["stars"], row["grant_start"], row["grant_end"], now)
         _write_user_state(cur, row["user_id"], new_state)
         cur.execute("UPDATE payments SET status = 'refunded', refunded_at = %s WHERE id = %s", (now, payment_id))
         _audit(cur, row["user_id"], payment_id, "refunded", f"stars={row['stars']} {state.plan}->{new_state.plan}", now)
@@ -1120,6 +1143,41 @@ def fail_refund(payment_id: int) -> None:
         cur.execute("UPDATE payments SET status = 'paid' WHERE id = %s AND status = 'refunding'", (payment_id,))
         if cur.rowcount:
             _audit(cur, None, payment_id, "refund_failed")
+
+
+def record_payment_event(user_id: int, token: str, charge_id: str, amount: int, currency: str) -> None:
+    """Kelgan to'lovni darhol saqlaydi (qayta ishlanmaguncha 'inbox'da qoladi)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO payment_inbox (charge_id, user_id, token, amount, currency, received_at) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            (charge_id, user_id, token, amount, currency, time.time()),
+        )
+
+
+def mark_payment_event_done(charge_id: str) -> None:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE payment_inbox SET processed_at = %s WHERE charge_id = %s AND processed_at IS NULL", (time.time(), charge_id))
+
+
+def list_unprocessed_payment_events(older_than_seconds: float = 0.0, limit: int = 50):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT charge_id, user_id, token, amount, currency FROM payment_inbox WHERE processed_at IS NULL AND received_at <= %s ORDER BY received_at LIMIT %s",
+            (time.time() - older_than_seconds, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_payment_recon_mark(key: str = "last_ok"):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT value FROM payment_recon WHERE key = %s", (key,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def set_payment_recon_mark(value: float, key: str = "last_ok") -> None:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO payment_recon (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (key, value))
 
 
 def audit_event(user_id, payment_id, event: str, detail: str | None = None) -> None:
@@ -2409,7 +2467,7 @@ def retry_on_disconnect(fn):
 for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
-    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_user_plan_state", "get_payment", "get_payment_by_charge", "list_user_payments", "list_recent_payments", "get_faq_entry", "count_faq_entries",
+    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_user_plan_state", "get_payment", "get_payment_by_charge", "list_user_payments", "list_recent_payments", "list_unprocessed_payment_events", "get_payment_recon_mark", "get_faq_entry", "count_faq_entries",
     "get_analytics_rows", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
