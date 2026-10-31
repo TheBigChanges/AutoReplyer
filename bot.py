@@ -5691,7 +5691,8 @@ async def payment_orders_job(context: ContextTypes.DEFAULT_TYPE):
         await _try_send(context.bot, row["user_id"], t(get_lang(row["user_id"]), "pay_order_expired", minutes=PAYMENT_ORDER_TTL_SECONDS // 60))
 
 
-_recon_alerted: set = set()  # bir xil ogohlantirishni qayta-qayta yubormaslik
+_recon_alerted: set = set()          # tugallanmay qolgan refundlar (charge_id) bo'yicha yuborilgan ogohlantirishlar
+_recon_page_limit_alerted: set = set()  # sahifa limiti ogohlantirishi (alohida kuzatiladi, refund ogohlantirishlariga xalaqit bermaydi)
 RECON_OVERLAP_SECONDS = 6 * 3600
 RECON_MAX_PAGES = 60  # 100 tadan: oxirgi belgisi yo'q bo'lsa ham keng qamrov
 
@@ -5724,8 +5725,8 @@ async def payment_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
         ok = reached
         if not reached:
             logger.warning("To'lovlarni solishtirish %d sahifa limitiga yetdi, belgigacha yetib bo'lmadi", RECON_MAX_PAGES)
-            if not _recon_alerted:
-                _recon_alerted.add(1)
+            if not _recon_page_limit_alerted:
+                _recon_page_limit_alerted.add(1)
                 await _notify_admin(context.bot, f"⚠️ To'lovlarni solishtirish {RECON_MAX_PAGES} sahifa limitiga yetdi, lekin oxirgi muvaffaqiyatli belgigacha yetib bo'lmadi. "
                                                  "Belgi yangilanmadi; eski to'lovlarni Telegram Stars tranzaksiyalaridan qo'lda tekshiring.")
         for tx in incoming:
@@ -5746,6 +5747,7 @@ async def payment_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
                 _recon_alerted.add(row["charge_id"])
                 await _notify_admin(context.bot, f"⚠️ Refund yakunlanmay qolgan: {_label_for(row['user_id'])}, {row['stars']} ⭐\nYakunlash: /refund {row['charge_id']}")
         if ok:
+            _recon_page_limit_alerted.clear()  # muammo hal bo'ldi: keyingi safar yana ogohlantirish mumkin
             db.set_payment_recon_mark(started)
     except Exception:
         logger.exception("To'lovlarni solishtirishda xato")
