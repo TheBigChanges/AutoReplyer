@@ -1297,6 +1297,53 @@ class AuditRound3Tests(BotBase):
         self.assertTrue(bot._pay_rate_ok(self.u, time.time() + bot.PAY_RATE_WINDOW + 1))
 
 
+class AuditRound4Tests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def test_reconciliation_continues_when_new_stars_sales_disabled(self):
+        token, q = self.order()
+        self.addCleanup(lambda: db.set_payment_recon_mark(time.time()))
+        tx = MagicMock(spec=["id", "amount", "date", "source", "receiver"])
+        from telegram import TransactionPartnerUser
+        tx.id, tx.amount, tx.receiver = "chDIS", q.pay, None
+        tx.date = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        tx.source = MagicMock(spec=TransactionPartnerUser)
+        tx.source.user.id = self.u
+        tx.source.invoice_payload = token
+        b = _bot_mock()
+        b.get_star_transactions = AsyncMock(return_value=MagicMock(transactions=[tx]))
+        with patch.object(bot, "PAYMENTS_STARS_ENABLED", False):
+            run(bot.payment_reconcile_job(self._ctx(b)))
+            self.assertEqual(self.plan().plan, "plus")  # eski to'lov tiklandi
+            self.assertFalse(self.pre(token, amount=q.pay)["ok"])  # lekin yangi xaridlar o'chiq
+
+    def test_downgrade_skips_month_choice_and_explains(self):
+        now = time.time()
+        db.set_user_plan(self.u, "ultra", now + 30 * DAY)
+        q = MagicMock()
+        q.answer = AsyncMock()
+        q.edit_message_text = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(_bot_mock()), self.u, "pay_p:plus"))
+        text, = q.edit_message_text.await_args.args
+        markup = q.edit_message_text.await_args.kwargs["reply_markup"]
+        data = [b.callback_data for r in markup.inline_keyboard for b in r]
+        self.assertTrue(data[0].startswith("pay_swy:plus:1:ultra:"))
+        self.assertFalse(any(d.startswith("pay_q:") for d in data))
+        self.assertIn("140", text)  # ~140 kun (70 Stars / 0.5)
+
+    def test_upgrade_still_asks_for_duration(self):
+        db.set_user_plan(self.u, "plus", time.time() + 30 * DAY)
+        q = MagicMock()
+        q.answer = AsyncMock()
+        q.edit_message_text = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(_bot_mock()), self.u, "pay_p:pro"))
+        data = [b.callback_data for r in q.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard for b in r]
+        self.assertEqual(data[:4], [f"pay_q:pro:{m}" for m in (1, 3, 6, 12)])
+
+
 class CardDefaultTests(unittest.TestCase):
     def test_card_route_off_by_default_stars_on(self):
         import importlib
