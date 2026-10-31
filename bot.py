@@ -5387,6 +5387,11 @@ def build_pay_quote_view(owner_id: int, plan: str, months: int):
     except payments.PaymentError as e:
         return t(lang, "pay_unlimited" if str(e) == "unlimited" else "pay_bad_button"), None
     note = t(lang, "pay_note_" + q.kind)
+    if q.kind == "downgrade":
+        text = t(lang, "pay_quote_dg", name=t(lang, "plan_name_" + plan), value=int(payments.remaining_value(state, now)),
+                 days=max(1, round((q.new_state.expires_at - now) / 86400)), date=format_plan_date(q.new_state.expires_at), note=note)
+        go = InlineKeyboardButton(t(lang, "btn_pay_switch"), callback_data=f"pay_swy:{plan}:{months}:{state.plan}:{_snap_exp(state)}")
+        return text, InlineKeyboardMarkup([[go], [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"plan:{plan}")]])
     text = t(lang, "pay_quote", name=t(lang, "plan_name_" + plan), months=months, lines=_quote_lines(lang, q),
              date=format_plan_date(q.new_state.expires_at), note=note)
     if q.pay > 0:
@@ -5418,7 +5423,11 @@ async def handle_pay_callback(query, context, owner_id: int, data: str):
     try:
         if action == "pay_p":
             await query.answer()
-            text, markup = build_pay_duration_view(owner_id, plan)
+            state = db.get_user_plan_state(owner_id)
+            if payments.is_active(state, time.time()) and state.expires_at is not None and payments.PLAN_RANK[plan] < payments.PLAN_RANK[state.plan]:
+                text, markup = build_pay_quote_view(owner_id, plan, 1)  # pastga o'tishda oy tanlash ma'nosiz: muddat qolgan qiymatdan hisoblanadi
+            else:
+                text, markup = build_pay_duration_view(owner_id, plan)
             await query.edit_message_text(text, reply_markup=markup)
         elif action == "pay_q":
             await query.answer()
@@ -5692,8 +5701,7 @@ async def payment_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
     o'sha vaqtdan beri (zaxira bilan) barcha tranzaksiyalar ko'riladi. Belgi faqat hamma kirim qayta ishlangandagina yangilanadi.
       * kirim, bazada yo'q  -> faollashtiriladi;
       * qaytarish (refund), bazada 'paid' -> tarifdan shu xarid ulushi ayriladi (tashqi refund)."""
-    if not PAYMENTS_STARS_ENABLED:
-        return
+    # Yangi xaridlar o'chirilgan (PAYMENTS_STARS_ENABLED=0) bo'lsa ham eski to'lovlar va refundlarni tiklash davom etadi
     started = time.time()
     try:
         mark = db.get_payment_recon_mark()
