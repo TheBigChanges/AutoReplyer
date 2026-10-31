@@ -405,7 +405,7 @@ class PlanDescriptionTests(Base):
     def test_translated_and_screen_contains_features_and_card(self):
         for lang, word in (("uz", "Nimalar kiradi"), ("en", "What's included"), ("ru", "Что входит")):
             with patch.object(bot, "get_lang", return_value=lang), patch.object(db, "get_user_plan", return_value="free"), \
-                 patch.object(bot, "PAYMENT_CARD_NUMBER", "8600123412341234"):
+                 patch.object(bot, "PAYMENT_CARD_NUMBER", "8600123412341234"), patch.object(bot, "PAYMENTS_CARD_ENABLED", True):
                 for plan in ("free", "plus", "pro", "ultra"):
                     text, _ = bot.build_plan_view(USER, plan)
                     self.assertIn(word, text, f"{lang}/{plan}")
