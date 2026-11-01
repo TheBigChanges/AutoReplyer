@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, TransactionPartnerUser, Update
-from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -5469,32 +5469,47 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         text, markup = build_pay_quote_view(owner_id, plan, months)
         await query.edit_message_text(text, reply_markup=markup)
         return
-    snap_exp = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
-    if db.get_reusable_order(owner_id, plan, months, q.pay, state.plan, snap_exp, now) is not None:
-        await query.answer(t(lang, "pay_invoice_active"), show_alert=True)  # xuddi shu buyurtma uchun invoice allaqachon yuborilgan
-        return
-    if not _pay_rate_ok(owner_id, now):
+    if not _pay_rate_ok(owner_id, now, consume=False):
         await query.answer(t(lang, "pay_rate_limited"), show_alert=True)
         return
     token = "P" + secrets.token_hex(6).upper()
-    stale_msgs = db.list_pending_invoice_msgs(owner_id)  # yangi buyurtma eskilarini bekor qiladi — ularning invoice xabarlari ham o'chadi
-    db.create_payment_order(owner_id, token, q, state, PAYMENT_ORDER_TTL_SECONDS, now)
-    for mid in stale_msgs:
+    # Faol buyurtmani topish/yaratish — bazada bitta atomik amal (parallel bosishlar ikkita buyurtma yaratmaydi)
+    outcome, info = db.create_or_reuse_order(owner_id, token, q, state, PAYMENT_ORDER_TTL_SECONDS, now)
+    if outcome == "reused":
+        await query.answer(t(lang, "pay_invoice_active"), show_alert=True)  # xuddi shu buyurtma uchun invoice allaqachon yuborilgan/yuborilmoqda
+        return
+    _pay_rate_ok(owner_id, now)  # yangi buyurtma yaratildi: tezlik hisobiga qo'shiladi
+    for mid in info["cancelled_msgs"]:  # eski buyurtmalarning invoice xabarlari ham o'chadi
         await _delete_message(context.bot, owner_id, mid)
     name = t(lang, "plan_name_" + plan)
-    invoice = await context.bot.send_invoice(
-        chat_id=owner_id,
-        title=t(lang, "pay_invoice_title", name=name, months=months),
-        description=t(lang, "pay_invoice_desc", name=name, months=months),
-        payload=token,
-        currency="XTR",
-        prices=[LabeledPrice(t(lang, "pay_invoice_title", name=name, months=months), q.pay)],
-        provider_token="",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(t(lang, "btn_pay_go", pay=f"{q.pay} ⭐"), pay=True)],  # invoice'dagi birinchi tugma majburan "to'lash" bo'lishi kerak
-            [InlineKeyboardButton(t(lang, "btn_pay_cancel"), callback_data=f"pay_cx:{token}")],
-        ]),
-    )
+    try:
+        invoice = await context.bot.send_invoice(
+            chat_id=owner_id,
+            title=t(lang, "pay_invoice_title", name=name, months=months),
+            description=t(lang, "pay_invoice_desc", name=name, months=months),
+            payload=token,
+            currency="XTR",
+            prices=[LabeledPrice(t(lang, "pay_invoice_title", name=name, months=months), q.pay)],
+            provider_token="",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(t(lang, "btn_pay_go", pay=f"{q.pay} ⭐"), pay=True)],  # invoice'dagi birinchi tugma majburan "to'lash" bo'lishi kerak
+                [InlineKeyboardButton(t(lang, "btn_pay_cancel"), callback_data=f"pay_cx:{token}")],
+            ]),
+        )
+    except Exception as e:
+        logger.warning("send_invoice muvaffaqiyatsiz (order=%s): %s", token, e)
+        # Tarmoq uzilishi/timeout: invoice aslida yetib borgan bo'lishi mumkin — buyurtma ochiq qoladi (muddati bilan yopiladi, to'lansa tarif beriladi)
+        unknown = isinstance(e, NetworkError) and not isinstance(e, BadRequest)
+        if unknown:
+            await query.answer(t(lang, "pay_invoice_unknown"), show_alert=True)
+            return
+        try:  # Telegram aniq rad etdi: yetim buyurtma yopiladi va urinish tezlik hisobidan chiqariladi
+            db.cancel_order(token, owner_id)
+        except Exception:
+            logger.exception("Yetim buyurtmani bekor qilib bo'lmadi (order=%s)", token)
+        _pay_rate_release(owner_id, now)
+        await query.answer(t(lang, "pay_invoice_failed"), show_alert=True)
+        return
     try:
         db.set_invoice_message(token, invoice.message_id)
     except Exception:
@@ -5508,18 +5523,27 @@ PAY_RATE_MAX = 5           # shu vaqt oralig'ida eng ko'pi bilan nechta yangi bu
 PAY_RATE_WINDOW = 600.0    # soniya
 
 
-def _pay_rate_ok(user_id: int, now: float) -> bool:
-    """Foydalanuvchi uchun yangi buyurtmalar tezligi cheklovi (xotirada, qisqa muddatli)."""
+def _pay_rate_ok(user_id: int, now: float, consume: bool = True) -> bool:
+    """Foydalanuvchi uchun yangi buyurtmalar tezligi cheklovi (xotirada, qisqa muddatli). consume=False — faqat tekshiradi."""
     stamps = [x for x in _pay_rate.get(user_id, []) if now - x < PAY_RATE_WINDOW]
     if len(stamps) >= PAY_RATE_MAX:
         _pay_rate[user_id] = stamps
         return False
+    if not consume:
+        return True
     stamps.append(now)
     _pay_rate[user_id] = stamps
     if len(_pay_rate) > 5000:  # xotira cheklovi: eskirganlarini tozalash
         for uid in [u for u, v in _pay_rate.items() if not v or now - v[-1] >= PAY_RATE_WINDOW]:
             _pay_rate.pop(uid, None)
     return True
+
+
+def _pay_rate_release(user_id: int, now: float) -> None:
+    """Invoice yetkazilmagan urinish tezlik hisobidan chiqariladi (Telegram nosozligi uchun foydalanuvchi jazolanmasin)."""
+    stamps = _pay_rate.get(user_id, [])
+    if now in stamps:
+        stamps.remove(now)
 
 
 async def _delete_message(bot, chat_id: int, message_id: int) -> None:
