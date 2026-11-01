@@ -1777,6 +1777,55 @@ T: dict[str, dict] = {
         "Если выключить расписания, они сохранятся, но не будут работать.",
     ),
     # ---------------- AutoReply Analytics ----------------
+    "btn_inbox": _("📥 Smart Inbox — javobsizlar", "📥 Smart Inbox", "📥 Smart Inbox — без ответа"),
+    "btn_inbox_view": _("📋 Javobsiz suhbatlar", "📋 Unanswered chats", "📋 Неотвеченные чаты"),
+    "btn_inbox_notify_on": _("🔔 Kunlik xulosani yoqish", "🔔 Turn on daily digest", "🔔 Включить ежедневную сводку"),
+    "btn_inbox_notify_off": _("🔕 Kunlik xulosani o'chirish", "🔕 Turn off daily digest", "🔕 Выключить ежедневную сводку"),
+    "btn_inbox_time": _("⏰ Xulosa vaqti", "⏰ Digest time", "⏰ Время сводки"),
+    "feature_inbox_time": _("Smart Inbox xulosa vaqti", "Smart Inbox digest time", "Время сводки Smart Inbox"),
+    "pf_inbox": _(
+        "Smart Inbox: kunlik xulosa, {n} tagacha javobsiz suhbat",
+        "Smart Inbox: daily digest, up to {n} unanswered chats",
+        "Smart Inbox: ежедневная сводка, до {n} неотвеченных чатов",
+    ),
+    "pf_inbox_time": _("Smart Inbox: xulosa vaqtini tanlash", "Smart Inbox: choose the digest time", "Smart Inbox: выбор времени сводки"),
+    "inbox_menu": _(
+        "📥 Smart Inbox\n\nSizga javob bermagan suhbatlarni kuzatadi va kuniga bir marta xulosa yuboradi. Holat: {state}\n"
+        "Kunlik xulosa: {notify}\nXulosa vaqti: {time}\nHozir javobsiz: {pending} ta suhbat (xulosada {limit} tagacha ko'rsatiladi)\n\n"
+        "🔒 Xabar matnlari saqlanmaydi — faqat suhbat holati va vaqti. Bot avtojavobi sizning javobingiz hisoblanmaydi. "
+        "Faqat bot kuzatgan suhbatlar hisobga olinadi; ma'lumot 14 kundan keyin o'chadi.",
+        "📥 Smart Inbox\n\nTracks chats you have not answered and sends one digest a day. Status: {state}\n"
+        "Daily digest: {notify}\nDigest time: {time}\nUnanswered now: {pending} chats (up to {limit} shown in the digest)\n\n"
+        "🔒 Message texts are not stored — only chat status and times. Bot auto-replies do not count as your reply. "
+        "Only chats the bot has seen are counted; data is deleted after 14 days.",
+        "📥 Smart Inbox\n\nОтслеживает чаты, на которые вы не ответили, и раз в день присылает сводку. Статус: {state}\n"
+        "Ежедневная сводка: {notify}\nВремя сводки: {time}\nСейчас без ответа: {pending} чатов (в сводке до {limit})\n\n"
+        "🔒 Тексты сообщений не хранятся — только статус и время чата. Автоответ бота не считается вашим ответом. "
+        "Учитываются только чаты, которые видел бот; данные удаляются через 14 дней.",
+    ),
+    "inbox_state_on": _("✅ yoqilgan", "✅ on", "✅ включён"),
+    "inbox_state_off": _("❌ o'chiq", "❌ off", "❌ выключен"),
+    "inbox_notify_on": _("yoqilgan", "on", "включена"),
+    "inbox_notify_off": _("o'chiq", "off", "выключена"),
+    "inbox_time_title": _("⏰ Kunlik xulosa qaysi soatda kelsin?", "⏰ At what time should the daily digest arrive?", "⏰ В какое время присылать ежедневную сводку?"),
+    "inbox_view_empty": _("🎉 Javobsiz suhbat yo'q.", "🎉 No unanswered chats.", "🎉 Неотвеченных чатов нет."),
+    "inbox_view_title": _("📋 Javobsiz suhbatlar: {total} ta", "📋 Unanswered chats: {total}", "📋 Неотвеченные чаты: {total}"),
+    "inbox_line": _(
+        "{i}. {name} — {count} ta xabar, {wait} kutmoqda",
+        "{i}. {name} — {count} message(s), waiting {wait}",
+        "{i}. {name} — сообщений: {count}, ждёт {wait}",
+    ),
+    "inbox_more": _("… va yana {n} ta suhbat", "… and {n} more chats", "… и ещё чатов: {n}"),
+    "inbox_wait_min": _("{n} daqiqa", "{n} min", "{n} мин"),
+    "inbox_wait_hr": _("{n} soat", "{n} h", "{n} ч"),
+    "inbox_wait_day": _("{n} kun", "{n} d", "{n} дн"),
+    "inbox_digest_title": _("📥 Kunlik Smart Inbox xulosasi", "📥 Daily Smart Inbox digest", "📥 Ежедневная сводка Smart Inbox"),
+    "inbox_digest_summary": _(
+        "Javobsiz suhbatlar: {total} ta. Eng uzoq kutayotgani: {oldest}.",
+        "Unanswered chats: {total}. Longest waiting: {oldest}.",
+        "Неотвеченных чатов: {total}. Дольше всех ждёт: {oldest}.",
+    ),
+    "inbox_digest_item": _("{count} ta xabar, {wait} kutmoqda", "{count} message(s), waiting {wait}", "сообщений: {count}, ждёт {wait}"),
     "btn_analytics": _("\U0001F4CA Statistika", "\U0001F4CA Analytics", "\U0001F4CA Аналитика"),
     "btn_an_today": _("\U0001F4C5 Bugun", "\U0001F4C5 Today", "\U0001F4C5 Сегодня"),
     "btn_an_7": _("\U0001F4C6 7 kun", "\U0001F4C6 7 days", "\U0001F4C6 7 дней"),
