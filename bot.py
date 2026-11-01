@@ -2078,12 +2078,22 @@ def _prune_times(d: dict, ttl: float, max_size: int = 500) -> None:
         d.pop(k, None)
 
 
-_ai_sent_at: dict = {}
-AI_QUIET_SECONDS = 600.0
+_ai_answered: dict = {}   # (owner, chat, kiruvchi xabar ID) -> vaqt: AI shu AYNAN xabarga javob yuborgan (yoki yuborgan bo'lishi mumkin)
+AI_ANSWERED_TTL = 600.0
 
 
-def _ai_recently_replied(owner_id: int, chat_id: int) -> bool:
-    return time.time() - _ai_sent_at.get((owner_id, chat_id), 0.0) < AI_QUIET_SECONDS
+def _ai_answered_message(owner_id: int, chat_id: int, message_id) -> bool:
+    """AI shu aniq kiruvchi xabarga allaqachon javob bergan-mi (takroriy javob himoyasi xabarga bog'liq, butun suhbatga emas)."""
+    if message_id is None:
+        return False
+    return time.time() - _ai_answered.get((owner_id, chat_id, message_id), 0.0) < AI_ANSWERED_TTL
+
+
+def _mark_ai_answered(owner_id: int, chat_id: int, message_id) -> None:
+    if message_id is None:
+        return
+    _ai_answered[(owner_id, chat_id, message_id)] = time.time()
+    _prune_times(_ai_answered, AI_ANSWERED_TTL)
 
 
 async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str, cooldown_hours: float, label: str, kind: str | None = None,
@@ -2144,6 +2154,7 @@ async def send_faq_reply(bot, bm, owner_id: int, chat_id: int, answer: str, cool
 
 
 async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings: dict, fallback_text: str, label: str):
+    incoming_id = getattr(bm, "message_id", None)
     """AI javobini yaratib yuboradi. Limit tugasa yoki xato bo'lsa — odatiy matnli avtojavob (zaxira)."""
     business_connection_id = bm.business_connection_id
     day = str(today_tashkent())
@@ -2184,8 +2195,8 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 if consumed:
                     consumed = False
                     db.refund_ai_quota(owner_id, day)
-                if _ai_recently_replied(owner_id, chat_id):
-                    return  # shu suhbatda AI hozirgina javob bergan: zaxira matn qo'shimcha ikkinchi javob bo'lib ketmasin
+                if _ai_answered_message(owner_id, chat_id, incoming_id):
+                    return  # AI shu aniq xabarga allaqachon javob bergan: zaxira matn ikkinchi javob bo'lib ketmasin
                 await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-failed")
                 return
             try:
@@ -2193,14 +2204,22 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                     chat_id=chat_id, text=answer, business_connection_id=business_connection_id
                 )
             except TelegramError as e:
+                if _send_outcome_unknown(e):
+                    # Tarmoq xatosi/timeout: Telegram javobni qabul qilgan bo'lishi mumkin — natija noma'lum.
+                    # Limit QAYTARILMAYDI, xabar "javob berilgan" deb belgilanadi (zaxira matn ikkinchi javob bo'lmasin),
+                    # suhbat tarixiga yoziladi; statistikada esa sanalmaydi (yuborilgani tasdiqlanmagan).
+                    delivered = True
+                    _mark_ai_answered(owner_id, chat_id, incoming_id)
+                    logger.warning("AI javobi natijasi noma'lum (owner=%s, chat=%s): %s", owner_id, chat_id, e)
+                    db.add_ai_messages(owner_id, chat_id, [("user", text), ("model", answer)], keep=AI_HISTORY_MESSAGES)
+                    return
                 if consumed:
                     consumed = False
                     db.refund_ai_quota(owner_id, day)
                 logger.warning("AI javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
                 return
             delivered = True  # javob ketdi: bundan keyingi xatolar limitni qaytarmaydi
-            _ai_sent_at[(owner_id, chat_id)] = time.time()
-            _prune_times(_ai_sent_at, AI_QUIET_SECONDS)
+            _mark_ai_answered(owner_id, chat_id, incoming_id)
             _remember_sent(chat_id, sent)
             track_analytics(owner_id, "ai")
             db.add_ai_messages(owner_id, chat_id, [("user", text), ("model", answer)], keep=AI_HISTORY_MESSAGES)
@@ -6914,9 +6933,6 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             # Matnsiz xabar (rasm, ovoz, sticker...) — AI o'qiy olmaydi, odatiy matn ketadi
-            # (lekin shu suhbatda AI hozirgina javob bergan bo'lsa — qo'shimcha avtojavob ketmaydi)
-            if _ai_recently_replied(owner_id, chat_id):
-                return
 
         await send_auto_reply(context.bot, bm, owner_id, chat_id, reply_text, settings["cooldown_hours"], label)
 
