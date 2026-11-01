@@ -1,5 +1,6 @@
 """Payments v1.0 (Telegram Stars): hisob-kitob, baza (atomik faollashtirish/refund), bot handlerlari, i18n."""
 import asyncio
+import json
 import os
 import random
 import re
@@ -1837,6 +1838,137 @@ class AuditRound8Tests(BotBase):
         bot._spool_loaded = False
         bot._load_invoice_spool()  # xato ko'tarilmaydi
         self.assertEqual(bot._invoice_msgs_mem, {})
+
+
+class AuditRound9Tests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def setUp(self):
+        super().setUp()
+        bot._pay_rate.pop(self.u, None)
+        bot._invoice_msgs_mem.clear()
+        self.addCleanup(lambda: bot._pay_rate.pop(self.u, None))
+        self.addCleanup(bot._invoice_msgs_mem.clear)
+
+    def _buy(self, b):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(b), self.u, "pay_buy:plus:1:15"))
+        return q
+
+    def _press(self, b, data):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        q.message.delete = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(b), self.u, data))
+        return q
+
+    def _write_spool(self, content):
+        with open(bot.INVOICE_SPOOL_PATH, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def test_restart_new_invoice_before_first_job_preserves_old_spool(self):
+        self._write_spool('{"POLD": [%s, 555]}' % time.time())
+        bot._invoice_msgs_mem.clear()
+        bot._spool_loaded = False  # server endigina ishga tushdi, job hali ishlamagan
+        b = _bot_mock()
+        self._buy(b)  # yangi xarid: zaxira fayliga yoziladi
+        with open(bot.INVOICE_SPOOL_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("POLD", data)  # eski yozuv yo'qolmadi
+        self.assertEqual(data["POLD"][1], 555)
+
+    def test_post_init_loads_spool(self):
+        self._write_spool('{"PBOOT": [%s, 321]}' % time.time())
+        bot._invoice_msgs_mem.clear()
+        bot._spool_loaded = False
+        app = MagicMock()
+        with patch.object(bot, "spawn_background", MagicMock()), patch.object(bot, "name_clock_loop", MagicMock()), \
+                patch.object(bot, "name_clock_sync_loop", MagicMock()):
+            run(bot._post_init(app))
+        self.assertEqual(bot._invoice_msgs_mem["PBOOT"][1], 321)
+
+    def test_valid_json_with_invalid_spool_structure_is_handled(self):
+        for content in ("[]", '"text"', "123", "null", '{"P1": {"unexpected": "data"}}', '{"P2": [1]}', '{"P3": ["x", "y"]}'):
+            self._write_spool(content)
+            bot._invoice_msgs_mem.clear()
+            bot._spool_loaded = False
+            bot._load_invoice_spool()  # xato ko'tarilmaydi
+            self.assertEqual(bot._invoice_msgs_mem, {}, content)
+            self.assertTrue(bot._spool_loaded, content)
+        # aralash: yaroqli element saqlanadi, yaroqsizi o'tkazib yuboriladi
+        self._write_spool('{"GOOD": [%s, 7], "BAD": {"x": 1}}' % time.time())
+        bot._invoice_msgs_mem.clear()
+        bot._spool_loaded = False
+        bot._load_invoice_spool()
+        self.assertEqual(list(bot._invoice_msgs_mem), ["GOOD"])
+
+    def test_corrupt_non_dict_spool_is_kept_aside(self):
+        self._write_spool("[]")
+        bot._spool_loaded = False
+        bot._load_invoice_spool()
+        self.assertTrue(os.path.exists(bot.INVOICE_SPOOL_PATH + ".corrupt"))
+        self.addCleanup(lambda: os.path.exists(bot.INVOICE_SPOOL_PATH + ".corrupt") and os.unlink(bot.INVOICE_SPOOL_PATH + ".corrupt"))
+
+    def test_unreadable_spool_is_retried_later(self):
+        bot._spool_loaded = False
+        with patch("builtins.open", side_effect=PermissionError("denied")):
+            bot._load_invoice_spool()
+        self.assertFalse(bot._spool_loaded)  # muvaffaqiyatsiz yuklash 'yuklandi' deb belgilanmadi
+
+    def test_invoice_resend_disabled_when_stars_sales_off(self):
+        b = _bot_mock()
+        self._buy(b)
+        token = b.send_invoice.await_args.kwargs["payload"]
+        n = b.send_invoice.await_count
+        with patch.object(bot, "PAYMENTS_STARS_ENABLED", False):
+            q = self._press(b, f"pay_rs:{token}")
+        self.assertEqual(b.send_invoice.await_count, n)
+        self.assertTrue(q.answer.await_args.kwargs.get("show_alert"))
+        self.assertEqual(db.get_payment(token)["status"], "pending")
+        cx = None
+        with patch.object(bot, "PAYMENTS_STARS_ENABLED", False):  # bekor qilish esa ishlayveradi
+            cx = self._press(b, f"pay_cx:{token}")
+        self.assertEqual(db.get_payment(token)["status"], "cancelled")
+
+    def test_resend_failed_delete_disarms_old_invoice_button(self):
+        b = _bot_mock()
+        self._buy(b)
+        token = b.send_invoice.await_args.kwargs["payload"]
+        b.send_invoice.return_value = MagicMock(message_id=888)
+        b.delete_message.side_effect = TelegramError("message can't be deleted")
+        b.edit_message_reply_markup = AsyncMock()
+        self._press(b, f"pay_rs:{token}")
+        b.edit_message_reply_markup.assert_awaited_once_with(chat_id=self.u, message_id=777, reply_markup=None)
+        self.assertEqual(db.get_payment(token)["invoice_msg_id"], 888)
+
+    def test_two_invoices_same_order_cannot_create_unintended_second_charge(self):
+        now = time.time()
+        token, q = self.order(now=now)
+        # ikkala invoice uchun pre_checkout birinchi to'lov yakunlanishidan oldin tasdiqlangan
+        self.assertTrue(self.pre(token, amount=q.pay)["ok"])
+        self.assertTrue(self.pre(token, amount=q.pay)["ok"])
+        b = _bot_mock()
+        self.assertEqual(run(bot.process_payment(b, self.u, token, "chTW1", q.pay, "XTR")), "activated")
+        exp = self.plan().expires_at
+        b.send_message.reset_mock()
+        self.assertEqual(run(bot.process_payment(b, self.u, token, "chTW2", q.pay, "XTR")), "unmatched")
+        self.assertEqual(self.plan().expires_at, exp)  # ikkinchi to'lov tarifni uzaytirmadi
+        texts = " ".join(c.kwargs.get("text") or c.args[1] for c in b.send_message.await_args_list)
+        self.assertIn("/refund chTW2", texts)  # admin refund uchun xabardor qilindi
+        # ... va ikkinchi (ortiqcha) to'lovni refund qilib bo'ladi, obuna qisqarmaydi
+        upd = MagicMock()
+        upd.effective_user.id = 999
+        upd.message.reply_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.args = ["chTW2"]
+        ctx.bot = _bot_mock()
+        run(bot.cmd_refund(upd, ctx))
+        self.assertEqual(db.get_payment_by_charge("chTW2")["status"], "refunded")
+        self.assertEqual(self.plan().expires_at, exp)
 
 
 class CardDefaultTests(unittest.TestCase):
