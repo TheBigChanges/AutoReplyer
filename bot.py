@@ -51,6 +51,7 @@ import ai
 import analytics
 import automation
 import db
+import inbox
 import payments
 from i18n import DEFAULT_LANG, LANG_NAMES, LANGS, all_defaults, is_lang, t
 from logic import (
@@ -807,6 +808,7 @@ DEFAULT_FEATURE_PLANS = {
     "analytics_30": ("pro", "ultra"),          # Statistika: 30 kunlik davr
     "analytics_charts": ("plus", "pro", "ultra"),  # Statistika grafiklari (turlari tarifga qarab)
     "analytics_full": ("ultra",),              # Batafsil statistika + barcha grafiklar
+    "inbox_time": ("plus", "pro", "ultra"),    # Smart Inbox: xulosa vaqtini tanlash (suhbatlar soni: INBOX_PLAN_LIMITS)
 }
 FEATURE_PLANS = dict(DEFAULT_FEATURE_PLANS)
 FEATURE_NAME_KEYS = {
@@ -814,7 +816,7 @@ FEATURE_NAME_KEYS = {
     "name_clock_zones": "feature_zones", "faq": "feature_faq", "kb": "feature_kb",
     "automation": "feature_automation", "automation_conditions": "feature_automation_conditions",
     "analytics_7": "feature_an7", "analytics_30": "feature_an30", "analytics_charts": "feature_anch",
-    "analytics_full": "feature_anfull", "scheduler": "feature_sched",
+    "analytics_full": "feature_anfull", "scheduler": "feature_sched", "inbox_time": "feature_inbox_time",
 }
 
 
@@ -1232,6 +1234,8 @@ def locked_feature_for(data: str) -> str | None:
         return "kb"
     if data.startswith("sc_ed:text"):
         return "custom_text"  # jadval uchun alohida matn — Plus'dan
+    if data == "ib_time" or data.startswith("ib_t:"):
+        return "inbox_time"
     if data == "an:7":
         return "analytics_7"
     if data == "an:30":
@@ -1305,6 +1309,8 @@ def plan_features_text(lang: str, plan: str) -> str:
             f"{p.capitalize()} — {n}" for p, n in AUTOMATION_PLAN_LIMITS.items() if p in FEATURE_PLANS.get("automation", ()))))
     (included if plan in FEATURE_PLANS.get("automation_conditions", ()) else excluded).append(t(lang, "pf_automation_smart"))
     included.append(t(lang, "pf_sched", n=SCHEDULE_PLAN_LIMITS.get(plan, SCHEDULE_PLAN_LIMITS["free"])))
+    included.append(t(lang, "pf_inbox", n=inbox.INBOX_PLAN_LIMITS.get(plan, inbox.INBOX_PLAN_LIMITS["free"])))
+    (included if plan in FEATURE_PLANS.get("inbox_time", ()) else excluded).append(t(lang, "pf_inbox_time"))
     included.append(t(lang, "pf_an_" + (plan if plan in ("plus", "pro", "ultra") else "free")))
     included.append(t(lang, "pf_ads_off" if plan in AD_FREE_PLANS else "pf_ads_on"))
     parts = [t(lang, "plan_includes")] + [f"• {line}" for line in included]
@@ -2271,6 +2277,10 @@ async def ai_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         logger.exception("AI ma'lumotlarini tozalashda xato")
     try:
+        db.purge_old_inbox()  # Smart Inbox: 14 kundan eski suhbat holatlari
+    except Exception:
+        logger.exception("Smart Inbox ma'lumotlarini tozalashda xato")
+    try:
         db.purge_old_analytics()  # statistika: eng ko'pi bilan 90 kunlik soatlik hisoblagichlar
     except Exception:
         logger.exception("Statistikani tozalashda xato")
@@ -2304,6 +2314,185 @@ def build_autoreply_menu(owner_id: int, notice: str | None = None):
     return text, InlineKeyboardMarkup(keyboard)
 
 
+# ---------------------------------------------------------------------------
+# Smart Inbox Digest (v1.3): javobsiz suhbatlar + kunlik xulosa. AI ishlatilmaydi, xabar matni saqlanmaydi.
+# ---------------------------------------------------------------------------
+def inbox_limit_for(owner_id: int, plan: str | None = None) -> int:
+    """Xulosada nechta suhbat ko'rsatiladi (tarifga qarab). Admin — eng yuqori limit."""
+    if ADMIN_ID and owner_id == ADMIN_ID:
+        return max(inbox.INBOX_PLAN_LIMITS.values())
+    plan = plan if plan is not None else plan_of(owner_id)
+    return inbox.INBOX_PLAN_LIMITS.get(plan, inbox.INBOX_PLAN_LIMITS["free"])
+
+
+def track_inbox_customer(owner_id: int, bm) -> None:
+    """Mijoz xabarini (faqat Smart Inbox yoqilgan bo'lsa) yozadi. Xato asosiy avtojavob oqimiga xalaqit bermaydi."""
+    try:
+        if not db.inbox_enabled(owner_id):
+            return
+        u = bm.from_user
+        name = " ".join(x for x in (getattr(u, "first_name", None), getattr(u, "last_name", None)) if isinstance(x, str)) if u else ""
+        db.record_customer_message(owner_id, bm.chat.id, bm.message_id, name)
+    except Exception:
+        logger.exception("Smart Inbox: mijoz xabarini yozib bo'lmadi (owner=%s)", owner_id)
+
+
+def track_inbox_owner_reply(owner_id: int, bm) -> None:
+    """Egasining SHAXSIY javobi (botning o'z xabari emas — chaqiruvchi _bot_sent_ids bilan filtrlaydi)."""
+    try:
+        if db.inbox_enabled(owner_id):
+            db.record_owner_reply(owner_id, bm.chat.id, bm.message_id)
+    except Exception:
+        logger.exception("Smart Inbox: egasi javobini yozib bo'lmadi (owner=%s)", owner_id)
+
+
+def _inbox_wait_text(lang: str, seconds: float) -> str:
+    unit, n = inbox.wait_parts(seconds)
+    return t(lang, "inbox_wait_" + unit, n=n)
+
+
+def _inbox_minutes(owner_id: int, stored: int | None) -> int:
+    return inbox.effective_minutes(stored, has_feature(owner_id, "inbox_time"))
+
+
+def build_inbox_menu(owner_id: int):
+    lang = get_lang(owner_id)
+    cfg = db.get_inbox_settings(owner_id)
+    enabled = bool(cfg["enabled"])
+    pending = db.get_pending_chats(owner_id, 0)[0] if enabled else 0
+    text = t(
+        lang, "inbox_menu",
+        state=t(lang, "inbox_state_on" if enabled else "inbox_state_off"),
+        notify=t(lang, "inbox_notify_on" if cfg["notify"] else "inbox_notify_off"),
+        time=inbox.format_minutes(_inbox_minutes(owner_id, cfg["digest_minutes"])),
+        pending=pending, limit=inbox_limit_for(owner_id),
+    )
+    rows = [[InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="ib_off" if enabled else "ib_on")]]
+    if enabled:
+        rows.append([InlineKeyboardButton(t(lang, "btn_inbox_view"), callback_data="ib_view")])
+        rows.append([InlineKeyboardButton(t(lang, "btn_inbox_notify_off" if cfg["notify"] else "btn_inbox_notify_on"),
+                                          callback_data="ib_nt_off" if cfg["notify"] else "ib_nt_on")])
+        rows.append([InlineKeyboardButton(lock_label(t(lang, "btn_inbox_time"), has_feature(owner_id, "inbox_time")), callback_data="ib_time")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")])
+    return text, InlineKeyboardMarkup(rows)
+
+
+def build_inbox_time_view(owner_id: int):
+    lang = get_lang(owner_id)
+    current = _inbox_minutes(owner_id, db.get_inbox_settings(owner_id)["digest_minutes"])
+    buttons = [InlineKeyboardButton(("✅ " if h * 60 == current else "") + f"{h:02d}:00", callback_data=f"ib_t:{h * 60}") for h in inbox.DIGEST_HOUR_CHOICES]
+    rows = [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")])
+    return t(lang, "inbox_time_title"), InlineKeyboardMarkup(rows)
+
+
+def build_inbox_view(owner_id: int):
+    lang = get_lang(owner_id)
+    now = time.time()
+    total, rows = db.get_pending_chats(owner_id, inbox_limit_for(owner_id), now)
+    back = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")]])
+    if total == 0:
+        return t(lang, "inbox_view_empty"), back
+    lines = [t(lang, "inbox_view_title", total=total)]
+    for i, r in enumerate(rows, 1):
+        name = (r.get("customer_name") or "").strip() or str(r["chat_id"])
+        lines.append(t(lang, "inbox_line", i=i, name=name, count=r["pending_count"], wait=_inbox_wait_text(lang, now - (r["waiting_since"] or now))))
+    if total > len(rows):
+        lines.append(t(lang, "inbox_more", n=total - len(rows)))
+    return "\n".join(lines), back
+
+
+async def handle_inbox_callback(query, owner_id: int, data: str, lang: str) -> bool:
+    """ib_* tugmalari. True — qayta ishlandi. Tugmalar aniq amalli (ib_on/ib_off): eski tugma qayta bosilsa holat teskarilanmaydi."""
+    if data == "ib_menu":
+        pass
+    elif data in ("ib_on", "ib_off"):
+        db.set_inbox_settings(owner_id, enabled=(data == "ib_on"))
+    elif data in ("ib_nt_on", "ib_nt_off"):
+        db.set_inbox_settings(owner_id, notify=(data == "ib_nt_on"))
+    elif data == "ib_view":
+        text, markup = build_inbox_view(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+    elif data == "ib_time":
+        text, markup = build_inbox_time_view(owner_id)
+        await query.edit_message_text(text, reply_markup=markup)
+        return True
+    elif data.startswith("ib_t:"):
+        try:
+            minutes = int(data.split(":", 1)[1])
+        except ValueError:
+            return True
+        if minutes not in {h * 60 for h in inbox.DIGEST_HOUR_CHOICES}:
+            await query.answer(t(lang, "pay_bad_button"), show_alert=True)
+            return True
+        db.set_inbox_settings(owner_id, digest_minutes=minutes)
+    else:
+        return False
+    text, markup = build_inbox_menu(owner_id)
+    await query.edit_message_text(text, reply_markup=markup)
+    return True
+
+
+def build_inbox_digest(total: int, rows: list, now: float, lang: str) -> str:
+    """Kunlik xulosa matni (HTML): mijoz ismi bosilsa suhbat ochiladi."""
+    esc = lambda x: html.escape(x, quote=False)  # noqa: E731
+    oldest = max((now - (r["waiting_since"] or now) for r in rows), default=0.0)
+    lines = [esc(t(lang, "inbox_digest_title")), esc(t(lang, "inbox_digest_summary", total=total, oldest=_inbox_wait_text(lang, oldest))), ""]
+    for i, r in enumerate(rows, 1):
+        name = (r.get("customer_name") or "").strip() or str(r["chat_id"])
+        wait = _inbox_wait_text(lang, now - (r["waiting_since"] or now))
+        lines.append(f'{i}. <a href="tg://user?id={int(r["chat_id"])}">{esc(name)}</a> — {esc(t(lang, "inbox_digest_item", count=r["pending_count"], wait=wait))}')
+    if total > len(rows):
+        lines.append(esc(t(lang, "inbox_more", n=total - len(rows))))
+    return "\n".join(lines)
+
+
+async def send_inbox_digest(bot, owner: dict, now_ts: float) -> str:
+    """Bitta egasi uchun xulosani (vaqti kelgan bo'lsa) BIR MARTA yuboradi. Natija: 'not_due' | 'skipped' | 'empty' | 'sent' | 'unknown' | 'failed'."""
+    owner_id = owner["owner_user_id"]
+    settings = db.get_settings(owner_id)
+    now_local = datetime.fromtimestamp(now_ts, tz_from_settings(settings, owner_id))
+    if not inbox.digest_due(now_local, _inbox_minutes(owner_id, owner["digest_minutes"]), owner["last_digest_date"]):
+        return "not_due"
+    if owner_id != ADMIN_ID and db.get_block(owner_id) is not None:
+        return "skipped"
+    date_str = now_local.date().isoformat()
+    if not db.claim_inbox_digest(owner_id, date_str):  # parallel job/qayta ishga tushish: kun faqat bir marta band qilinadi
+        return "skipped"
+    total, rows = db.get_pending_chats(owner_id, inbox_limit_for(owner_id), now_ts)
+    if total == 0:
+        return "empty"  # javobsiz suhbat yo'q — bo'sh xulosa yuborilmaydi
+    lang = get_lang(owner_id)
+    try:
+        await bot.send_message(owner_id, build_inbox_digest(total, rows, now_ts, lang), parse_mode="HTML")
+    except TelegramError as e:
+        if _send_outcome_unknown(e):
+            logger.warning("Smart Inbox: xulosa natijasi noma'lum (owner=%s): %s — takror yuborilmaydi", owner_id, e)
+            return "unknown"  # yetib borgan bo'lishi mumkin: kun band qolaveradi
+        if isinstance(e, Forbidden):
+            logger.info("Smart Inbox: egasi botni bloklagan (owner=%s)", owner_id)
+            return "failed"
+        db.release_inbox_digest(owner_id, date_str)  # aniq rad etildi: keyingi daqiqada qayta uriniladi
+        logger.warning("Smart Inbox: xulosa yuborilmadi (owner=%s): %s", owner_id, e)
+        return "failed"
+    return "sent"
+
+
+async def inbox_digest_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        owners = db.list_inbox_owners()
+    except Exception:
+        logger.exception("Smart Inbox: egalar ro'yxatini o'qib bo'lmadi")
+        return
+    now_ts = time.time()
+    for owner in owners:
+        try:
+            await send_inbox_digest(context.bot, owner, now_ts)
+        except Exception:
+            logger.exception("Smart Inbox: xulosa xatosi (owner=%s)", owner["owner_user_id"])
+
+
 def build_panel(owner_id: int):
     lang = get_lang(owner_id)
     s = db.get_settings(owner_id)
@@ -2334,6 +2523,7 @@ def build_panel(owner_id: int):
         [InlineKeyboardButton(lock_label(t(lang, "btn_automation"), plan_allows(owner_id, plan, "automation")), callback_data="au_menu")],
     ]
     keyboard.append([InlineKeyboardButton(t(lang, "btn_sched"), callback_data="sc_menu")])
+    keyboard.append([InlineKeyboardButton(t(lang, "btn_inbox"), callback_data="ib_menu")])
     keyboard.append([InlineKeyboardButton(t(lang, "btn_analytics"), callback_data="an_menu")])
     if name_clock_allowed(owner_id):
         keyboard.append([InlineKeyboardButton(t(lang, "btn_name_clock"), callback_data="nc_menu")])
@@ -3911,6 +4101,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("sc_") and await handle_schedule_callback(query, owner_id, data, lang):
+        return
+
+    if data.startswith("ib_") and await handle_inbox_callback(query, owner_id, data, lang):
         return
 
     if data in ("an_menu", "an:1", "an:7", "an:30"):
@@ -6893,6 +7086,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     adopt_new_base_name(owner_id, getattr(bm.from_user, "first_name", None), getattr(bm.from_user, "last_name", None))
                 except Exception:
                     logger.exception("Ism soati: yangi ismni olishda xato (owner=%s)", owner_id)
+                track_inbox_owner_reply(owner_id, bm)
                 try:
                     if db.get_settings(owner_id).get("ai_enabled"):
                         db.pause_ai_chat(owner_id, bm.chat.id, AI_TAKEOVER_PAUSE_SECONDS)
@@ -6902,6 +7096,8 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Statistika: akkauntga kelgan HAMMA mijoz xabari sanaladi (egasi onlayn bo'lsa yoki cooldown
         # sabab javob ketmasa ham) — shunda "kelgan" va "yuborilgan" farqi tushuntirib beriladi.
+        if not (bm.from_user and bm.from_user.is_bot):
+            track_inbox_customer(owner_id, bm)  # o'zi idempotent (message_id bo'yicha), analytics dedupe'ga bog'liq emas
         if not (bm.from_user and bm.from_user.is_bot) and _first_time_seen(owner_id, bm.chat.id, getattr(bm, "message_id", None)):
             track_analytics(owner_id, "incoming")
 
@@ -7051,6 +7247,7 @@ def build_app() -> Application:
         app.job_queue.run_once(profile_backfill_job, when=20)
         # Muddati tugagan tariflarni Bepulga qaytarish (har 10 daqiqada)
         app.job_queue.run_repeating(plan_expiry_job, interval=600, first=30)
+        app.job_queue.run_repeating(inbox_digest_job, interval=60, first=70)
         # Payments: kutilayotgan to'lovlarni qayta urinish, eskirgan buyurtmalarni yopish, Telegram tranzaksiyalari bilan solishtirish
         app.job_queue.run_repeating(payment_retry_job, interval=30, first=40)
         app.job_queue.run_repeating(payment_orders_job, interval=60, first=60)
