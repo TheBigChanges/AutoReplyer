@@ -2064,6 +2064,28 @@ def build_ai_roles_menu(owner_id: int):
     return t(lang, "ai_roles_menu"), InlineKeyboardMarkup(rows)
 
 
+def _send_outcome_unknown(e: Exception) -> bool:
+    """Xabar yuborishda tarmoq xatosi/timeout (BadRequest emas): xabar yetib borgan-bormagani noma'lum."""
+    return isinstance(e, NetworkError) and not isinstance(e, BadRequest)
+
+
+def _prune_times(d: dict, ttl: float, max_size: int = 500) -> None:
+    """Foydalanuvchi -> oxirgi harakat vaqti lug'atlarini tozalaydi: lug'at kattalashganda eskirgan yozuvlar o'chiriladi."""
+    if len(d) <= max_size:
+        return
+    cutoff = time.time() - ttl
+    for k in [k for k, v in d.items() if v < cutoff]:
+        d.pop(k, None)
+
+
+_ai_sent_at: dict = {}
+AI_QUIET_SECONDS = 600.0
+
+
+def _ai_recently_replied(owner_id: int, chat_id: int) -> bool:
+    return time.time() - _ai_sent_at.get((owner_id, chat_id), 0.0) < AI_QUIET_SECONDS
+
+
 async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str, cooldown_hours: float, label: str, kind: str | None = None,
                           automation_rule_id: int | None = None):
     """Oddiy (matnli) avtojavob: cooldown huquqini atomik band qilib, yuboradi."""
@@ -2083,8 +2105,13 @@ async def send_auto_reply(bot, bm, owner_id: int, chat_id: int, reply_text: str,
             business_connection_id=bm.business_connection_id,
         )
     except Exception as e:
-        # Yuborib bo'lmadi — band qilingan huquqni qaytaramiz, aks holda
-        # javob berilmagan bo'lsa ham keyingi xabarlar cooldown'da qolib ketardi.
+        # Tarmoq xatosi/timeout (BadRequest EMAS): Telegram xabarni qabul qilgan bo'lishi mumkin — natija noma'lum,
+        # cooldown bandligi QOLADI (aks holda keyingi xabarga ikkinchi avtojavob ketardi).
+        # Aniq rad etish (BadRequest, Forbidden va h.k.) yoki boshqa xato: javob ketmagani aniq — huquq qaytariladi,
+        # aks holda javob berilmagan bo'lsa ham keyingi xabarlar cooldown'da qolib ketardi.
+        if _send_outcome_unknown(e):
+            logger.warning("Avtojavob natijasi noma'lum (owner=%s, chat=%s): %s — cooldown saqlandi", owner_id, chat_id, e)
+            return
         db.release_reply_claim(owner_id, chat_id, claimed_at)
         if isinstance(e, TelegramError):
             logger.warning("Avtojavob yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
@@ -2157,6 +2184,8 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 if consumed:
                     consumed = False
                     db.refund_ai_quota(owner_id, day)
+                if _ai_recently_replied(owner_id, chat_id):
+                    return  # shu suhbatda AI hozirgina javob bergan: zaxira matn qo'shimcha ikkinchi javob bo'lib ketmasin
                 await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-failed")
                 return
             try:
@@ -2170,6 +2199,8 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 logger.warning("AI javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
                 return
             delivered = True  # javob ketdi: bundan keyingi xatolar limitni qaytarmaydi
+            _ai_sent_at[(owner_id, chat_id)] = time.time()
+            _prune_times(_ai_sent_at, AI_QUIET_SECONDS)
             _remember_sent(chat_id, sent)
             track_analytics(owner_id, "ai")
             db.add_ai_messages(owner_id, chat_id, [("user", text), ("model", answer)], keep=AI_HISTORY_MESSAGES)
@@ -5492,6 +5523,7 @@ async def _offer_existing_order(query, context, owner_id: int, order: dict):
     if now - _offer_at.get(owner_id, 0.0) < OFFER_COOLDOWN:  # takroriy bosishlarda xabar ko'paytirilmaydi (flood himoyasi)
         return
     _offer_at[owner_id] = now
+    _prune_times(_offer_at, 3600.0)
     await context.bot.send_message(
         owner_id, t(lang, "pay_invoice_active"),
         reply_markup=InlineKeyboardMarkup([[
@@ -5520,6 +5552,7 @@ async def _pay_resend(query, context, owner_id: int, token: str):
         await query.answer()
         return
     _pay_resend_at[owner_id] = now
+    _prune_times(_pay_resend_at, 3600.0)
     state = db.get_user_plan_state(owner_id)
     if state.plan != order["snap_plan"] or _snap_exp(state) != (order["snap_expires"] or 0):  # tarif o'zgargan: eski buyurtma to'lanmaydi
         db.cancel_order(token, owner_id)
@@ -5751,7 +5784,9 @@ async def _pay_cancel(query, context, owner_id: int, token: str):
         return
     await query.answer(t(lang, "pay_cancelled"))
     mem = _mem_pop(token)
-    await _delete_message(context.bot, owner_id, row["invoice_msg_id"] or (mem[1] if mem else None) or query.message.message_id)
+    mid = row["invoice_msg_id"] or (mem[1] if mem else None) or query.message.message_id
+    if not await _delete_message(context.bot, owner_id, mid):
+        await _disarm_message(context.bot, owner_id, mid)  # o'chmasa — kamida to'lov tugmasi olib tashlanadi
 
 
 async def _pay_switch(query, context, owner_id: int, plan: str, months: int, snap):
@@ -5955,8 +5990,8 @@ async def payment_orders_job(context: ContextTypes.DEFAULT_TYPE):
     for row in expired:  # muddati o'tgan invoice: to'lov tugmasi yo'qoladi va foydalanuvchiga aytiladi
         mem = _mem_pop(row["token"])
         mid = row.get("invoice_msg_id") or (mem[1] if mem else None)
-        if mid:
-            await _delete_message(context.bot, row["user_id"], mid)
+        if mid and not await _delete_message(context.bot, row["user_id"], mid):
+            await _disarm_message(context.bot, row["user_id"], mid)
         await _try_send(context.bot, row["user_id"], t(get_lang(row["user_id"]), "pay_order_expired", minutes=PAYMENT_ORDER_TTL_SECONDS // 60))
 
 
@@ -6879,6 +6914,9 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             # Matnsiz xabar (rasm, ovoz, sticker...) — AI o'qiy olmaydi, odatiy matn ketadi
+            # (lekin shu suhbatda AI hozirgina javob bergan bo'lsa — qo'shimcha avtojavob ketmaydi)
+            if _ai_recently_replied(owner_id, chat_id):
+                return
 
         await send_auto_reply(context.bot, bm, owner_id, chat_id, reply_text, settings["cooldown_hours"], label)
 
