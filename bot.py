@@ -1743,6 +1743,8 @@ async def name_clock_loop(bot):
 
 
 async def _post_init(app: Application):
+    _load_invoice_spool()  # ishga tushishda: oldingi saqlanmagan invoice ID'lari birinchi yozishdan oldin tiklanadi
+    logger.info("Invoice ID zaxira fayli: %s (Render'da doimiy bo'lishi uchun INVOICE_SPOOL_PATH ni Persistent Disk ichiga yo'naltiring)", INVOICE_SPOOL_PATH)
     spawn_background(name_clock_loop(app.bot))
     spawn_background(name_clock_sync_loop(app.bot))
 
@@ -5498,6 +5500,9 @@ PAY_RESEND_COOLDOWN = 3.0
 async def _pay_resend(query, context, owner_id: int, token: str):
     """Faol buyurtma uchun invoice'ni QAYTA yuboradi (o'sha buyurtma, o'sha summa); eski invoice xabari o'chiriladi."""
     lang = get_lang(owner_id)
+    if not PAYMENTS_STARS_ENABLED:  # savdo o'chiq: to'lab bo'lmaydigan invoice yuborilmaydi
+        await query.answer(t(lang, "pay_disabled"), show_alert=True)
+        return
     now = time.time()
     order = db.get_payment(token)
     if order is None or order["user_id"] != owner_id or order["status"] != "pending" or (order["expires_at"] or 0) <= now or not order["plan"]:
@@ -5521,8 +5526,8 @@ async def _pay_resend(query, context, owner_id: int, token: str):
         return
     mem = _mem_pop(token)
     old = order["invoice_msg_id"] or (mem[1] if mem else None)
-    if old:
-        await _delete_message(context.bot, owner_id, old)
+    if old and not await _delete_message(context.bot, owner_id, old):
+        await _disarm_message(context.bot, owner_id, old)  # o'chmasa — hech bo'lmasa to'lov tugmasi olib tashlanadi
     _mem_set(token, (time.time(), invoice.message_id))
     await _save_invoice_message(token)
     await query.answer()
@@ -5606,24 +5611,46 @@ def _spool_sync() -> None:
 
 
 def _load_invoice_spool(force: bool = False) -> None:
+    """Disk zaxirasini o'qiydi (jarayon boshida va har bir yozishdan OLDIN chaqiriladi — eski yozuvlar yo'qolmasligi uchun).
+    Tuzilishi noto'g'ri fayl yoki elementlar e'tiborsiz qoldiriladi; yaroqsiz fayl `.corrupt` nomi bilan saqlab qo'yiladi."""
     global _spool_loaded
     if _spool_loaded and not force:
         return
-    _spool_loaded = True
     try:
         with open(INVOICE_SPOOL_PATH, encoding="utf-8") as f:
-            for token, item in json.load(f).items():
-                _invoice_msgs_mem.setdefault(token, (float(item[0]), int(item[1])))
-    except (OSError, ValueError, TypeError, IndexError):
-        pass
+            data = json.load(f)
+    except FileNotFoundError:
+        _spool_loaded = True
+        return
+    except ValueError:  # JSON sintaksis xatosi
+        data = None
+    except OSError:
+        logger.warning("Invoice ID zaxira faylini o'qib bo'lmadi — keyingi urinishda qayta uriniladi")
+        return  # _spool_loaded o'zgarmaydi: yuklash keyinroq qayta uriniladi
+    if not isinstance(data, dict):
+        logger.warning("Invoice ID zaxira fayli yaroqsiz tuzilishda — .corrupt sifatida saqlandi")
+        try:
+            os.replace(INVOICE_SPOOL_PATH, INVOICE_SPOOL_PATH + ".corrupt")
+        except OSError:
+            pass
+        _spool_loaded = True
+        return
+    for token, item in data.items():
+        try:
+            _invoice_msgs_mem.setdefault(str(token), (float(item[0]), int(item[1])))
+        except (TypeError, ValueError, IndexError, KeyError):
+            logger.warning("Zaxiradagi yaroqsiz element o'tkazib yuborildi: %r", token)
+    _spool_loaded = True
 
 
 def _mem_set(token: str, item) -> None:
+    _load_invoice_spool()  # birinchi yozishdan oldin eski zaxira o'qilgan bo'lishi shart
     _invoice_msgs_mem[token] = item
     _spool_sync()
 
 
 def _mem_pop(token: str):
+    _load_invoice_spool()
     item = _invoice_msgs_mem.pop(token, None)
     if item is not None:
         _spool_sync()
@@ -5675,11 +5702,21 @@ def _pay_rate_release(user_id: int, now: float) -> None:
         stamps.remove(now)
 
 
-async def _delete_message(bot, chat_id: int, message_id: int) -> None:
+async def _delete_message(bot, chat_id: int, message_id: int) -> bool:
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        return True
     except TelegramError as e:
         logger.info("Invoice xabarini o'chirib bo'lmadi (chat=%s): %s", chat_id, e)
+        return False
+
+
+async def _disarm_message(bot, chat_id: int, message_id: int) -> None:
+    """Xabarni o'chirib bo'lmasa, kamida to'lov tugmasini olib tashlaydi (eski invoice orqali ikkinchi to'lov bo'lmasin)."""
+    try:
+        await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+    except TelegramError as e:
+        logger.info("Invoice tugmasini olib tashlab bo'lmadi (chat=%s): %s", chat_id, e)
 
 
 async def _pay_cancel(query, context, owner_id: int, token: str):
