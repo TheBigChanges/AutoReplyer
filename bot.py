@@ -766,7 +766,7 @@ PLANS = (
 PLAN_KEYS = tuple(k for k, _, _ in PLANS)
 # To'lov kartasi Render muhit o'zgaruvchilarida saqlanadi (kodga yozilmaydi)
 PAYMENT_CARD_NUMBER = os.environ.get("PAYMENT_CARD_NUMBER", "").strip()
-PAYMENT_CARD_HOLDER = os.environ.get("PAYMENT_CARD_HOLDER", "Malika Abdukarimova").strip()
+PAYMENT_CARD_HOLDER = os.environ.get("PAYMENT_CARD_HOLDER", "").strip()  # kod ichida ism YO'Q: Render muhitida (Environment) beriladi
 # Payments v1.0: Telegram Stars (asosiy usul) va eski karta+admin tasdig'i. Ikkalasini muhit o'zgaruvchisi bilan tez o'chirish mumkin.
 def _is_paysupport(message) -> bool:
     """/paysupport (Telegram talabi) kanal obunasi va blokdan qat'i nazar har doim ishlaydi: avval to'lagan odam yordamsiz qolmasin."""
@@ -782,7 +782,7 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 PAYMENTS_STARS_ENABLED = _env_flag("PAYMENTS_STARS_ENABLED", True)
-PAYMENTS_CARD_ENABLED = _env_flag("PAYMENTS_CARD_ENABLED", False)  # Telegram qoidalari: standart holatda faqat Stars; karta yoqish uchun =1
+PAYMENTS_CARD_ENABLED = _env_flag("PAYMENTS_CARD_ENABLED", True)  # karta + admin tasdiqlash yo'li (Stars bilan birga); o'chirish uchun =0
 PAYMENT_ORDER_TTL_SECONDS = 15 * 60  # to'lanmagan buyurtma/invoice 15 daqiqadan keyin avtomatik bekor bo'ladi
 
 
@@ -1360,11 +1360,11 @@ def build_plan_view(owner_id: int, key: str):
         if not PAYMENT_CARD_NUMBER:
             pay = esc(t(lang, "plan_no_card"))
         else:
-            pay = t(
-                lang, "plan_pay",
-                card="<code>" + esc(format_card_number(PAYMENT_CARD_NUMBER)) + "</code>",
-                holder=esc(PAYMENT_CARD_HOLDER),
-            )
+            card = "<code>" + esc(format_card_number(PAYMENT_CARD_NUMBER)) + "</code>"
+            if PAYMENT_CARD_HOLDER:
+                pay = t(lang, "plan_pay", card=card, holder=esc(PAYMENT_CARD_HOLDER))
+            else:  # karta egasi muhitda berilmagan: ism qatori ko'rsatilmaydi (kodda standart ism yo'q)
+                pay = t(lang, "plan_pay_noholder", card=card)
         parts.append((esc(t(lang, "pay_card_title")) + "\n" if PAYMENTS_STARS_ENABLED else "") + pay)
         rows.append([InlineKeyboardButton(t(lang, "support_btn_admin"), url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")])
     rows.append(back)
