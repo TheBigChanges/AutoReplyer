@@ -528,6 +528,15 @@ class BotBase(DbBase):
         self.addCleanup(p.stop)
         bot._pending_payments.clear()
         self.addCleanup(bot._pending_payments.clear)
+        import tempfile
+        spool = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        spool.close()
+        os.unlink(spool.name)
+        for target in (patch.object(bot, "INVOICE_SPOOL_PATH", spool.name), patch.object(bot, "_spool_loaded", False)):
+            target.start()
+            self.addCleanup(target.stop)
+        self.addCleanup(lambda: os.path.exists(spool.name) and os.unlink(spool.name))
+        bot._pay_resend_at.clear()
 
     def pre(self, token, user=None, amount=15, currency="XTR"):
         q = MagicMock()
@@ -1267,9 +1276,10 @@ class AuditRound3Tests(BotBase):
         b = _bot_mock()
         self._buy(b)
         first = b.send_invoice.await_args.kwargs["payload"]
-        q = self._buy(b)  # xuddi shu tugma qayta bosildi
+        self._buy(b)  # xuddi shu tugma qayta bosildi
         self.assertEqual(b.send_invoice.await_count, 1)
-        self.assertTrue(q.answer.await_args.kwargs.get("show_alert"))
+        offer = b.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0]
+        self.assertEqual([x.callback_data for x in offer], [f"pay_rs:{first}", f"pay_cx:{first}"])
         self.assertEqual(db.get_payment(first)["status"], "pending")
         with db.get_conn() as conn, conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM payments WHERE user_id = %s", (self.u,))
@@ -1713,11 +1723,120 @@ class AuditRound7Tests(BotBase):
             self._buy(b, price=price, plan=plan, months=months)
         self.assertEqual(b.send_invoice.await_count, bot.PAY_RATE_MAX)
         lang = bot.get_lang(self.u)
-        q = self._buy(b, price=35, plan="pro", months=1)  # oxirgi faol buyurtmani qayta ko'rish
-        self.assertEqual(q.answer.await_args.args[0], t(lang, "pay_invoice_active"))
+        self._buy(b, price=35, plan="pro", months=1)  # oxirgi faol buyurtmani qayta ko'rish
+        self.assertEqual(b.send_message.await_args.args[1], t(lang, "pay_invoice_active"))
         q2 = self._buy(b, price=95, plan="pro", months=3)  # yangi buyurtma esa limitga uradi
         self.assertEqual(q2.answer.await_args.args[0], t(lang, "pay_rate_limited"))
         self.assertEqual(b.send_invoice.await_count, bot.PAY_RATE_MAX)
+
+
+class AuditRound8Tests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def _buy(self, b, price=15, plan="plus", months=1):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(b), self.u, f"pay_buy:{plan}:{months}:{price}"))
+        return q
+
+    def _press(self, b, data, user=None):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        q.message.delete = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(b), user or self.u, data))
+        return q
+
+    def setUp(self):
+        super().setUp()
+        bot._pay_rate.pop(self.u, None)
+        bot._invoice_msgs_mem.clear()
+        self.addCleanup(lambda: bot._pay_rate.pop(self.u, None))
+        self.addCleanup(bot._invoice_msgs_mem.clear)
+
+    def test_deleted_active_invoice_can_be_cancelled_or_resent(self):
+        b = _bot_mock()
+        self._buy(b)
+        token = b.send_invoice.await_args.kwargs["payload"]
+        self._buy(b)  # foydalanuvchi invoice'ni o'chirgan va xuddi shu xaridni qayta tanladi: taklif chiqadi
+        self.assertIn("pay_rs", b.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data)
+        # qayta yuborish: o'sha buyurtma, yangi xabar
+        b.send_invoice.return_value = MagicMock(message_id=888)
+        b.delete_message.reset_mock()
+        q = self._press(b, f"pay_rs:{token}")
+        self.assertEqual(b.send_invoice.await_count, 2)
+        self.assertEqual(b.send_invoice.await_args.kwargs["payload"], token)
+        self.assertEqual(b.send_invoice.await_args.kwargs["prices"][0].amount, 15)
+        b.delete_message.assert_awaited_once_with(chat_id=self.u, message_id=777)
+        order = db.get_payment(token)
+        self.assertEqual((order["status"], order["invoice_msg_id"]), ("pending", 888))
+        q.message.delete.assert_awaited()
+        # qayta yuborilgan invoice to'lanadi
+        self.assertTrue(self.pre(token, amount=15)["ok"])
+        # bekor qilish ham ishlaydi
+        self._press(b, f"pay_cx:{token}")
+        self.assertEqual(db.get_payment(token)["status"], "cancelled")
+
+    def test_resend_refused_for_foreign_cancelled_or_changed_orders(self):
+        b = _bot_mock()
+        self._buy(b)
+        token = b.send_invoice.await_args.kwargs["payload"]
+        n = b.send_invoice.await_count
+        q = self._press(b, f"pay_rs:{token}", user=self.v)  # birovniki
+        self.assertTrue(q.answer.await_args.kwargs.get("show_alert"))
+        self.assertEqual(b.send_invoice.await_count, n)
+        db.set_user_plan(self.u, "pro", time.time() + 10 * DAY)  # tarif o'zgardi
+        q = self._press(b, f"pay_rs:{token}")
+        self.assertEqual(db.get_payment(token)["status"], "cancelled")
+        q = self._press(b, f"pay_rs:{token}")  # endi bekor qilingan
+        self.assertTrue(q.answer.await_args.kwargs.get("show_alert"))
+        self.assertEqual(b.send_invoice.await_count, n)
+
+    def test_resend_is_throttled(self):
+        b = _bot_mock()
+        self._buy(b)
+        token = b.send_invoice.await_args.kwargs["payload"]
+        self._press(b, f"pay_rs:{token}")
+        self._press(b, f"pay_rs:{token}")
+        self.assertEqual(b.send_invoice.await_count, 2)  # ikkinchi bosish 3 soniya ichida e'tiborsiz
+
+    def test_invoice_message_id_failure_followed_by_process_restart(self):
+        b = _bot_mock()
+        with patch.object(db, "set_invoice_message", side_effect=RuntimeError("db down")):
+            self._buy(b)
+        token = b.send_invoice.await_args.kwargs["payload"]
+        self.assertIsNone(db.get_payment(token)["invoice_msg_id"])
+        # server qayta ishga tushdi: xotira yo'qoldi, disk zaxirasi qoldi
+        bot._invoice_msgs_mem.clear()
+        bot._spool_loaded = False
+        run(bot.payment_orders_job(self._ctx(b)))
+        self.assertEqual(db.get_payment(token)["invoice_msg_id"], 777)  # zaxiradan tiklandi va bazaga yozildi
+        # muddati o'tganda invoice xabari o'chadi
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE payments SET expires_at = %s WHERE token = %s", (time.time() - 1, token))
+        run(bot.payment_orders_job(self._ctx(b)))
+        b.delete_message.assert_awaited_with(chat_id=self.u, message_id=777)
+
+    def test_restart_with_expired_order_deletes_message_from_spool(self):
+        b = _bot_mock()
+        with patch.object(db, "set_invoice_message", side_effect=RuntimeError("db down")):
+            self._buy(b)
+            token = b.send_invoice.await_args.kwargs["payload"]
+            with db.get_conn() as conn, conn.cursor() as cur:
+                cur.execute("UPDATE payments SET expires_at = %s WHERE token = %s", (time.time() - 1, token))
+            bot._invoice_msgs_mem.clear()  # restart
+            bot._spool_loaded = False
+            run(bot.payment_orders_job(self._ctx(b)))
+        b.delete_message.assert_awaited_with(chat_id=self.u, message_id=777)
+
+    def test_corrupt_spool_file_is_ignored(self):
+        with open(bot.INVOICE_SPOOL_PATH, "w") as f:
+            f.write("{not json")
+        bot._spool_loaded = False
+        bot._load_invoice_spool()  # xato ko'tarilmaydi
+        self.assertEqual(bot._invoice_msgs_mem, {})
 
 
 class CardDefaultTests(unittest.TestCase):
