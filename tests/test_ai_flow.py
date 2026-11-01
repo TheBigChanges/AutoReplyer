@@ -467,32 +467,47 @@ if __name__ == "__main__":
 
 
 class AiPlusStaticDuplicateTests(Base):
-    """AI javobi ketgan suhbatda zaxira/oddiy avtojavob qo'shimcha ikkinchi javob bo'lib ketmasligi kerak."""
+    """Takroriy javob himoyasi aniq kiruvchi xabar (message_id) bo'yicha ishlaydi, butun suhbat bo'yicha emas."""
 
     def setUp(self):
         super().setUp()
-        bot._ai_sent_at.clear()
+        bot._ai_answered.clear()
 
-    def test_ai_failure_after_recent_ai_reply_sends_no_fallback(self):
-        bot._ai_sent_at[(OWNER, CHAT)] = __import__("time").time()
-        send, m = self.flow(answer=None)
+    def test_second_distinct_message_gets_fallback_when_ai_fails(self):
+        bot._ai_answered[(OWNER, CHAT, 10)] = __import__("time").time()  # oldingi xabarga AI javob bergan
+        send, m = self.flow(update=_update(message_id=11), answer=None)
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+
+    def test_new_media_message_not_suppressed_by_previous_ai_reply(self):
+        bot._ai_answered[(OWNER, CHAT, 10)] = __import__("time").time()
+        send, _ = self.flow(update=_update(text=None, message_id=11))
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+
+    def test_same_message_already_answered_gets_no_fallback(self):
+        bot._ai_answered[(OWNER, CHAT, 10)] = __import__("time").time()
+        send, m = self.flow(update=_update(message_id=10), answer=None)
         send.assert_not_called()
-        m["refund"].assert_called_once()
 
-    def test_non_text_after_recent_ai_reply_sends_no_static_text(self):
-        bot._ai_sent_at[(OWNER, CHAT)] = __import__("time").time()
-        send, _ = self.flow(update=_update(text=None))
-        send.assert_not_called()
-
-    def test_successful_ai_reply_marks_chat(self):
+    def test_successful_ai_reply_marks_message(self):
         send, _ = self.flow()
         self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
-        self.assertTrue(bot._ai_recently_replied(OWNER, CHAT))
+        self.assertTrue(bot._ai_answered_message(OWNER, CHAT, 10))
+        self.assertFalse(bot._ai_answered_message(OWNER, CHAT, 11))
 
-    def test_old_ai_reply_does_not_block_fallback(self):
-        bot._ai_sent_at[(OWNER, CHAT)] = __import__("time").time() - bot.AI_QUIET_SECONDS - 5
-        send, _ = self.flow(answer=None)
-        self.assertEqual(self.texts(send), ["Oflaynman"])
+    def test_ai_send_timeout_preserves_uncertain_delivery_state(self):
+        from telegram.error import TimedOut
+        send, m = self.flow(send_side_effect=TimedOut())
+        m["refund"].assert_not_called()   # limit qaytarilmaydi
+        m["add"].assert_called_once()     # tarixga yoziladi
+        self.assertTrue(bot._ai_answered_message(OWNER, CHAT, 10))
+        self.assertEqual(send.await_count, 1)  # zaxira matn ham yuborilmaydi
+
+    def test_ai_definite_rejection_still_refunds(self):
+        from telegram.error import BadRequest
+        _, m = self.flow(send_side_effect=BadRequest("x"))
+        m["refund"].assert_called_once()
+        m["add"].assert_not_called()
+        self.assertFalse(bot._ai_answered_message(OWNER, CHAT, 10))
 
 
 class AutoReplyUnknownOutcomeTests(unittest.TestCase):
