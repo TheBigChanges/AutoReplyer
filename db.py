@@ -1003,6 +1003,43 @@ def create_payment_order(user_id: int, token: str, quote: "payments.Quote", stat
     return _run_tx(work)
 
 
+def create_or_reuse_order(user_id: int, token: str, quote: "payments.Quote", state: "payments.PlanState", ttl_seconds: float,
+                          now: float | None = None, inflight_seconds: float = 20.0):
+    """Foydalanuvchi uchun faol buyurtmani BITTA tranzaksiyada (foydalanuvchi qulfi ostida) topadi yoki yaratadi — parallel bosilgan tugmalar
+    ikkita buyurtma yaratmaydi. Qayta ishlatiladi: shu (tarif, muddat, summa, tarif holati)dagi, muddati o'tmagan pending buyurtma, agar
+    uning invoice'i yuborilgan bo'lsa YOKI hozirgina (inflight_seconds ichida) yaratilgan bo'lsa (invoice yuborilmoqda).
+    Aks holda eski pending buyurtmalar bekor qilinadi va yangisi yaratiladi.
+    Qaytaradi: ("reused", qator) | ("created", {"id", "cancelled_msgs": [eski invoice xabar ID'lari]})."""
+    now = time.time() if now is None else now
+    snap_expires = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
+
+    def work(cur):
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext('payments_user'), (%s %% 2147483647)::int)", (user_id,))
+        cur.execute(
+            f"SELECT {_PAYMENT_COLS} FROM payments WHERE user_id = %s AND status = 'pending' AND plan = %s AND months = %s AND stars = %s "
+            "AND expires_at > %s AND (invoice_msg_id IS NOT NULL OR created_at > %s) AND snap_plan = %s AND snap_expires IS NOT DISTINCT FROM %s "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, quote.target, quote.months, quote.pay, now, now - inflight_seconds, state.plan, snap_expires),
+        )
+        row = cur.fetchone()
+        if row is not None:
+            return "reused", dict(row)
+        cur.execute("UPDATE payments SET status = 'cancelled' WHERE user_id = %s AND status = 'pending' RETURNING invoice_msg_id", (user_id,))
+        msgs = [r["invoice_msg_id"] for r in cur.fetchall() if r["invoice_msg_id"]]
+        cur.execute(
+            """
+            INSERT INTO payments (token, user_id, kind, plan, months, stars, credit, status, snap_plan, snap_expires, created_at, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s) RETURNING id
+            """,
+            (token, user_id, quote.kind, quote.target, quote.months, quote.pay, quote.credit, state.plan, snap_expires, now, now + ttl_seconds),
+        )
+        pid = cur.fetchone()["id"]
+        _audit(cur, user_id, pid, "order_created", f"{quote.kind} {quote.target} {quote.months}m stars={quote.pay} credit={quote.credit}", now)
+        return "created", {"id": pid, "cancelled_msgs": msgs}
+
+    return _run_tx(work)
+
+
 def get_payment(token: str):
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE token = %s", (token,))
