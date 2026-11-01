@@ -2165,6 +2165,8 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
         async with _chat_lock(owner_id, chat_id):
             if db.is_ai_paused(owner_id, chat_id) or not ai_reply_still_allowed(owner_id):
                 return  # navbat kutayotganda egasi chatga yozgan yoki sozlamalar o'zgargan: AI ham, zaxira matn ham ketmaydi
+            if _ai_answered_message(owner_id, chat_id, incoming_id):
+                return  # shu kiruvchi xabarga AI allaqachon javob bergan (takroriy update): na yangi so'rov, na limit, na zaxira matn
             if not unlimited:
                 if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT):
                     await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-limit")
@@ -2207,11 +2209,12 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 if _send_outcome_unknown(e):
                     # Tarmoq xatosi/timeout: Telegram javobni qabul qilgan bo'lishi mumkin — natija noma'lum.
                     # Limit QAYTARILMAYDI, xabar "javob berilgan" deb belgilanadi (zaxira matn ikkinchi javob bo'lmasin),
-                    # suhbat tarixiga yoziladi; statistikada esa sanalmaydi (yuborilgani tasdiqlanmagan).
+                    # tarixga FAQAT mijozning xabari yoziladi (AI javobi emas: u yetib bormagan bo'lishi mumkin, mijoz ko'rmagan
+                    # javobga keyingi Gemini so'rovi tayanmasin); statistikada sanalmaydi (yuborilgani tasdiqlanmagan).
                     delivered = True
                     _mark_ai_answered(owner_id, chat_id, incoming_id)
                     logger.warning("AI javobi natijasi noma'lum (owner=%s, chat=%s): %s", owner_id, chat_id, e)
-                    db.add_ai_messages(owner_id, chat_id, [("user", text), ("model", answer)], keep=AI_HISTORY_MESSAGES)
+                    db.add_ai_messages(owner_id, chat_id, [("user", text)], keep=AI_HISTORY_MESSAGES)
                     return
                 if consumed:
                     consumed = False
