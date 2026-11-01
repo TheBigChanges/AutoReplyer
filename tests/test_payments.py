@@ -2038,6 +2038,25 @@ class AuditRound9Tests(BotBase):
         run(bot.payment_orders_job(ctx))
         ctx.bot.edit_message_reply_markup.assert_awaited()
 
+    def test_replacing_order_disarms_old_invoice_when_delete_fails(self):
+        now = time.time()
+        state = db.get_user_plan_state(self.u)
+        q1 = pay.quote(state, "plus", 1, now, add_months)
+        db.create_or_reuse_order(self.u, "RP1" + str(self.u), q1, state, 900, now)
+        db.set_invoice_message("RP1" + str(self.u), 654)
+        b = _bot_mock()
+        b.delete_message.side_effect = bot.BadRequest("can't be deleted")
+        b.edit_message_reply_markup = AsyncMock()
+        ctx = MagicMock()
+        ctx.bot = b
+        q = MagicMock()
+        q.answer = AsyncMock()
+        run(bot.handle_pay_callback(q, ctx, self.u, "pay_buy:plus:3:41"))  # boshqa tanlov: eski buyurtma almashtiriladi
+        b.delete_message.assert_awaited()
+        b.edit_message_reply_markup.assert_awaited()
+        self.assertEqual(b.edit_message_reply_markup.await_args.kwargs["message_id"], 654)
+        self.assertIsNone(b.edit_message_reply_markup.await_args.kwargs["reply_markup"])
+
     def test_checkout_claim_blocks_parallel_then_expires(self):
         token, q = self.order(now=time.time())
         self.assertTrue(db.claim_checkout(token, self.u, 1000.0))
