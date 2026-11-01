@@ -494,11 +494,26 @@ class AiPlusStaticDuplicateTests(Base):
         self.assertTrue(bot._ai_answered_message(OWNER, CHAT, 10))
         self.assertFalse(bot._ai_answered_message(OWNER, CHAT, 11))
 
+    def test_same_incoming_message_does_not_generate_or_send_twice(self):
+        send1, m1 = self.flow()
+        self.assertEqual(send1.await_count, 1)
+        send2, m2 = self.flow()  # xuddi shu message_id qayta qayta ishlanadi
+        send2.assert_not_called()
+        m2["gen"].assert_not_awaited()
+        m2["quota"].assert_not_called()
+
+    def test_duplicate_message_when_ai_quota_exhausted_sends_no_fallback(self):
+        bot._ai_answered[(OWNER, CHAT, 10)] = __import__("time").time()
+        send, m = self.flow(quota=False)
+        send.assert_not_called()
+        m["gen"].assert_not_awaited()
+
     def test_ai_send_timeout_preserves_uncertain_delivery_state(self):
         from telegram.error import TimedOut
         send, m = self.flow(send_side_effect=TimedOut())
         m["refund"].assert_not_called()   # limit qaytarilmaydi
-        m["add"].assert_called_once()     # tarixga yoziladi
+        m["add"].assert_called_once()
+        self.assertEqual(m["add"].call_args.args[2], [("user", "Salom, narx qancha?")])  # AI javobi tarixga yozilmaydi
         self.assertTrue(bot._ai_answered_message(OWNER, CHAT, 10))
         self.assertEqual(send.await_count, 1)  # zaxira matn ham yuborilmaydi
 
