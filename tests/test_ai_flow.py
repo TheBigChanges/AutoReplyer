@@ -464,3 +464,68 @@ class DisconnectTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AiPlusStaticDuplicateTests(Base):
+    """AI javobi ketgan suhbatda zaxira/oddiy avtojavob qo'shimcha ikkinchi javob bo'lib ketmasligi kerak."""
+
+    def setUp(self):
+        super().setUp()
+        bot._ai_sent_at.clear()
+
+    def test_ai_failure_after_recent_ai_reply_sends_no_fallback(self):
+        bot._ai_sent_at[(OWNER, CHAT)] = __import__("time").time()
+        send, m = self.flow(answer=None)
+        send.assert_not_called()
+        m["refund"].assert_called_once()
+
+    def test_non_text_after_recent_ai_reply_sends_no_static_text(self):
+        bot._ai_sent_at[(OWNER, CHAT)] = __import__("time").time()
+        send, _ = self.flow(update=_update(text=None))
+        send.assert_not_called()
+
+    def test_successful_ai_reply_marks_chat(self):
+        send, _ = self.flow()
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+        self.assertTrue(bot._ai_recently_replied(OWNER, CHAT))
+
+    def test_old_ai_reply_does_not_block_fallback(self):
+        bot._ai_sent_at[(OWNER, CHAT)] = __import__("time").time() - bot.AI_QUIET_SECONDS - 5
+        send, _ = self.flow(answer=None)
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+
+
+class AutoReplyUnknownOutcomeTests(unittest.TestCase):
+    def _run(self, exc):
+        bm = MagicMock()
+        bm.business_connection_id = "bc"
+        b = MagicMock()
+        b.send_message = AsyncMock(side_effect=exc)
+        with patch.object(db, "try_claim_reply", return_value=5.0), patch.object(db, "release_reply_claim") as rel:
+            asyncio.run(bot.send_auto_reply(b, bm, OWNER, CHAT, "x", 3.0, "lbl"))
+        return rel
+
+    def test_autoreply_network_timeout_does_not_release_claim_unsafely(self):
+        from telegram.error import NetworkError, TimedOut
+        self._run(NetworkError("conn")).assert_not_called()
+        self._run(TimedOut()).assert_not_called()
+
+    def test_definite_rejection_releases_claim(self):
+        from telegram.error import BadRequest, Forbidden
+        self._run(BadRequest("chat not found")).assert_called_once()
+        self._run(Forbidden("blocked")).assert_called_once()
+
+
+class TimeDictPruneTests(unittest.TestCase):
+    def test_prune_removes_only_old_entries_when_large(self):
+        import time
+        d = {i: time.time() - 7200 for i in range(600)}
+        d[9999] = time.time()
+        bot._prune_times(d, 3600.0)
+        self.assertEqual(list(d), [9999])
+
+    def test_small_dict_untouched(self):
+        import time
+        d = {1: time.time() - 7200}
+        bot._prune_times(d, 3600.0)
+        self.assertEqual(len(d), 1)
