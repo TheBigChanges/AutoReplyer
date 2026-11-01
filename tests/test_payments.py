@@ -2113,14 +2113,33 @@ class AuditRound9Tests(BotBase):
 
 
 class CardDefaultTests(unittest.TestCase):
-    def test_card_route_off_by_default_stars_on(self):
-        import importlib
+    def test_card_route_and_stars_both_on_by_default(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PAYMENTS_CARD_ENABLED", None)
             os.environ.pop("PAYMENTS_STARS_ENABLED", None)
-            self.assertFalse(bot._env_flag("PAYMENTS_CARD_ENABLED", False))
+            self.assertTrue(bot._env_flag("PAYMENTS_CARD_ENABLED", True))
             self.assertTrue(bot._env_flag("PAYMENTS_STARS_ENABLED", True))
-        self.assertFalse(bot.PAYMENTS_CARD_ENABLED)  # test muhitida o'zgaruvchi berilmagan
+            os.environ["PAYMENTS_CARD_ENABLED"] = "0"
+            self.assertFalse(bot._env_flag("PAYMENTS_CARD_ENABLED", True))  # =0 bilan o'chiriladi
+        self.assertTrue(bot.PAYMENTS_CARD_ENABLED)  # test muhitida o'zgaruvchi berilmagan
+
+    def test_no_hardcoded_card_holder_name_in_source(self):
+        src = (Path(__file__).resolve().parent.parent / "bot.py").read_text(encoding="utf-8")
+        self.assertNotIn("Malika", src)
+        self.assertEqual(bot._env_flag.__name__, "_env_flag")
+
+    def test_card_holder_comes_from_environment(self):
+        for lang in ("uz", "en", "ru"):
+            with patch.object(bot, "get_lang", return_value=lang), patch.object(db, "get_user_plan", return_value="free"), \
+                    patch.object(bot, "PAYMENTS_CARD_ENABLED", True), patch.object(bot, "PAYMENT_CARD_NUMBER", "8600123412341234"):
+                with patch.object(bot, "PAYMENT_CARD_HOLDER", "Ism Familiya"):
+                    text, _ = bot.build_plan_view(12345, "plus")
+                    self.assertIn("Ism Familiya", text)
+                with patch.object(bot, "PAYMENT_CARD_HOLDER", ""):
+                    text, _ = bot.build_plan_view(12345, "plus")
+                    self.assertNotIn("{", text)
+                    self.assertIn("8600 1234 1234 1234", text)
+                    self.assertNotIn("Ism Familiya", text)
 
 
 class HandlerRegistrationTests(unittest.TestCase):
