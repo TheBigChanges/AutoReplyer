@@ -2013,6 +2013,31 @@ class AuditRound9Tests(BotBase):
         self.assertTrue(db.release_checkout(token, self.u, 3000.0))
         self.assertTrue(db.claim_checkout(token, self.u, 3011.0))
 
+    def test_cancelled_invoice_disarms_button_when_delete_fails(self):
+        token, q = self.order(now=time.time())
+        query = MagicMock()
+        query.answer = AsyncMock()
+        query.message.message_id = 321
+        ctx = MagicMock()
+        ctx.bot = _bot_mock()
+        ctx.bot.delete_message.side_effect = bot.BadRequest("can't be deleted")
+        ctx.bot.edit_message_reply_markup = AsyncMock()
+        run(bot._pay_cancel(query, ctx, self.u, token))
+        ctx.bot.edit_message_reply_markup.assert_awaited_once()
+        self.assertIsNone(ctx.bot.edit_message_reply_markup.await_args.kwargs["reply_markup"])
+
+    def test_expired_invoice_disarms_button_when_delete_fails(self):
+        token, q = self.order(now=time.time())
+        db.set_invoice_message(token, 456)
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE payments SET expires_at=%s WHERE token=%s", (time.time() - 5, token))
+        ctx = MagicMock()
+        ctx.bot = _bot_mock()
+        ctx.bot.delete_message.side_effect = bot.BadRequest("can't be deleted")
+        ctx.bot.edit_message_reply_markup = AsyncMock()
+        run(bot.payment_orders_job(ctx))
+        ctx.bot.edit_message_reply_markup.assert_awaited()
+
     def test_checkout_claim_blocks_parallel_then_expires(self):
         token, q = self.order(now=time.time())
         self.assertTrue(db.claim_checkout(token, self.u, 1000.0))
