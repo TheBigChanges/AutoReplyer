@@ -1598,6 +1598,128 @@ class AuditRound6Tests(BotBase):
         self.assertEqual((out, info["cancelled_msgs"]), ("created", [4242]))
 
 
+class AuditRound7Tests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def _buy(self, b, price=15, plan="plus", months=1):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(b), self.u, f"pay_buy:{plan}:{months}:{price}"))
+        return q
+
+    def setUp(self):
+        super().setUp()
+        bot._pay_rate.pop(self.u, None)
+        bot._invoice_msgs_mem.clear()
+        self.addCleanup(lambda: bot._pay_rate.pop(self.u, None))
+        self.addCleanup(bot._invoice_msgs_mem.clear)
+
+    def _refund(self, ref, b):
+        upd = MagicMock()
+        upd.effective_user.id = 999
+        upd.message.reply_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.args = [ref]
+        ctx.bot = b
+        run(bot.cmd_refund(upd, ctx))
+        return upd.message.reply_text.await_args.args[0]
+
+    def test_refund_network_timeout_does_not_restore_paid_before_verification(self):
+        from telegram.error import TimedOut
+        now = time.time()
+        token, q = self.order(now=now)
+        self.pay(token, q, charge="chTMO", now=now)
+        b = _bot_mock()
+        b.refund_star_payment.side_effect = TimedOut()
+        msg = self._refund("chTMO", b)
+        self.assertEqual(db.get_payment(token)["status"], "refunding")  # 'paid' ga qaytarilmadi
+        self.assertEqual(self.plan().plan, "plus")  # tarifga hali tegilmadi
+        self.assertIn("noma'lum", msg)
+        # Telegram refundni tasdiqlasa (tranzaksiyada ko'rinsa) — yakunlanadi
+        tx = MagicMock()
+        tx.id, tx.receiver = "chTMO", MagicMock()
+        b2 = _bot_mock()
+        b2.refund_star_payment.side_effect = TimedOut()
+        b2.get_star_transactions = AsyncMock(return_value=MagicMock(transactions=[tx]))
+        self._refund("chTMO", b2)
+        self.assertEqual(db.get_payment(token)["status"], "refunded")
+        self.assertEqual(self.plan().plan, "free")
+
+    def test_refund_definite_rejection_still_restores_paid(self):
+        from telegram.error import BadRequest
+        token, q = self.order()
+        self.pay(token, q, charge="chRJ")
+        b = _bot_mock()
+        b.refund_star_payment.side_effect = BadRequest("Bad Request: CHARGE_NOT_FOUND")
+        self._refund("chRJ", b)
+        self.assertEqual(db.get_payment(token)["status"], "paid")
+
+    def test_refund_timeout_then_rerun_completes_via_already_refunded(self):
+        from telegram.error import TimedOut
+        token, q = self.order()
+        self.pay(token, q, charge="chRR")
+        b = _bot_mock()
+        b.refund_star_payment.side_effect = TimedOut()
+        self._refund("chRR", b)
+        b2 = _bot_mock()
+        b2.refund_star_payment.side_effect = TelegramError("Bad Request: CHARGE_ALREADY_REFUNDED")
+        self._refund("chRR", b2)
+        self.assertEqual(db.get_payment(token)["status"], "refunded")
+
+    def test_invoice_sent_but_message_id_not_saved(self):
+        b = _bot_mock()
+        with patch.object(db, "set_invoice_message", side_effect=RuntimeError("db down")):
+            self._buy(b)
+        token = b.send_invoice.await_args.kwargs["payload"]
+        self.assertIsNone(db.get_payment(token)["invoice_msg_id"])
+        self.assertIn(token, bot._invoice_msgs_mem)  # xotirada saqlanib qoldi
+        # 20 soniyadan ko'p o'tib, foydalanuvchi qayta bosadi: eski invoice xabari o'chiriladi (o'lik tugma qolmaydi)
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE payments SET created_at = created_at - 60 WHERE user_id = %s", (self.u,))
+        b.delete_message.reset_mock()
+        b.send_invoice.return_value = MagicMock(message_id=901)
+        self._buy(b)
+        b.delete_message.assert_awaited_once_with(chat_id=self.u, message_id=777)
+        self.assertEqual(db.get_payment(token)["status"], "cancelled")
+        self.assertNotIn(token, bot._invoice_msgs_mem)
+
+    def test_unsaved_message_id_is_saved_later_by_job(self):
+        b = _bot_mock()
+        with patch.object(db, "set_invoice_message", side_effect=RuntimeError("db down")):
+            self._buy(b)
+        token = b.send_invoice.await_args.kwargs["payload"]
+        run(bot.payment_orders_job(self._ctx(b)))  # baza tiklandi
+        self.assertEqual(db.get_payment(token)["invoice_msg_id"], 777)
+        self.assertNotIn(token, bot._invoice_msgs_mem)
+
+    def test_expiry_job_deletes_unsaved_invoice_message_too(self):
+        b = _bot_mock()
+        with patch.object(db, "set_invoice_message", side_effect=RuntimeError("db down")):
+            self._buy(b)
+        token = b.send_invoice.await_args.kwargs["payload"]
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE payments SET expires_at = %s WHERE token = %s", (time.time() - 1, token))
+        with patch.object(db, "set_invoice_message", side_effect=RuntimeError("db down")):
+            run(bot.payment_orders_job(self._ctx(b)))
+        b.delete_message.assert_awaited_with(chat_id=self.u, message_id=777)
+
+    def test_active_invoice_remains_accessible_after_rate_limit(self):
+        b = _bot_mock()
+        combos = [("plus", 1, 15), ("plus", 3, 41), ("plus", 6, 77), ("plus", 12, 144), ("pro", 1, 35)]
+        for plan, months, price in combos:
+            self._buy(b, price=price, plan=plan, months=months)
+        self.assertEqual(b.send_invoice.await_count, bot.PAY_RATE_MAX)
+        lang = bot.get_lang(self.u)
+        q = self._buy(b, price=35, plan="pro", months=1)  # oxirgi faol buyurtmani qayta ko'rish
+        self.assertEqual(q.answer.await_args.args[0], t(lang, "pay_invoice_active"))
+        q2 = self._buy(b, price=95, plan="pro", months=3)  # yangi buyurtma esa limitga uradi
+        self.assertEqual(q2.answer.await_args.args[0], t(lang, "pay_rate_limited"))
+        self.assertEqual(b.send_invoice.await_count, bot.PAY_RATE_MAX)
+
+
 class CardDefaultTests(unittest.TestCase):
     def test_card_route_off_by_default_stars_on(self):
         import importlib
