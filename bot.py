@@ -5469,6 +5469,11 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         text, markup = build_pay_quote_view(owner_id, plan, months)
         await query.edit_message_text(text, reply_markup=markup)
         return
+    snap_exp = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
+    if db.get_reusable_order(owner_id, plan, months, q.pay, state.plan, snap_exp, now) is not None:
+        # mavjud faol buyurtmani qayta ko'rish yangi buyurtma yaratish limitiga kirmaydi
+        await query.answer(t(lang, "pay_invoice_active"), show_alert=True)
+        return
     if not _pay_rate_ok(owner_id, now, consume=False):
         await query.answer(t(lang, "pay_rate_limited"), show_alert=True)
         return
@@ -5479,8 +5484,11 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         await query.answer(t(lang, "pay_invoice_active"), show_alert=True)  # xuddi shu buyurtma uchun invoice allaqachon yuborilgan/yuborilmoqda
         return
     _pay_rate_ok(owner_id, now)  # yangi buyurtma yaratildi: tezlik hisobiga qo'shiladi
-    for mid in info["cancelled_msgs"]:  # eski buyurtmalarning invoice xabarlari ham o'chadi
-        await _delete_message(context.bot, owner_id, mid)
+    for old_token, mid in info["cancelled"]:  # eski buyurtmalarning invoice xabarlari ham o'chadi (ID bazaga yozilmagan bo'lsa — xotiradan)
+        mid = mid or (_invoice_msgs_mem.pop(old_token, None) or (None, None))[1]
+        if mid:
+            await _delete_message(context.bot, owner_id, mid)
+        _invoice_msgs_mem.pop(old_token, None)
     name = t(lang, "plan_name_" + plan)
     try:
         invoice = await context.bot.send_invoice(
@@ -5510,12 +5518,30 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         _pay_rate_release(owner_id, now)
         await query.answer(t(lang, "pay_invoice_failed"), show_alert=True)
         return
-    try:
-        db.set_invoice_message(token, invoice.message_id)
-    except Exception:
-        logger.exception("Invoice xabar ID'sini saqlab bo'lmadi (order=%s)", token)
+    _invoice_msgs_mem[token] = (time.time(), invoice.message_id)  # baza yozuvi muvaffaqiyatsiz bo'lsa ham xotirada qoladi (qayta uriniladi)
+    await _save_invoice_message(token)
     await query.answer()
     await context.bot.send_message(owner_id, t(lang, "pay_invoice_sent", minutes=PAYMENT_ORDER_TTL_SECONDS // 60, token=token))
+
+
+_invoice_msgs_mem: dict = {}  # token -> (yuborilgan vaqt, message_id): bazaga hali yozilmagan invoice xabar ID'lari
+
+
+async def _save_invoice_message(token: str) -> bool:
+    """Invoice xabar ID'sini bazaga yozadi (3 urinish). Muvaffaqiyatsiz bo'lsa, ID xotirada qoladi va payment_orders_job qayta uriniladi."""
+    item = _invoice_msgs_mem.get(token)
+    if item is None:
+        return True
+    for attempt in range(3):
+        try:
+            db.set_invoice_message(token, item[1])
+            _invoice_msgs_mem.pop(token, None)
+            return True
+        except Exception:
+            logger.warning("Invoice xabar ID'sini saqlab bo'lmadi (order=%s, urinish=%s)", token, attempt + 1)
+            if attempt < 2:
+                await asyncio.sleep(0.3)
+    return False
 
 
 _pay_rate: dict = {}
@@ -5570,6 +5596,7 @@ async def _pay_cancel(query, context, owner_id: int, token: str):
             pass
         return
     await query.answer(t(lang, "pay_cancelled"))
+    _invoice_msgs_mem.pop(token, None)
     await _delete_message(context.bot, owner_id, row["invoice_msg_id"] or query.message.message_id)
 
 
@@ -5712,14 +5739,21 @@ async def payment_retry_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def payment_orders_job(context: ContextTypes.DEFAULT_TYPE):
+    for token, (sent_at, _mid) in list(_invoice_msgs_mem.items()):  # saqlanmay qolgan invoice xabar ID'larini qayta yozish
+        if time.time() - sent_at > PAYMENT_ORDER_TTL_SECONDS * 2:
+            _invoice_msgs_mem.pop(token, None)
+        else:
+            await _save_invoice_message(token)
     try:
         expired = db.expire_old_orders()
     except Exception:
         logger.exception("Eskirgan buyurtmalarni yopishda xato")
         return
     for row in expired:  # muddati o'tgan invoice: to'lov tugmasi yo'qoladi va foydalanuvchiga aytiladi
-        if row.get("invoice_msg_id"):
-            await _delete_message(context.bot, row["user_id"], row["invoice_msg_id"])
+        mid = row.get("invoice_msg_id") or (_invoice_msgs_mem.get(row["token"]) or (None, None))[1]
+        _invoice_msgs_mem.pop(row["token"], None)
+        if mid:
+            await _delete_message(context.bot, row["user_id"], mid)
         await _try_send(context.bot, row["user_id"], t(get_lang(row["user_id"]), "pay_order_expired", minutes=PAYMENT_ORDER_TTL_SECONDS // 60))
 
 
@@ -5820,11 +5854,20 @@ async def cmd_refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         await context.bot.refund_star_payment(user_id=row["user_id"], telegram_payment_charge_id=row["charge_id"])
-    except TelegramError as e:
-        if "ALREADY_REFUNDED" not in str(e).upper().replace(" ", "_"):
+    except Exception as e:
+        already = "ALREADY_REFUNDED" in str(e).upper().replace(" ", "_")
+        definite = isinstance(e, TelegramError) and not (isinstance(e, NetworkError) and not isinstance(e, BadRequest))
+        if not already and definite:  # Telegram aniq rad etdi
             db.fail_refund(row["id"])
             await update.message.reply_text(f"❌ Telegram qaytarishni rad etdi: {e}\nTo'lov holati o'zgarmadi.")
             return
+        if not already:  # tarmoq uzilishi/timeout: refund bajarilgan bo'lishi mumkin — 'refunding' saqlanadi, Telegram bilan tekshiramiz
+            logger.warning("refund_star_payment natijasi noma'lum (charge=%s): %s", row["charge_id"], e)
+            if not await _refund_confirmed(context.bot, row["charge_id"]):
+                await update.message.reply_text(
+                    "⚠️ Telegram javobi noma'lum (tarmoq xatosi). Holat 'refunding' qoldi — tarif o'zgarmadi. "
+                    f"Avtomatik solishtirish tekshiradi; yoki birozdan keyin qayta yuboring: /refund {row['charge_id']}")
+                return
     new_state = None
     for attempt in range(3):
         try:
@@ -5851,6 +5894,23 @@ async def cmd_refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + (f" ({format_plan_date(new_state.expires_at)} gacha)" if new_state.expires_at else "")
         + ("" if notified else "\nFoydalanuvchiga xabar yuborib bo'lmadi.")
     )
+
+
+async def _refund_confirmed(bot, charge_id: str) -> bool:
+    """Telegram tranzaksiyalarida shu to'lov uchun qaytarish (refund) yozuvi bormi."""
+    try:
+        offset = 0
+        for _ in range(3):
+            batch = await bot.get_star_transactions(offset=offset, limit=100)
+            txs = list(batch.transactions)
+            if any(tx.id == charge_id and tx.receiver is not None for tx in txs):
+                return True
+            if len(txs) < 100:
+                break
+            offset += len(txs)
+    except Exception:
+        logger.warning("Refundni Telegram bilan tekshirib bo'lmadi (charge=%s)", charge_id)
+    return False
 
 
 async def cmd_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
