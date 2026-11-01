@@ -1336,6 +1336,19 @@ class AuditRound4Tests(BotBase):
         self.assertFalse(any(d.startswith("pay_q:") for d in data))
         self.assertIn("140", text)  # ~140 kun (70 Stars / 0.5)
 
+    def test_downgrade_displays_less_than_one_day_correctly(self):
+        self.assertEqual(bot._format_span("en", 8 * 3600), "8 h")
+        self.assertEqual(bot._format_span("uz", 10 * 60), "1 soat")
+        self.assertEqual(bot._format_span("en", 23.8 * 3600), "1 day(s)")  # 24 soatga yaxlitlansa — kun
+        self.assertEqual(bot._format_span("en", 36 * 3600), "2 day(s)")
+        self.assertEqual(bot._format_span("ru", 140 * 86400), "140 дн.")
+        now = time.time()
+        # Ultra: qolgan qiymat ~0.25 Stars -> Plus ~0.5 kun (12 soat)
+        db.set_user_plan(self.u, "ultra", now + 3600 * 5)
+        text, _ = bot.build_pay_quote_view(self.u, "plus", 1)
+        self.assertNotIn("1 kun", text)
+        self.assertIn("soat", text)
+
     def test_upgrade_still_asks_for_duration(self):
         db.set_user_plan(self.u, "plus", time.time() + 30 * DAY)
         q = MagicMock()
