@@ -1114,6 +1114,16 @@ T: dict[str, dict] = {
         "⚠️ Состояние вашего тарифа изменилось. Выберите тариф заново.",
     ),
     "pay_bad_button": _("Bu tugma eskirgan. Tariflar bo'limidan qaytadan boshlang.", "This button is out of date. Start again from the Plans section.", "Эта кнопка устарела. Начните заново из раздела «Тарифы»."),
+    "pay_invoice_failed": _(
+        "To'lov hisobini yuborib bo'lmadi. Buyurtma bekor qilindi — birozdan keyin qayta urinib ko'ring.",
+        "The invoice could not be sent. The order was cancelled — please try again in a moment.",
+        "Не удалось отправить счёт. Заказ отменён — повторите попытку чуть позже.",
+    ),
+    "pay_invoice_unknown": _(
+        "Tarmoq xatosi: to'lov hisobi yetib kelgan bo'lishi mumkin — chatni tekshiring. Kelmasa, 1 daqiqadan keyin qayta urinib ko'ring.",
+        "Network error: the invoice may have arrived — check the chat. If it didn't, try again in a minute.",
+        "Сетевая ошибка: счёт мог дойти — проверьте чат. Если нет, повторите через минуту.",
+    ),
     "pay_invoice_active": _(
         "Bu buyurtma uchun to'lov hisobi allaqachon yuborilgan — pastdagi xabarga qarang yoki uni bekor qiling.",
         "The invoice for this order has already been sent — see the message below or cancel it.",
