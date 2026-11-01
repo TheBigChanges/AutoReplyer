@@ -559,3 +559,57 @@ class TimeDictPruneTests(unittest.TestCase):
         d = {1: time.time() - 7200}
         bot._prune_times(d, 3600.0)
         self.assertEqual(len(d), 1)
+
+
+class FaqAiModeDuplicateTests(unittest.TestCase):
+    def setUp(self):
+        bot._ai_answered.clear()
+        self.addCleanup(bot._ai_answered.clear)
+
+    def _bm(self, mid):
+        bm = MagicMock()
+        bm.business_connection_id = "bc"
+        bm.message_id = mid
+        return bm
+
+    def _send(self, b, mid, side=None):
+        if side is not None:
+            b.send_message.side_effect = side
+        asyncio.run(bot.send_faq_reply(b, self._bm(mid), OWNER, CHAT, "Javob", 3.0, "lbl", True))
+
+    def _bot(self):
+        b = MagicMock()
+        b.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        return b
+
+    def test_duplicate_faq_update_in_ai_mode_sends_only_one_reply(self):
+        b = self._bot()
+        self._send(b, 100)
+        self._send(b, 100)
+        self.assertEqual(b.send_message.await_count, 1)
+
+    def test_new_message_id_faq_still_answered_in_ai_mode(self):
+        b = self._bot()
+        self._send(b, 100)
+        self._send(b, 101)
+        self.assertEqual(b.send_message.await_count, 2)
+
+    def test_concurrent_duplicate_faq_sends_once(self):
+        b = self._bot()
+
+        async def go():
+            await asyncio.gather(*[bot.send_faq_reply(b, self._bm(200), OWNER, CHAT, "J", 3.0, "l", True) for _ in range(5)])
+        asyncio.run(go())
+        self.assertEqual(b.send_message.await_count, 1)
+
+    def test_faq_timeout_marks_answered_but_definite_failure_does_not(self):
+        from telegram.error import BadRequest, TimedOut
+        b = self._bot()
+        self._send(b, 300, side=TimedOut())
+        self._send(b, 300, side=None)
+        self.assertEqual(b.send_message.await_count, 1)  # noma'lum natija: qayta yuborilmaydi
+        b2 = self._bot()
+        self._send(b2, 301, side=BadRequest("x"))
+        b2.send_message.side_effect = None
+        self._send(b2, 301)
+        self.assertEqual(b2.send_message.await_count, 2)  # aniq rad etish: qayta urinish mumkin
