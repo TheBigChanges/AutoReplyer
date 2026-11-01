@@ -613,3 +613,17 @@ class FaqAiModeDuplicateTests(unittest.TestCase):
         b2.send_message.side_effect = None
         self._send(b2, 301)
         self.assertEqual(b2.send_message.await_count, 2)  # aniq rad etish: qayta urinish mumkin
+
+
+class IncomingDedupTests(Base):
+    def test_duplicate_business_message_counts_incoming_once(self):
+        calls = []
+        with patch.object(bot, "track_analytics", lambda o, k: calls.append(k)):
+            self.flow(settings=_settings(offline=False, ai_enabled=False))
+            self.flow(settings=_settings(offline=False, ai_enabled=False))  # xuddi shu message_id
+            self.flow(update=_update(message_id=11), settings=_settings(offline=False, ai_enabled=False))
+        self.assertEqual(calls.count("incoming"), 2)
+
+    def test_first_time_seen_unknown_id_always_counts(self):
+        self.assertTrue(bot._first_time_seen(1, 2, None))
+        self.assertTrue(bot._first_time_seen(1, 2, None))
