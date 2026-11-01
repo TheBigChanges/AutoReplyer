@@ -1024,8 +1024,9 @@ def create_or_reuse_order(user_id: int, token: str, quote: "payments.Quote", sta
         row = cur.fetchone()
         if row is not None:
             return "reused", dict(row)
-        cur.execute("UPDATE payments SET status = 'cancelled' WHERE user_id = %s AND status = 'pending' RETURNING invoice_msg_id", (user_id,))
-        msgs = [r["invoice_msg_id"] for r in cur.fetchall() if r["invoice_msg_id"]]
+        cur.execute("UPDATE payments SET status = 'cancelled' WHERE user_id = %s AND status = 'pending' RETURNING token, invoice_msg_id", (user_id,))
+        cancelled = [(r["token"], r["invoice_msg_id"]) for r in cur.fetchall()]
+        msgs = [m for _, m in cancelled if m]
         cur.execute(
             """
             INSERT INTO payments (token, user_id, kind, plan, months, stars, credit, status, snap_plan, snap_expires, created_at, expires_at)
@@ -1035,7 +1036,7 @@ def create_or_reuse_order(user_id: int, token: str, quote: "payments.Quote", sta
         )
         pid = cur.fetchone()["id"]
         _audit(cur, user_id, pid, "order_created", f"{quote.kind} {quote.target} {quote.months}m stars={quote.pay} credit={quote.credit}", now)
-        return "created", {"id": pid, "cancelled_msgs": msgs}
+        return "created", {"id": pid, "cancelled_msgs": msgs, "cancelled": cancelled}
 
     return _run_tx(work)
 
@@ -1097,8 +1098,8 @@ def get_reusable_order(user_id: int, plan: str, months: int, stars: int, snap_pl
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             f"SELECT {_PAYMENT_COLS} FROM payments WHERE user_id = %s AND status = 'pending' AND plan = %s AND months = %s AND stars = %s "
-            "AND expires_at > %s AND invoice_msg_id IS NOT NULL AND snap_plan = %s AND snap_expires IS NOT DISTINCT FROM %s ORDER BY id DESC LIMIT 1",
-            (user_id, plan, months, stars, now, snap_plan, snap_expires),
+            "AND expires_at > %s AND (invoice_msg_id IS NOT NULL OR created_at > %s) AND snap_plan = %s AND snap_expires IS NOT DISTINCT FROM %s ORDER BY id DESC LIMIT 1",
+            (user_id, plan, months, stars, now, now - 20.0, snap_plan, snap_expires),
         )
         row = cur.fetchone()
         return dict(row) if row else None
