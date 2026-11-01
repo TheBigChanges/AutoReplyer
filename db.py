@@ -341,6 +341,38 @@ def init_db():
             """
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_analytics_bucket ON analytics_hourly(bucket)")
+        # Smart Inbox Digest (v1.3): faqat suhbat holati (xabar MATNI saqlanmaydi). Sozlamalar alohida jadvalda — faqat egasi
+        # roziligi bilan (enabled=FALSE standart) kuzatiladi.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inbox_settings (
+                owner_user_id BIGINT PRIMARY KEY,
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                notify BOOLEAN NOT NULL DEFAULT TRUE,
+                digest_minutes INTEGER NOT NULL DEFAULT 1200,
+                last_digest_date TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inbox_chats (
+                owner_user_id BIGINT NOT NULL,
+                chat_id BIGINT NOT NULL,
+                customer_name TEXT NOT NULL DEFAULT '',
+                last_customer_msg_id BIGINT NOT NULL DEFAULT 0,
+                last_owner_msg_id BIGINT NOT NULL DEFAULT 0,
+                pending BOOLEAN NOT NULL DEFAULT FALSE,
+                pending_count INTEGER NOT NULL DEFAULT 0,
+                waiting_since DOUBLE PRECISION,
+                last_customer_at DOUBLE PRECISION,
+                last_owner_at DOUBLE PRECISION,
+                PRIMARY KEY (owner_user_id, chat_id)
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_inbox_pending ON inbox_chats(owner_user_id, pending, waiting_since)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_inbox_last_customer ON inbox_chats(last_customer_at)")
         # Smart Auto-Reply Scheduler: haftalik jadvallar (days — bitmask, 0-bit = Dushanba; text NULL = standart matn)
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS scheduler_enabled BOOLEAN NOT NULL DEFAULT TRUE")
         cur.execute(
@@ -2595,6 +2627,149 @@ def get_name_clock_base(owner_user_id: int):
 
 
 # --------------------------------------------------------------------------
+# Smart Inbox Digest (v1.3)
+# --------------------------------------------------------------------------
+INBOX_RETENTION_DAYS = 14
+INBOX_DEFAULT_MINUTES = 20 * 60
+INBOX_NAME_MAX = 64
+
+
+def get_inbox_settings(owner_id: int) -> dict:
+    """Smart Inbox sozlamalari (qator yo'q bo'lsa — standart: o'chiq, eslatma yoqiq, 20:00)."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT enabled, notify, digest_minutes, last_digest_date FROM inbox_settings WHERE owner_user_id = %s", (owner_id,))
+        row = cur.fetchone()
+    if row is None:
+        return {"enabled": False, "notify": True, "digest_minutes": INBOX_DEFAULT_MINUTES, "last_digest_date": None}
+    return dict(row)
+
+
+def set_inbox_settings(owner_id: int, **fields) -> None:
+    """enabled / notify / digest_minutes (whitelist). O'chirilganda (enabled=False) kuzatilgan suhbatlar ham o'chiriladi."""
+    allowed = {"enabled", "notify", "digest_minutes"}
+    if not fields or set(fields) - allowed:
+        raise ValueError("Noto'g'ri inbox sozlamasi")
+    if "digest_minutes" in fields and not (0 <= int(fields["digest_minutes"]) < 1440):
+        raise ValueError("digest_minutes 0..1439 bo'lishi kerak")
+    cols = list(fields)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO inbox_settings (owner_user_id, {', '.join(cols)}) VALUES (%s, {', '.join(['%s'] * len(cols))}) "
+            f"ON CONFLICT (owner_user_id) DO UPDATE SET {', '.join(f'{c} = EXCLUDED.{c}' for c in cols)}",
+            (owner_id, *[fields[c] for c in cols]),
+        )
+        if fields.get("enabled") is False:
+            cur.execute("DELETE FROM inbox_chats WHERE owner_user_id = %s", (owner_id,))
+
+
+def inbox_enabled(owner_id: int) -> bool:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT enabled FROM inbox_settings WHERE owner_user_id = %s", (owner_id,))
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def record_customer_message(owner_id: int, chat_id: int, message_id: int, name: str | None, now: float | None = None) -> bool:
+    """Mijoz xabarini yozadi. IDEMPOTENT: xabar ID'si oxirgi yozilganidan katta bo'lsagina hisoblanadi (takroriy update,
+    qayta ishga tushish yoki eski xabar statistikani oshirmaydi). Egasi bu xabardan KEYIN javob bergan bo'lsa (ID kattaroq) —
+    suhbat javobsiz bo'lib qolmaydi. True — xabar hisoblandi."""
+    now = time.time() if now is None else now
+    name = (name or "").strip()[:INBOX_NAME_MAX]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO inbox_chats (owner_user_id, chat_id, customer_name, last_customer_msg_id, pending, pending_count, waiting_since, last_customer_at)
+            VALUES (%s, %s, %s, %s, TRUE, 1, %s, %s)
+            ON CONFLICT (owner_user_id, chat_id) DO UPDATE SET
+                customer_name = CASE WHEN EXCLUDED.customer_name <> '' THEN EXCLUDED.customer_name ELSE inbox_chats.customer_name END,
+                last_customer_msg_id = EXCLUDED.last_customer_msg_id,
+                last_customer_at = EXCLUDED.last_customer_at,
+                pending = (inbox_chats.last_owner_msg_id < EXCLUDED.last_customer_msg_id),
+                pending_count = CASE WHEN inbox_chats.last_owner_msg_id < EXCLUDED.last_customer_msg_id
+                                     THEN (CASE WHEN inbox_chats.pending THEN inbox_chats.pending_count + 1 ELSE 1 END) ELSE 0 END,
+                waiting_since = CASE WHEN inbox_chats.last_owner_msg_id < EXCLUDED.last_customer_msg_id
+                                     THEN (CASE WHEN inbox_chats.pending THEN inbox_chats.waiting_since ELSE EXCLUDED.waiting_since END) ELSE NULL END
+            WHERE inbox_chats.last_customer_msg_id < EXCLUDED.last_customer_msg_id
+            RETURNING 1
+            """,
+            (owner_id, chat_id, name, message_id, now, now),
+        )
+        return cur.fetchone() is not None
+
+
+def record_owner_reply(owner_id: int, chat_id: int, message_id: int, now: float | None = None) -> bool:
+    """Egasining SHAXSIY javobi: suhbat javobsizlar ro'yxatidan chiqadi (faqat javob ID'si oxirgi mijoz xabaridan katta bo'lsa —
+    kechikib kelgan eski javob yangi mijoz xabarini yopib qo'ymasin). Bot avtojavoblari bu yerga yuborilmaydi."""
+    now = time.time() if now is None else now
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE inbox_chats SET
+                last_owner_msg_id = GREATEST(last_owner_msg_id, %s),
+                last_owner_at = %s,
+                pending = CASE WHEN %s > last_customer_msg_id THEN FALSE ELSE pending END,
+                pending_count = CASE WHEN %s > last_customer_msg_id THEN 0 ELSE pending_count END,
+                waiting_since = CASE WHEN %s > last_customer_msg_id THEN NULL ELSE waiting_since END
+            WHERE owner_user_id = %s AND chat_id = %s
+            RETURNING pending
+            """,
+            (message_id, now, message_id, message_id, message_id, owner_id, chat_id),
+        )
+        row = cur.fetchone()
+    return row is not None and row[0] is False
+
+
+def get_pending_chats(owner_id: int, limit: int, now: float | None = None) -> tuple[int, list]:
+    """(javobsiz suhbatlar soni, eng uzoq kutayotgan `limit` tasi). 14 kundan eski suhbatlar hisobga olinmaydi."""
+    now = time.time() if now is None else now
+    cutoff = now - INBOX_RETENTION_DAYS * 86400
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM inbox_chats WHERE owner_user_id = %s AND pending AND last_customer_at >= %s",
+            (owner_id, cutoff),
+        )
+        total = cur.fetchone()["n"]
+        cur.execute(
+            "SELECT chat_id, customer_name, pending_count, waiting_since FROM inbox_chats "
+            "WHERE owner_user_id = %s AND pending AND last_customer_at >= %s ORDER BY waiting_since ASC, chat_id ASC LIMIT %s",
+            (owner_id, cutoff, max(0, limit)),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    return total, rows
+
+
+def list_inbox_owners() -> list:
+    """Smart Inbox yoqilgan va eslatmalari ochiq egalar."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT owner_user_id, digest_minutes, last_digest_date FROM inbox_settings WHERE enabled AND notify ORDER BY owner_user_id")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def claim_inbox_digest(owner_id: int, date_str: str) -> bool:
+    """Shu kun uchun xulosani ATOMIK band qiladi (bir kunda bir marta yuborish: parallel job'lar/qayta ishga tushish ikki marta yubormaydi)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE inbox_settings SET last_digest_date = %s WHERE owner_user_id = %s AND enabled AND notify "
+            "AND (last_digest_date IS NULL OR last_digest_date <> %s) RETURNING 1",
+            (date_str, owner_id, date_str),
+        )
+        return cur.fetchone() is not None
+
+
+def release_inbox_digest(owner_id: int, date_str: str) -> None:
+    """Xulosa aniq yuborilmagan bo'lsa (rad etildi) — band qilingan kunni qaytaradi (keyingi daqiqada qayta uriniladi)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE inbox_settings SET last_digest_date = NULL WHERE owner_user_id = %s AND last_digest_date = %s", (owner_id, date_str))
+
+
+def purge_old_inbox(max_age_days: int = INBOX_RETENTION_DAYS) -> int:
+    cutoff = time.time() - max_age_days * 86400
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM inbox_chats WHERE COALESCE(last_customer_at, last_owner_at, 0) < %s", (cutoff,))
+        return cur.rowcount
+
+
+# --------------------------------------------------------------------------
 # Ulanish uzilsa — bitta qayta urinish (Supabase/tarmoq vaqtinchalik uzishi uchun)
 # --------------------------------------------------------------------------
 def retry_on_disconnect(fn):
@@ -2618,7 +2793,7 @@ for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
     "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_user_plan_state", "get_payment", "get_payment_by_charge", "list_user_payments", "list_recent_payments", "list_unprocessed_payment_events", "get_payment_recon_mark", "get_faq_entry", "count_faq_entries",
-    "get_analytics_rows", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
+    "get_analytics_rows", "get_inbox_settings", "inbox_enabled", "get_pending_chats", "list_inbox_owners", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
