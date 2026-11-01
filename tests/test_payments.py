@@ -676,6 +676,7 @@ class GateBypassTests(BotBase):
         upd.effective_user.is_bot = False
         upd.effective_chat.type = "private"
         upd.message.text = None
+        upd.message.chat.type = "private"
         upd.message.reply_text = AsyncMock()
         upd.message.successful_payment = MagicMock() if paid else None
         return upd
@@ -1255,6 +1256,7 @@ class AuditRound3Tests(BotBase):
         upd.effective_user.is_bot = False
         upd.effective_chat.type = "private"
         upd.message.text = text
+        upd.message.chat.type = "private"
         upd.message.successful_payment = None
         upd.message.reply_text = AsyncMock()
         return upd
