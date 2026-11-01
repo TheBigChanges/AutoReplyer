@@ -1130,6 +1130,16 @@ T: dict[str, dict] = {
         "Счёт по этому заказу уже отправлен. Если вы его не видите в чате (например, удалили), отправьте повторно или отмените заказ.",
     ),
     "btn_pay_resend": _("🔁 Qayta yuborish", "🔁 Resend", "🔁 Отправить снова"),
+    "pay_err_in_progress": _(
+        "Bu buyurtma uchun to'lov hozir jarayonda. 1-2 daqiqa kuting; to'lov o'tmasa, qayta urinib ko'ring.",
+        "A payment for this order is already in progress. Wait 1-2 minutes; if it doesn't go through, try again.",
+        "Оплата этого заказа уже в процессе. Подождите 1–2 минуты; если не прошла — повторите.",
+    ),
+    "pay_duplicate_refunded": _(
+        "Bir xil buyurtma uchun ikki marta to'lov qilgansiz. Tarif bir marta berildi, ortiqcha {stars} ⭐ avtomatik qaytarildi.",
+        "You paid twice for the same order. The plan was granted once, and the extra {stars} ⭐ was refunded automatically.",
+        "Вы заплатили дважды за один заказ. Тариф выдан один раз, лишние {stars} ⭐ автоматически возвращены.",
+    ),
     "pay_rate_limited": _(
         "Juda ko'p urinish. Bir necha daqiqadan keyin qayta urinib ko'ring.",
         "Too many attempts. Please try again in a few minutes.",
