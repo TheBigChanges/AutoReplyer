@@ -265,6 +265,7 @@ def _msg_update(user_id=TARGET, text="salom"):
     update.effective_user.username = "example"
     update.effective_user.full_name = "Ex Ample"
     update.message.text = text
+    update.message.chat.type = "private"
     update.message.successful_payment = None
     update.message.reply_text = AsyncMock()
     return update
@@ -639,3 +640,54 @@ class TestEndToEndThroughRealDispatcher(_BaseCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPrivateChatOnly(unittest.TestCase):
+    """Bot handlerlari faqat shaxsiy chatdagi xabarlarni qabul qiladi: guruh xabari holatni o'zgartirmasin."""
+
+    @staticmethod
+    def _update(chat_type, text="Yangi matn", user_id=42, entities=None):
+        from datetime import datetime, timezone
+        from telegram import Chat, Message, Update, User
+        chat = Chat(id=(user_id if chat_type == "private" else -1001), type=chat_type)
+        user = User(id=user_id, first_name="U", is_bot=False)
+        msg = Message(message_id=1, date=datetime.now(timezone.utc), chat=chat, from_user=user, text=text, entities=entities)
+        upd = Update(update_id=1, message=msg)
+        from types import SimpleNamespace
+        b = SimpleNamespace(username="testbot")  # CommandHandler faqat bot username'ini o'qiydi
+        msg.set_bot(b)
+        upd.set_bot(b)
+        return upd
+
+    def _matching(self, update):
+        app = bot.build_app()
+        hit = []
+        for group, handlers in app.handlers.items():
+            for h in handlers:
+                if getattr(h.callback, "__name__", "") in ("block_gate", "subscribe_gate", "on_raw_update"):
+                    continue
+                if h.check_update(update):
+                    hit.append(h.callback.__name__)
+        return hit
+
+    def test_group_message_does_not_change_pending_autoreply_text(self):
+        self.assertEqual(self._matching(self._update("supergroup")), [])
+        self.assertIn("on_text", self._matching(self._update("private")))
+
+    def test_group_start_does_not_register_private_bot_user(self):
+        from telegram import MessageEntity
+        ent = [MessageEntity(type="bot_command", offset=0, length=6)]
+        self.assertEqual(self._matching(self._update("group", text="/start", entities=ent)), [])
+        self.assertIn("cmd_start", self._matching(self._update("private", text="/start", entities=ent)))
+
+    def test_admin_broadcast_content_ignores_group_messages(self):
+        self.assertNotIn("on_admin_broadcast_content", self._matching(self._update("supergroup")))
+        self.assertIn("on_admin_broadcast_content", self._matching(self._update("private")))
+
+    def test_block_gate_ignores_group_messages(self):
+        update = _msg_update()
+        update.message.chat.type = "supergroup"
+        with patch.object(db, "get_block", return_value={"reason": "x"}), \
+                patch.object(bot, "handle_blocked_update", AsyncMock()) as h:
+            asyncio.run(bot.block_gate(update, MagicMock()))
+        h.assert_not_awaited()
