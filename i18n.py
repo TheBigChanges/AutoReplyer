@@ -1125,10 +1125,11 @@ T: dict[str, dict] = {
         "Сетевая ошибка: счёт мог дойти — проверьте чат. Если нет, повторите через минуту.",
     ),
     "pay_invoice_active": _(
-        "Bu buyurtma uchun to'lov hisobi allaqachon yuborilgan — pastdagi xabarga qarang yoki uni bekor qiling.",
-        "The invoice for this order has already been sent — see the message below or cancel it.",
-        "Счёт по этому заказу уже отправлен — посмотрите сообщение ниже или отмените его.",
+        "Bu buyurtma uchun to'lov hisobi allaqachon yuborilgan. Chatda ko'rmasangiz (masalan, o'chirib yuborgan bo'lsangiz) — qayta yuboring yoki buyurtmani bekor qiling.",
+        "An invoice for this order has already been sent. If you can't see it in the chat (for example, you deleted it), resend it or cancel the order.",
+        "Счёт по этому заказу уже отправлен. Если вы его не видите в чате (например, удалили), отправьте повторно или отмените заказ.",
     ),
+    "btn_pay_resend": _("🔁 Qayta yuborish", "🔁 Resend", "🔁 Отправить снова"),
     "pay_rate_limited": _(
         "Juda ko'p urinish. Bir necha daqiqadan keyin qayta urinib ko'ring.",
         "Too many attempts. Please try again in a few minutes.",
