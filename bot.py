@@ -18,6 +18,8 @@ import html
 import logging
 import os
 import re
+import json
+import tempfile
 import threading
 import weakref
 from collections import deque
@@ -5416,6 +5418,9 @@ async def handle_pay_callback(query, context, owner_id: int, data: str):
     if action == "pay_cx":
         await _pay_cancel(query, context, owner_id, parts[1] if len(parts) > 1 else "")
         return
+    if action == "pay_rs":
+        await _pay_resend(query, context, owner_id, parts[1] if len(parts) > 1 else "")
+        return
     try:
         plan = parts[1] if len(parts) > 1 else ""
         months = int(parts[2]) if len(parts) > 2 else 0
@@ -5455,6 +5460,78 @@ async def handle_pay_callback(query, context, owner_id: int, data: str):
             pass
 
 
+async def _send_order_invoice(bot, owner_id: int, lang: str, token: str, plan: str, months: int, stars: int):
+    name = t(lang, "plan_name_" + plan)
+    title = t(lang, "pay_invoice_title", name=name, months=months)
+    return await bot.send_invoice(
+        chat_id=owner_id,
+        title=title,
+        description=t(lang, "pay_invoice_desc", name=name, months=months),
+        payload=token,
+        currency="XTR",
+        prices=[LabeledPrice(title, stars)],
+        provider_token="",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(t(lang, "btn_pay_go", pay=f"{stars} ⭐"), pay=True)],  # invoice'dagi birinchi tugma majburan "to'lash" bo'lishi kerak
+            [InlineKeyboardButton(t(lang, "btn_pay_cancel"), callback_data=f"pay_cx:{token}")],
+        ]),
+    )
+
+
+async def _offer_existing_order(query, context, owner_id: int, order: dict):
+    """Faol buyurtma bor: foydalanuvchi invoice xabarini o'chirib yuborgan bo'lishi mumkin — qayta yuborish yoki bekor qilish taklif etiladi."""
+    lang = get_lang(owner_id)
+    await query.answer()
+    await context.bot.send_message(
+        owner_id, t(lang, "pay_invoice_active"),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(t(lang, "btn_pay_resend"), callback_data=f"pay_rs:{order['token']}"),
+            InlineKeyboardButton(t(lang, "btn_pay_cancel"), callback_data=f"pay_cx:{order['token']}"),
+        ]]),
+    )
+
+
+_pay_resend_at: dict = {}
+PAY_RESEND_COOLDOWN = 3.0
+
+
+async def _pay_resend(query, context, owner_id: int, token: str):
+    """Faol buyurtma uchun invoice'ni QAYTA yuboradi (o'sha buyurtma, o'sha summa); eski invoice xabari o'chiriladi."""
+    lang = get_lang(owner_id)
+    now = time.time()
+    order = db.get_payment(token)
+    if order is None or order["user_id"] != owner_id or order["status"] != "pending" or (order["expires_at"] or 0) <= now or not order["plan"]:
+        await query.answer(t(lang, "pay_err_expired"), show_alert=True)
+        return
+    if now - _pay_resend_at.get(owner_id, 0.0) < PAY_RESEND_COOLDOWN:
+        await query.answer()
+        return
+    _pay_resend_at[owner_id] = now
+    state = db.get_user_plan_state(owner_id)
+    if state.plan != order["snap_plan"] or _snap_exp(state) != (order["snap_expires"] or 0):  # tarif o'zgargan: eski buyurtma to'lanmaydi
+        db.cancel_order(token, owner_id)
+        await query.answer(t(lang, "pay_err_changed"), show_alert=True)
+        return
+    try:
+        invoice = await _send_order_invoice(context.bot, owner_id, lang, token, order["plan"], order["months"], order["stars"])
+    except Exception as e:
+        logger.warning("Invoice qayta yuborilmadi (order=%s): %s", token, e)
+        unknown = isinstance(e, NetworkError) and not isinstance(e, BadRequest)
+        await query.answer(t(lang, "pay_invoice_unknown" if unknown else "pay_invoice_failed"), show_alert=True)
+        return
+    mem = _mem_pop(token)
+    old = order["invoice_msg_id"] or (mem[1] if mem else None)
+    if old:
+        await _delete_message(context.bot, owner_id, old)
+    _mem_set(token, (time.time(), invoice.message_id))
+    await _save_invoice_message(token)
+    await query.answer()
+    try:
+        await query.message.delete()  # taklif xabari endi kerak emas
+    except TelegramError:
+        pass
+
+
 async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown: str):
     lang = get_lang(owner_id)
     now = time.time()
@@ -5470,9 +5547,10 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         await query.edit_message_text(text, reply_markup=markup)
         return
     snap_exp = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
-    if db.get_reusable_order(owner_id, plan, months, q.pay, state.plan, snap_exp, now) is not None:
+    existing = db.get_reusable_order(owner_id, plan, months, q.pay, state.plan, snap_exp, now)
+    if existing is not None:
         # mavjud faol buyurtmani qayta ko'rish yangi buyurtma yaratish limitiga kirmaydi
-        await query.answer(t(lang, "pay_invoice_active"), show_alert=True)
+        await _offer_existing_order(query, context, owner_id, existing)
         return
     if not _pay_rate_ok(owner_id, now, consume=False):
         await query.answer(t(lang, "pay_rate_limited"), show_alert=True)
@@ -5481,29 +5559,16 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
     # Faol buyurtmani topish/yaratish — bazada bitta atomik amal (parallel bosishlar ikkita buyurtma yaratmaydi)
     outcome, info = db.create_or_reuse_order(owner_id, token, q, state, PAYMENT_ORDER_TTL_SECONDS, now)
     if outcome == "reused":
-        await query.answer(t(lang, "pay_invoice_active"), show_alert=True)  # xuddi shu buyurtma uchun invoice allaqachon yuborilgan/yuborilmoqda
+        await _offer_existing_order(query, context, owner_id, info)  # xuddi shu buyurtma uchun invoice allaqachon yuborilgan/yuborilmoqda
         return
     _pay_rate_ok(owner_id, now)  # yangi buyurtma yaratildi: tezlik hisobiga qo'shiladi
     for old_token, mid in info["cancelled"]:  # eski buyurtmalarning invoice xabarlari ham o'chadi (ID bazaga yozilmagan bo'lsa — xotiradan)
-        mid = mid or (_invoice_msgs_mem.pop(old_token, None) or (None, None))[1]
+        mem = _mem_pop(old_token)
+        mid = mid or (mem[1] if mem else None)
         if mid:
             await _delete_message(context.bot, owner_id, mid)
-        _invoice_msgs_mem.pop(old_token, None)
-    name = t(lang, "plan_name_" + plan)
     try:
-        invoice = await context.bot.send_invoice(
-            chat_id=owner_id,
-            title=t(lang, "pay_invoice_title", name=name, months=months),
-            description=t(lang, "pay_invoice_desc", name=name, months=months),
-            payload=token,
-            currency="XTR",
-            prices=[LabeledPrice(t(lang, "pay_invoice_title", name=name, months=months), q.pay)],
-            provider_token="",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(lang, "btn_pay_go", pay=f"{q.pay} ⭐"), pay=True)],  # invoice'dagi birinchi tugma majburan "to'lash" bo'lishi kerak
-                [InlineKeyboardButton(t(lang, "btn_pay_cancel"), callback_data=f"pay_cx:{token}")],
-            ]),
-        )
+        invoice = await _send_order_invoice(context.bot, owner_id, lang, token, plan, months, q.pay)
     except Exception as e:
         logger.warning("send_invoice muvaffaqiyatsiz (order=%s): %s", token, e)
         # Tarmoq uzilishi/timeout: invoice aslida yetib borgan bo'lishi mumkin — buyurtma ochiq qoladi (muddati bilan yopiladi, to'lansa tarif beriladi)
@@ -5518,13 +5583,51 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
         _pay_rate_release(owner_id, now)
         await query.answer(t(lang, "pay_invoice_failed"), show_alert=True)
         return
-    _invoice_msgs_mem[token] = (time.time(), invoice.message_id)  # baza yozuvi muvaffaqiyatsiz bo'lsa ham xotirada qoladi (qayta uriniladi)
+    _mem_set(token, (time.time(), invoice.message_id))  # baza yozuvi muvaffaqiyatsiz bo'lsa ham xotirada va diskda qoladi (qayta uriniladi)
     await _save_invoice_message(token)
     await query.answer()
     await context.bot.send_message(owner_id, t(lang, "pay_invoice_sent", minutes=PAYMENT_ORDER_TTL_SECONDS // 60, token=token))
 
 
 _invoice_msgs_mem: dict = {}  # token -> (yuborilgan vaqt, message_id): bazaga hali yozilmagan invoice xabar ID'lari
+INVOICE_SPOOL_PATH = os.environ.get("INVOICE_SPOOL_PATH") or os.path.join(tempfile.gettempdir(), "autoreplyer_invoice_spool.json")
+_spool_loaded = False
+
+
+def _spool_sync() -> None:
+    """Saqlanmagan invoice ID'larini diskka yozadi (jarayon qayta ishga tushsa ham tiklash uchun). Disk xatosi asosiy oqimga xalaqit bermaydi."""
+    try:
+        tmp = INVOICE_SPOOL_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({k: list(v) for k, v in _invoice_msgs_mem.items()}, f)
+        os.replace(tmp, INVOICE_SPOOL_PATH)
+    except OSError:
+        logger.warning("Invoice ID zaxira faylini yozib bo'lmadi")
+
+
+def _load_invoice_spool(force: bool = False) -> None:
+    global _spool_loaded
+    if _spool_loaded and not force:
+        return
+    _spool_loaded = True
+    try:
+        with open(INVOICE_SPOOL_PATH, encoding="utf-8") as f:
+            for token, item in json.load(f).items():
+                _invoice_msgs_mem.setdefault(token, (float(item[0]), int(item[1])))
+    except (OSError, ValueError, TypeError, IndexError):
+        pass
+
+
+def _mem_set(token: str, item) -> None:
+    _invoice_msgs_mem[token] = item
+    _spool_sync()
+
+
+def _mem_pop(token: str):
+    item = _invoice_msgs_mem.pop(token, None)
+    if item is not None:
+        _spool_sync()
+    return item
 
 
 async def _save_invoice_message(token: str) -> bool:
@@ -5535,7 +5638,7 @@ async def _save_invoice_message(token: str) -> bool:
     for attempt in range(3):
         try:
             db.set_invoice_message(token, item[1])
-            _invoice_msgs_mem.pop(token, None)
+            _mem_pop(token)
             return True
         except Exception:
             logger.warning("Invoice xabar ID'sini saqlab bo'lmadi (order=%s, urinish=%s)", token, attempt + 1)
@@ -5596,8 +5699,8 @@ async def _pay_cancel(query, context, owner_id: int, token: str):
             pass
         return
     await query.answer(t(lang, "pay_cancelled"))
-    _invoice_msgs_mem.pop(token, None)
-    await _delete_message(context.bot, owner_id, row["invoice_msg_id"] or query.message.message_id)
+    mem = _mem_pop(token)
+    await _delete_message(context.bot, owner_id, row["invoice_msg_id"] or (mem[1] if mem else None) or query.message.message_id)
 
 
 async def _pay_switch(query, context, owner_id: int, plan: str, months: int, snap):
@@ -5739,9 +5842,10 @@ async def payment_retry_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def payment_orders_job(context: ContextTypes.DEFAULT_TYPE):
+    _load_invoice_spool()  # server qayta ishga tushgan bo'lsa — diskdagi saqlanmagan invoice ID'lari tiklanadi
     for token, (sent_at, _mid) in list(_invoice_msgs_mem.items()):  # saqlanmay qolgan invoice xabar ID'larini qayta yozish
         if time.time() - sent_at > PAYMENT_ORDER_TTL_SECONDS * 2:
-            _invoice_msgs_mem.pop(token, None)
+            _mem_pop(token)
         else:
             await _save_invoice_message(token)
     try:
@@ -5750,8 +5854,8 @@ async def payment_orders_job(context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Eskirgan buyurtmalarni yopishda xato")
         return
     for row in expired:  # muddati o'tgan invoice: to'lov tugmasi yo'qoladi va foydalanuvchiga aytiladi
-        mid = row.get("invoice_msg_id") or (_invoice_msgs_mem.get(row["token"]) or (None, None))[1]
-        _invoice_msgs_mem.pop(row["token"], None)
+        mem = _mem_pop(row["token"])
+        mid = row.get("invoice_msg_id") or (mem[1] if mem else None)
         if mid:
             await _delete_message(context.bot, row["user_id"], mid)
         await _try_send(context.bot, row["user_id"], t(get_lang(row["user_id"]), "pay_order_expired", minutes=PAYMENT_ORDER_TTL_SECONDS // 60))
