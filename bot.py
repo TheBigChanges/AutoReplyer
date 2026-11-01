@@ -2141,21 +2141,30 @@ async def send_faq_reply(bot, bm, owner_id: int, chat_id: int, answer: str, cool
     if not ai_mode:
         await send_auto_reply(bot, bm, owner_id, chat_id, answer, cooldown_hours, label, kind="faq")
         return
-    try:
-        sent = await bot.send_message(
-            chat_id=chat_id, text=with_ad(answer, owner_id), business_connection_id=bm.business_connection_id
-        )
-    except TelegramError as e:
-        logger.warning("FAQ javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
-        return
+    # AI rejimida cooldown yo'q (ketma-ket savollarga javob beriladi), shuning uchun takroriy update'dan himoya
+    # aniq kiruvchi xabar ID'si bo'yicha: bir xabarga bitta FAQ javobi; yangi xabarlar cheklanmaydi.
+    incoming_id = getattr(bm, "message_id", None)
+    async with _chat_lock(owner_id, chat_id):
+        if _ai_answered_message(owner_id, chat_id, incoming_id):
+            return
+        try:
+            sent = await bot.send_message(
+                chat_id=chat_id, text=with_ad(answer, owner_id), business_connection_id=bm.business_connection_id
+            )
+        except TelegramError as e:
+            if _send_outcome_unknown(e):
+                _mark_ai_answered(owner_id, chat_id, incoming_id)  # yetib borgan bo'lishi mumkin: takroriy yuborilmaydi
+            logger.warning("FAQ javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
+            return
+        _mark_ai_answered(owner_id, chat_id, incoming_id)
     _remember_sent(chat_id, sent)
     track_analytics(owner_id, "faq")
     logger.info("faq reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
 
 
 async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings: dict, fallback_text: str, label: str):
-    incoming_id = getattr(bm, "message_id", None)
     """AI javobini yaratib yuboradi. Limit tugasa yoki xato bo'lsa — odatiy matnli avtojavob (zaxira)."""
+    incoming_id = getattr(bm, "message_id", None)
     business_connection_id = bm.business_connection_id
     day = str(today_tashkent())
     unlimited = bool(ADMIN_ID) and owner_id == ADMIN_ID
