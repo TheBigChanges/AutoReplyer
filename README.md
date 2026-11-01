@@ -2,9 +2,9 @@
 
 # 🤖 AutoReplyer
 
-### Smart Telegram Business auto-replies, keyword automation rules, weekly scheduling, personal AI knowledge and clear analytics.
+### Telegram Business auto-replies, Automation Engine v1.2, smart scheduling, AI knowledge, analytics and Telegram Stars payments.
 
-**Built with Python · Telegram Business · PostgreSQL · Google Gemini · Matplotlib**
+**Built with Python · Telegram Business · PostgreSQL · Google Gemini · Matplotlib · Telegram Stars**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Telegram](https://img.shields.io/badge/Telegram-Try%20the%20bot-26A5E4?logo=telegram&logoColor=white)](https://t.me/autoreplyer_dbot)
@@ -24,7 +24,7 @@
 
 **AutoReplyer** is a Telegram Business automation bot that helps account owners stay responsive when they are away. Connect it through Telegram's official Business bot interface, configure replies and schedules, and optionally enable Gemini-powered AI responses.
 
-It includes **Smart Onboarding**, **Smart FAQ**, **Automation Engine v1.2**, **AI Personal Knowledge**, **Smart Scheduler**, and **AutoReply Analytics** — a built-in dashboard for incoming message counts, reply types and charts. Profile name clocks, BIO countdowns, subscription plans and administrator tools round out the experience.
+It includes **Smart Onboarding**, **Smart FAQ**, **Automation Engine v1.2**, **AI Personal Knowledge**, **Smart Scheduler**, **AutoReply Analytics**, and **Payments v1.0** with Telegram Stars invoices for paid plans. Profile name clocks, BIO countdowns, administrator tools and support flows round out the experience.
 
 **The goal is an auto-reply assistant, not an online shop or order-management system.** You can store information about yourself, your work, availability, services, or even prices as ordinary notes — no product catalogue is required.
 
@@ -41,6 +41,7 @@ It includes **Smart Onboarding**, **Smart FAQ**, **Automation Engine v1.2**, **A
 - [Smart Auto-Reply Scheduler guide](#-smart-auto-reply-scheduler-guide)
 - [How automatic replies are chosen](#-how-automatic-replies-are-chosen)
 - [Plans & pricing](#-plans--pricing)
+- [Telegram Stars Payments v1.0](#-telegram-stars-payments-v10)
 - [Getting started as a user](#-getting-started-as-a-user)
 - [O‘zbekcha qisqa yo‘riqnoma](#-ozbekcha-qisqa-yoriqnoma)
 - [Run your own instance](#-run-your-own-instance)
@@ -72,6 +73,7 @@ It includes **Smart Onboarding**, **Smart FAQ**, **Automation Engine v1.2**, **A
 | 🌍 **3 interface languages** | Uzbek, English, and Russian. AI aims to answer in the sender's language. |
 | 👥 **Referrals** | Generate referral links and track invitations. |
 | 💎 **Subscription plans** | Free, Plus, Pro, and Ultra tiers with feature access restrictions and expiry handling. |
+| ⭐ **Payments v1.0** | Telegram Stars (XTR) invoices for 1/3/6/12-month plans, automatic activation after confirmed payment, plan changes, purchase history, refund administration and payment recovery. |
 | 📢 **Admin broadcasts** | Persistent broadcast jobs, progress tracking, retry of failed deliveries, and resume after restart. |
 | 🛡️ **Moderation & support** | Admin user controls, feedback, appeals, and optional required-channel subscription checks. |
 
@@ -373,7 +375,7 @@ AI-generated replies can be wrong. Never rely on them to commit to prices, appoi
 
 ## 💎 Plans & pricing
 
-Prices below are **the currently configured public bot prices for one month**, in Uzbek soʻm (UZS). They are defined in [`bot.py`](bot.py), so the live bot is the final reference if prices change.
+**UZS amounts below are the plan labels configured in `bot.py`**, not a conversion of Telegram Stars. The in-bot Stars checkout has a **separate XTR price table**, defined in `payments.py` and documented in [Payments v1.0](#-telegram-stars-payments-v10). Always confirm the checkout amount shown by the bot before purchasing.
 
 | Included feature | 🆓 Free | ⏰ Plus | ✨ Pro | ⭐ Ultra |
 |---|:---:|:---:|:---:|:---:|
@@ -406,9 +408,70 @@ Prices below are **the currently configured public bot prices for one month**, i
 
 *The administrator has a configured exception to the AI daily reply quota; Telegram and Gemini limits still apply.*
 
-**Payment flow:** The bot displays payment details configured by the operator. Users submit proof of payment to the administrator, who activates the selected plan. Plan durations and expiration are handled by the bot; this is **manual verification**, not an automated payment gateway. Payment options for international users may vary.
+**Payment flow:** Telegram Stars is the automatic in-bot checkout when `PAYMENTS_STARS_ENABLED` is enabled (the default). After a verified `successful_payment`, the bot activates the subscription. The older card/admin-assisted UI is preserved in code but **disabled by default** (`PAYMENTS_CARD_ENABLED=0`); `/setplan` remains an administrator-only manual plan-management command. The legacy card route does not automatically verify card payments.
 
 > Plan access does not remove Telegram platform restrictions, Business permission requirements, or external Gemini API rate limits. Prices are not automatically converted into other currencies.
+
+## ⭐ Telegram Stars Payments v1.0
+
+Payments v1.0 is implemented in [`payments.py`](payments.py) (prices and subscription arithmetic), [`bot.py`](bot.py) (Telegram invoice/checkout/refund handlers and scheduled jobs) and [`db.py`](db.py) (PostgreSQL payment records and transactions). It sells the bot's **digital subscription plans** through **Telegram Stars (XTR)**. These are **one-time purchases for a selected duration**, not automatically recurring charges.
+
+### 💳 Stars prices and duration discounts
+
+The source of truth is `STARS_PRICE_1M` and `DURATION_DISCOUNT` in [`payments.py`](payments.py). The code rounds percentage-discounted totals to the nearest whole Star, with half values rounded upward.
+
+| Duration | Discount | Plus | Pro | Ultra |
+|---|---:|---:|---:|---:|
+| **1 month** | 0% | **15 ⭐** | **35 ⭐** | **70 ⭐** |
+| **3 months** | 10% | **41 ⭐** | **95 ⭐** | **189 ⭐** |
+| **6 months** | 15% | **77 ⭐** | **179 ⭐** | **357 ⭐** |
+| **12 months** | 20% | **144 ⭐** | **336 ⭐** | **672 ⭐** |
+
+The UZS labels in the [plan comparison](#-plans--pricing) are configured independently in `bot.py`; **the application does not convert UZS to XTR**. The Free tier requires no payment.
+
+### 🛒 How the Stars purchase works
+
+1. Open **Plans** in the bot, select **Plus**, **Pro**, or **Ultra**, and choose **Buy with Stars** (or renew the current tier). If enabled, the bot offers 1-, 3-, 6-, and 12-month options when a paid purchase is required.
+2. Review the price, applicable credit from an active plan, and estimated expiry date. A lower-tier switch is shown separately without a new Stars payment when remaining subscription value can be carried over.
+3. Confirm the quote. The bot creates or reuses a PostgreSQL order, then sends a Telegram `send_invoice` message with `currency="XTR"`. The invoice has a **Pay** button and a **Cancel** button.
+4. Telegram sends a `pre_checkout_query`. The bot validates the pending order, buyer, currency, Stars amount, expiry and original plan snapshot **before approving checkout**. Pre-checkout alone **never** grants a plan.
+5. Only a `successful_payment` event triggers paid-plan activation. The bot checks the payment against stored order data and records the Telegram `telegram_payment_charge_id` to prevent repeat activation of the same charge.
+6. A pending invoice/order is valid for **15 minutes**; the scheduled expiry job closes overdue orders. Users may cancel a pending invoice from its message.
+
+If Telegram refuses to send an invoice, the bot cancels the newly created order and releases its rate-limit attempt. If the network fails and the delivery outcome is unknown, the pending order is retained temporarily because the invoice **might** have been delivered; check the chat before trying again.
+
+### 🔄 Renewal, upgrades and downgrades
+
+These behaviors come from [`payments.py`](payments.py) and the transaction logic in [`db.py`](db.py):
+
+- **New subscription:** starts at payment activation and expires after the selected calendar-month duration.
+- **Same-plan renewal:** extends from the existing paid plan's expiry when the plan is still active.
+- **Upgrade:** applies the remaining value of the current plan as a Stars credit against the higher-tier quote. If credit covers the price, the switch may be completed **without another payment**; otherwise an invoice is issued for the difference.
+- **Downgrade:** needs no new Stars charge; remaining value is converted into time on the lower-priced plan. The interface skips month selection and displays the calculated duration.
+- **Plan changed while an invoice was open:** the server checks the current plan again when processing the successful payment and uses its state-change handling rather than simply overwriting the subscription shown when the invoice was created.
+- **Admin-issued plans:** `/setplan` sets/replaces a plan independently; it does **not** perform a Telegram Stars charge. An active paid plan with **no expiry** cannot be purchased over through the normal Stars checkout.
+
+Subscription value transfers and refunds have special handling for overlapping purchases and pending operations. Read the source and tests for accounting behavior; the bot does not promise cash refunds for unused time when a user simply changes plans.
+
+### ↩️ Refunds and payment support
+
+- **`/paysupport` — all users:** provides payment-support information and recent payment history. It remains available even when the account is blocked or has left a required subscription channel.
+- **`/payments` — admin only:** displays recent payment records and the number of pending orders.
+- **`/refund <charge_id|order_token>` — admin only:** requests a Telegram Stars refund through `refund_star_payment`, then updates the payment state and the applicable unused subscription value if the refund succeeds.
+- **`/setplan <user> <plan> [duration]` — admin only:** remains available for manual plan administration and support; it is not a card-payment verification API.
+
+An unmatched successful charge (for example, an amount/order mismatch) is recorded for review **without granting a plan**, so the administrator can investigate and refund it. Refunds are not a self-service button. Telegram/network/database errors may require reconciliation or manual administrator attention.
+
+### 🗄️ Reliability, database records and limits
+
+- `payments` stores orders, plan changes, Stars amount, status, invoice message ID, charge ID, and purchase-value tracking fields.
+- `payment_inbox` stores unprocessed payment notifications; `payment_audit` records payment actions, and `payment_recon` stores the last successful Telegram transaction reconciliation marker.
+- Payment activation uses PostgreSQL transactions and a unique `charge_id`. An in-memory retry queue supplements the persistent inbox. Restarts and transient failures are handled on a **best-effort recovery** basis; do not treat this as a guarantee of uninterrupted processing.
+- Scheduled jobs retry queued payments **every 30 seconds**, expire pending orders **every 60 seconds**, and compare against Telegram Star transactions **every 30 minutes** (after their respective initial delays). Reconciliation can also detect external refunds.
+- A user may create at most **5 new invoice orders per 10 minutes** in the in-memory rate limiter; the bot tries to reuse an existing matching active order rather than always creating a second one.
+- `PAYMENTS_STARS_ENABLED=0` disables **new Stars sales**, but reconciliation of previous transactions continues. `PAYMENTS_CARD_ENABLED=0` hides the preserved manual-card display route by default.
+
+**Important:** the legacy card/admin flow is not an automatic payment gateway and is **not the default purchase route**. For digital goods and services inside Telegram, check Telegram's current [Stars payment rules](https://core.telegram.org/bots/payments-stars) and [Bot Developer Terms](https://telegram.org/tos/bot-developers) before enabling alternative checkout methods. Verify real transactions with a test bot and isolated test database before enabling public payments.
 
 ## 📱 Getting started as a user
 
@@ -420,6 +483,7 @@ Prices below are **the currently configured public bot prices for one month**, i
 6. Review the auto-reply text and tap **Turn on Auto-Reply** to enable it with your consent.
 7. Send a test message **from another Telegram account** in a chat you authorized; select **Reply arrived** only if you actually receive a reply, or **No reply** for troubleshooting.
 8. Use the control panel for **Sleep Mode**, **Smart FAQ** (Plus/Pro/Ultra), **🧩 Automation Engine** (Plus/Pro/Ultra), **AI Personal Knowledge** (Ultra), **📅 Smart Scheduler** (weekly reply windows), **📊 Analytics** (today on Free; 7/30-day views and charts on paid plans), the **profile clock**, **BIO countdown**, and other plan-specific features.
+9. To purchase a paid tier, select it in **Plans → Buy with Stars** (if enabled), choose a duration, and confirm the Telegram Stars invoice. For a payment problem, send `/paysupport`; payment support does not require access to premium bot features.
 
 **Want to set it up later?** Use **Skip** at any step. A **Continue setup** button appears in the main menu for users who skipped. Existing accounts are not forced into a new setup wizard.
 
@@ -439,9 +503,10 @@ For feature announcements, visit **[@AutoReplyer_News](https://t.me/AutoReplyer_
 6. **📅 Smart Jadval** orqali kun va vaqtni tanlang, masalan, ish kunlari `09:00-18:00`. Jadval tugagach avvalgi Online/Offline sozlamalari ishlaydi. Free — 1 ta, Plus — 3 ta, Pro — 10 ta, Ultra — 30 ta jadval.
 7. **🧩 Avtomatlashtirish (Automation Engine v1.2)** — Plus: **2 ta**, Pro: **10 ta**, Ultra: **30 ta** qoida. Plus'da bitta kalit so‘z, Pro/Ultra'da **2–5 ta kalit so‘z (YOKI/OR)** va ixtiyoriy **kun/vaqt (VA/AND)** shartlari mavjud. Masalan, `narx*, qancha, price` so‘zlaridan istalgani mos kelsa javob yuboriladi. `narx*` prefiksi `narx`, `narxi` va `narxlar`ga mos keladi. Qoidalarni tahrirlash (nom, kalit so‘z, javob, ustuvorlik; mos tarifda kun/vaqt) va statistikasini ko‘rish mumkin. Qoidalar oddiy Oflayn rejimda ishlaydi; Sleep Mode va faol Smart Jadvalda ishlamaydi.
 8. **📊 Statistika** tugmasi orqali kelgan xabarlar, **Automation** va boshqa javob turlari hamda eng faol vaqtni kuzating. **Free — bugun; Plus — 7 kun; Pro/Ultra — 30 kun**. Grafiklar Plus'dan, batafsil hisobot Ultra'dan boshlanadi. Automation bo‘limida qoida bo‘yicha javoblar soni va o‘chirilgan qoidalar hisobga olingan tarixiy jami ham ko‘rsatiladi.
-9. **Parol, karta yoki pasport ma’lumotlarini kiritmang.** AI javoblari xato qilishi mumkin.
+9. **⭐ Payments v1.0:** pullik tarifni **Tariflar** bo‘limida tanlang, **Stars orqali sotib olish** tugmasini bosing va 1/3/6/12 oy muddatdan birini tanlang (zarur bo‘lsa). Narxlar Plus uchun 15 ⭐, Pro uchun 35 ⭐, Ultra uchun 70 ⭐ dan boshlanadi; uzoq muddatlarga chegirma bor. To‘lov tasdiqlangach tarif avtomatik faollashadi. To‘lov bo‘yicha savol uchun `/paysupport` ishlaydi.
+10. **Telegram paroli, kirish kodi yoki pasport ma’lumotlarini botga bermang.** AI javoblari xato qilishi mumkin.
 
-Ilova menyulari Telegram versiyasiga qarab farq qilishi mumkin. Batafsil ma’lumot: [Smart Onboarding](#-smart-onboarding-first-time-setup) · [Smart FAQ](#-smart-faq-guide) · [AI Shaxsiy Bilimlar](#-ai-personal-knowledge-guide) · [AutoReply Analytics](#-autoreply-analytics-guide) · [Smart Scheduler](#-smart-auto-reply-scheduler-guide) · [Automation Engine](#-automation-engine-v12-guide).
+Ilova menyulari Telegram versiyasiga qarab farq qilishi mumkin. Batafsil ma’lumot: [Smart Onboarding](#-smart-onboarding-first-time-setup) · [Smart FAQ](#-smart-faq-guide) · [AI Shaxsiy Bilimlar](#-ai-personal-knowledge-guide) · [AutoReply Analytics](#-autoreply-analytics-guide) · [Smart Scheduler](#-smart-auto-reply-scheduler-guide) · [Automation Engine](#-automation-engine-v12-guide) · [Stars Payments](#-telegram-stars-payments-v10).
 
 ## 🛠️ Run your own instance
 
@@ -501,13 +566,17 @@ BOT_USERNAME=your_bot_username_without_at
 
 # Gemini (optional; only needed for AI)
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_MODEL=gemini-2.5-flash
 
 # Optional Telegram channel membership gate: set both or neither
 REQUIRED_CHANNEL_ID=
 REQUIRED_CHANNEL_LINK=
 
-# Manual payment information shown by the bot (optional)
+# Payments v1.0 — Telegram Stars checkout is enabled by default
+PAYMENTS_STARS_ENABLED=1
+# Legacy manual-card display is disabled by default (see Telegram rules)
+PAYMENTS_CARD_ENABLED=0
+# Only if maintaining a separately compliant legacy/manual route:
 PAYMENT_CARD_NUMBER=
 PAYMENT_CARD_HOLDER=
 
@@ -520,11 +589,12 @@ PORT=10000
 
 **Notes:**
 
-- `GEMINI_MODEL=gemini-3.1-flash-lite` is **only a configuration example**, not a guarantee of the live instance's current model. Use a model available to your own Gemini API project. If `GEMINI_MODEL` is omitted, the current source code defaults to `gemini-2.5-flash`.
+- `GEMINI_MODEL=gemini-2.5-flash` matches the current code default; model availability and the production instance's configuration depend on your own Gemini API project.
 - `ADMIN_ID` should be a numeric Telegram user ID, not a username. Without a correctly set admin ID, privileged commands will not work as intended.
 - Use a valid Supabase PostgreSQL connection string if you use Supabase. Follow your provider's SSL and pooling guidance; do not publish the URL.
 - Set **both** required-channel variables to turn on the membership gate. Your bot needs suitable channel permissions to check membership.
-- Do **not** publish payment card details in your repository. Set them in the hosting environment. **Set `PAYMENT_CARD_HOLDER` explicitly when configuring `PAYMENT_CARD_NUMBER`**: the current code contains an operator-specific fallback name that may be inappropriate for a separate installation. Payment activation is handled by the bot operator.
+- **Stars checkout:** `PAYMENTS_STARS_ENABLED` defaults to enabled. `PAYMENTS_CARD_ENABLED` defaults to disabled. The older manual-card display code is retained for operator-managed legacy use; it does not verify card transfers or grant plans automatically. **Do not enable an alternative in-bot digital subscription checkout without checking Telegram's Stars rules.**
+- Do **not** publish payment card details in your repository. If maintaining the legacy route, set `PAYMENT_CARD_NUMBER` and `PAYMENT_CARD_HOLDER` explicitly in the hosting environment; the current code has an operator-specific fallback holder name. `/setplan` is a separate admin-only command.
 - This repository is configured for the public **@autoreplyer_dbot** instance. If you run an independent fork, review hard-coded support links/usernames in `bot.py` and substitute your own.
 
 ### 5. Start the bot
@@ -549,8 +619,10 @@ On startup, the bot initializes PostgreSQL tables, starts polling, schedules rec
 | `GEMINI_MODEL` | Gemini model ID; code default `gemini-2.5-flash` | Optional |
 | `REQUIRED_CHANNEL_ID` | Channel ID/username for membership gate | Optional, paired |
 | `REQUIRED_CHANNEL_LINK` | Public/invite link for membership gate | Optional, paired |
-| `PAYMENT_CARD_NUMBER` | Operator's manual payment card | Optional |
-| `PAYMENT_CARD_HOLDER` | Displayed payment recipient; **set explicitly if a card number is configured** | Recommended when card payments are shown |
+| `PAYMENTS_STARS_ENABLED` | Enable new Telegram Stars invoices and plan purchases; default **on**. Existing-payment reconciliation runs independently. | Optional |
+| `PAYMENTS_CARD_ENABLED` | Show the preserved legacy manual-card/admin route; default **off**. Review Telegram's digital-goods payment rules first. | Optional |
+| `PAYMENT_CARD_NUMBER` | Legacy manual payment card displayed only when its route is enabled | Optional |
+| `PAYMENT_CARD_HOLDER` | Displayed legacy recipient; **set explicitly if enabling the manual-card route** | Optional for that legacy route |
 | `NAME_CLOCK_PUBLIC` | `0` restricts name clock to admin | Optional |
 | `PORT` | HTTP health server port, default `10000` | Host-dependent |
 
@@ -573,66 +645,70 @@ The current entrypoint runs **Telegram long polling** and starts a lightweight H
    python bot.py
    ```
 
-4. Add `BOT_TOKEN`, `DATABASE_URL`, `ADMIN_ID` and any optional variables in **Environment**.
+4. Add `BOT_TOKEN`, `DATABASE_URL`, `ADMIN_ID` and any optional variables in **Environment**. For Payments v1.0, Stars sales are enabled by default (`PAYMENTS_STARS_ENABLED=1`), while the legacy card route is disabled by default (`PAYMENTS_CARD_ENABLED=0`).
 5. Use a persistent external PostgreSQL database such as Supabase.
 6. If running as a web service, let Render provide `PORT` and configure a health check at `/` as applicable.
 7. Review logs after deployment. Keep **one polling replica** for a given bot token.
 
-> A successful HTTP health response only means the local health server is responding; it does **not** guarantee Telegram polling, Gemini, or PostgreSQL is currently healthy. Use application logs and provider monitoring for those components. Test new features with an isolated bot and database before deploying to production.
+> A successful HTTP health response only means the local health server is responding; it does **not** guarantee Telegram polling, Gemini, PostgreSQL **or Stars checkout** is currently healthy. Use application logs and provider monitoring for those components. Verify purchase, plan switch, recovery and refund flows with an isolated bot and disposable database before production deployment.
 
 ## 🧱 Architecture & data
 
 ```text
-Telegram users / Business messages
+Telegram users / Telegram Business messages
                 │
                 ▼
-        python-telegram-bot
-                │
-       ┌────────┴─────────┐
+        python-telegram-bot  ◄────► Telegram Bot API / Stars (XTR)
+                │                            │
+       ┌────────┴─────────┐                 invoices / payment events
        │                  │
        ▼                  ▼
     bot.py              ai.py ──► Google Gemini API
-  handlers/jobs      optional AI replies + selected notes
+  handlers/jobs     optional AI replies + selected notes
        │
-       ├── logic.py      (FAQ rules and knowledge retrieval)
-       ├── automation.py (single/OR keyword + optional AND condition matching)
-       ├── i18n.py       (Uzbek / English / Russian)
-       ├── analytics.py  (statistics and Matplotlib charts)
-       ├── Scheduler     (weekly rules in bot.py / logic.py)
+       ├── payments.py  (Stars pricing, subscription value and refunds)
+       ├── logic.py     (FAQ, knowledge and schedule helpers)
+       ├── automation.py (single/OR keyword, optional AND conditions)
+       ├── i18n.py      (Uzbek / English / Russian)
+       ├── analytics.py (statistics and Matplotlib charts)
+       └── Scheduler    (weekly rules in bot.py / logic.py)
        │
        ▼
      db.py ───────────────► PostgreSQL / Supabase
-       │                      settings, plans, connections,
-       │                      FAQ and knowledge_entries,
-       │                      automation_rules (JSONB, priorities, reply counters),
-       │                      automation_deleted_totals / automation_meta,
-       │                      analytics_hourly counters,
-       │                      broadcasts, conversation history
+       │                    users, settings, plans, connections,
+       │                    FAQ and knowledge entries,
+       │                    Automation and scheduler rules,
+       │                    Analytics and AI history, broadcasts,
+       │                    payments, payment_inbox,
+       │                    payment_audit, payment_recon
        ▼
   Render / Python host
 ```
 
 | File | Responsibility |
 |---|---|
-| [`bot.py`](bot.py) | Telegram handlers, Business updates, onboarding, FAQ/Knowledge Base and **Automation v1.2 creation/editing/statistics** panels, Analytics/Scheduler menus, AI routing, plans, jobs, broadcasts, name clock and health server |
-| [`db.py`](db.py) | PostgreSQL schema/init, owner-scoped FAQ/knowledge/Automation CRUD, transactional rule edits, **per-rule Automation reply counters and deleted-rule totals**, analytics_hourly UPSERTs/cleanup, schedule rules/cache, settings, AI history, plans and jobs |
-| [`automation.py`](automation.py) | Pure single-keyword / 2–5-keyword OR matching, optional day/time AND validation, and one-rule selection by priority/ID (no Telegram or PostgreSQL dependency) |
+| [`bot.py`](bot.py) | Telegram handlers and Business updates; onboarding, Automation v1.2/FAQ/Knowledge Base panels, Analytics/Scheduler, AI routing, **Stars invoice, pre-checkout, successful-payment, refund and reconciliation handlers**, plans, jobs, moderation and health server |
+| [`db.py`](db.py) | PostgreSQL schema/init, owner-scoped data, subscription state, **atomic Stars order creation/reuse, charge processing, refund tracking, payment inbox/audit/reconciliation markers**, Automation counters, Analytics, AI history and broadcast persistence |
+| [`payments.py`](payments.py) | Pure Stars price table, 1/3/6/12-month discounts, plan renewal/upgrade/downgrade arithmetic, remaining-value transfers and refund calculations |
+| [`automation.py`](automation.py) | Pure single-keyword / 2–5-keyword OR matching, optional day/time AND validation, and one-rule selection by priority/ID |
 | [`ai.py`](ai.py) | Gemini requests, role presets, prompting with selected AI Personal Knowledge facts, and reply extraction |
 | [`analytics.py`](analytics.py) | Time-window aggregation, busiest-hour calculation, line/pie/bar PNG chart rendering and short-lived chart caching |
 | [`logic.py`](logic.py) | Cooldown/time handling, weekly schedule overlap and midnight-wrap calculation, countdowns, name formatting, FAQ matching, Personal Knowledge parsing and relevance ranking |
-| [`i18n.py`](i18n.py) | User-facing strings in three languages, including onboarding and Telegram connection instructions |
-| [`tests/`](tests/) | Unit and behavior tests, including [`test_analytics.py`](tests/test_analytics.py) for charts and [`test_scheduler.py`](tests/test_scheduler.py) for scheduling, cache consistency and reply priority |
-| [`tests/test_automation.py`](tests/test_automation.py), [`tests/test_automation_panel.py`](tests/test_automation_panel.py) and [`tests/test_automation_v12.py`](tests/test_automation_v12.py) | Automation v1.0–v1.2 compatibility, OR/AND rules, editor, plan gates, owner isolation, counters, deletion races and stale-button regression tests |
+| [`i18n.py`](i18n.py) | User-facing strings in three languages, including Payments v1.0, Automation v1.2 and onboarding |
+| [`tests/`](tests/) | Unit and behavior tests for Business replies, plans, AI, FAQ, Analytics, Scheduler, broadcasts and other features |
+| [`tests/test_automation.py`](tests/test_automation.py), [`tests/test_automation_panel.py`](tests/test_automation_panel.py) and [`tests/test_automation_v12.py`](tests/test_automation_v12.py) | Automation v1.0–v1.2 compatibility, OR/AND rules, editor, plan gates, owner isolation, counters, deletion races and stale-button regressions |
+| [`tests/test_payments.py`](tests/test_payments.py) | Stars prices and quotes, invoice/pre-checkout/payment handlers, purchase idempotency, PostgreSQL concurrency, payment recovery, refunds, rate limits, plan changes and localized checkout |
 | [`requirements.txt`](requirements.txt) | Python runtime dependencies |
 
 **Operational notes:**
 
-- PostgreSQL keeps account settings, onboarding progress, FAQ entries, Personal Knowledge, Analytics counters, saved Scheduler rules, **Automation rules and their cumulative counters (including deleted-rule totals)**, and jobs across Render restarts.
-- On startup, `db.init_db()` adds missing onboarding columns and creates `knowledge_entries`, `automation_rules` (including `sent_count` and `last_sent_at`), `automation_deleted_totals`, `automation_meta` (counter start date), `analytics_hourly`, `schedule_rules`, and feature columns (including `scheduler_enabled`) where needed. Existing users initially receive the `legacy` onboarding status; newly inserted users default to `welcome`.
-- Analytics uses atomic per-hour PostgreSQL UPSERT counters with a thread-safe connection pool and a limited number of concurrent Analytics writes. Retention cleanup is scheduled through the existing AI cleanup job.
-- Broadcasts persist progress, have a one-active-job database constraint, support recovery and retry, and handle Telegram rate limits.
-- Exactly-once broadcast delivery is **not guaranteed**: an interruption between Telegram accepting a message and database progress being saved can produce a duplicate.
-- Bot-level feature restrictions and subscription status are enforced in application logic; third-party services still enforce their own limits.
+- PostgreSQL persists account settings, onboarding progress, FAQ, Personal Knowledge, Analytics counters, saved Scheduler/Automation rules, broadcasts and payment data across Render restarts.
+- On startup, `db.init_db()` creates/updates application tables, including `payments`, `payment_inbox`, `payment_audit` and `payment_recon`, plus Automation counters and other feature tables.
+- Payment retries run every **30 seconds**, pending-order expiry every **60 seconds**, transaction reconciliation every **30 minutes**, and paid-plan expiration every **10 minutes**. These jobs require `python-telegram-bot[job-queue]`.
+- Payment processing stores each Telegram charge identifier uniquely and uses PostgreSQL transactions; reconciliation and in-memory retries help recover disruptions. External service errors and partial failures still require operational monitoring.
+- Analytics uses atomic per-hour PostgreSQL UPSERT counters with a connection pool. Retention cleanup runs through the AI cleanup job.
+- Broadcasts persist progress, have a one-active-job database constraint, support recovery and retry, and handle Telegram rate limits. Exactly-once broadcast delivery is **not guaranteed**: an interruption between Telegram accepting a message and database progress being saved can produce a duplicate.
+- Feature access and subscription status are enforced in application logic; third-party services still enforce their own limits.
 - The built-in health endpoint answers `GET /` with `OK`.
 
 ## ⌨️ Bot commands
@@ -643,10 +719,14 @@ Regular users use the **inline control panel** reached through `/start`.
 |---|---|---|
 | `/start` | Everyone | Open the bot and its menu |
 | `/help` | Everyone | Help and available commands |
+| `/paysupport` | Everyone (including blocked / not subscribed) | Payment support and recent payment records |
 | `/stats` | Admin | Summary statistics |
 | `/onboarding` | Admin | Started, connected, auto-reply-enabled, completed, skipped, and in-progress onboarding counts |
 | `/automation` | Admin | List/create/enable/disable/delete the administrator's own **single-keyword** rules; the Telegram panel handles v1.2 OR rules, editing and statistics |
-| `/setplan` | Admin | Assign a user plan, optionally with an expiry |
+| `/setplan` | Admin | Manually assign/replace a user plan, optionally with an expiry; does not charge Stars |
+| `/userplans` | Admin | List subscriptions by tier and expiry |
+| `/payments` | Admin | View recent payment records and pending order count |
+| `/refund <charge_id or token>` | Admin | Request a Telegram Stars refund and reconcile the associated subscription value |
 | `/reklama` | Admin | Prepare a broadcast for confirmation |
 | `/reklama_status` | Admin | View latest broadcast progress |
 | `/reklama_retry` | Admin | Resume or retry a broadcast where applicable |
@@ -661,11 +741,11 @@ Example admin command:
 /setplan 123456789 ultra 1oy
 ```
 
-This assigns a time-limited plan to the specified user ID; use the bot's help text for accepted user identifiers and duration formats. Administrator commands are checked against `ADMIN_ID`.
+This assigns a time-limited plan to the specified user ID **without charging through Stars**; use the bot's help text for accepted user identifiers and duration formats. Administrator commands are checked against `ADMIN_ID`. For user payment problems, use `/paysupport`; for administration, use `/payments` and `/refund`.
 
 ## 🧪 Testing
 
-The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ, translations, **Smart Onboarding**, **AI Personal Knowledge**, **AutoReply Analytics**, **Smart Scheduler**, **Automation Engine v1.2** (including OR keywords, rule editing, counters and deletion races), and **test database safety guards**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
+The repository includes tests for AI and static reply flows, cooldown, broadcasts, Business connection state, name clock, BIO countdown, Smart FAQ, translations, **Smart Onboarding**, **AI Personal Knowledge**, **AutoReply Analytics**, **Smart Scheduler**, **Automation Engine v1.2** (including OR keywords, rule editing, counters and deletion races), **Payments v1.0** (invoice lifecycle, quote calculation, recovery, refund and concurrent order handling), and **test database safety guards**. The onboarding suite covers legacy/new users, channel-subscription transitions, connection permissions, skip/resume, localized default replies, completion checks, connection events, and admin statistics.
 
 Install the development-only test runner and run the suite:
 
@@ -674,36 +754,36 @@ python -m pip install pytest
 python -m pytest -q
 ```
 
-**Onboarding, AI Personal Knowledge, Analytics, Scheduler and Automation database tests require `TEST_DATABASE_URL`.** Without it, their database-backed classes are skipped (other unit tests can still run). **Run the suite with pytest**, which loads `tests/conftest.py` *before test modules are imported* and overrides `DATABASE_URL` with the provided test URL, or a fake URL when none is set. Use a **dedicated disposable PostgreSQL test database**; never production:
+**Onboarding, AI Personal Knowledge, Analytics, Scheduler, Automation and Payments database tests require `TEST_DATABASE_URL`.** Without it, their database-backed classes are skipped (other unit tests can still run). **Run the suite with pytest**, which loads `tests/conftest.py` *before test modules are imported* and overrides `DATABASE_URL` with the provided test URL, or a fake URL when none is set. Use a **dedicated disposable PostgreSQL test database**; never production:
 
 ```bash
 # Example: PostgreSQL running locally on your development machine.
 # Replace with YOUR disposable local test database:
 export TEST_DATABASE_URL='postgresql://TEST_USER:TEST_PASSWORD@localhost:5432/autoreplyer_test'
-python -m pytest tests/test_automation.py tests/test_automation_panel.py tests/test_automation_v12.py tests/test_scheduler.py tests/test_analytics.py tests/test_knowledge.py tests/test_onboarding.py tests/test_db_guard.py -v
+python -m pytest tests/test_automation.py tests/test_automation_panel.py tests/test_automation_v12.py tests/test_payments.py tests/test_scheduler.py tests/test_analytics.py tests/test_knowledge.py tests/test_onboarding.py tests/test_db_guard.py -v
 python -m pytest -q
 ```
 
-Database integration suites call `db.init_db()` and create/update/delete records. The Analytics suite includes **parallel database writes**, per-owner counters, date periods, chart rendering in Uzbek/English/Russian, and plan-gate tests. Scheduler tests cover owner isolation, weekday and overnight boundaries, stale draft buttons, concurrency, cache invalidation and reply priority. Automation tests cover single/OR keyword matching, optional day/time AND filters, input validation, plan downgrades, owner isolation, rule editing/priority, concurrent rule-limit protection, Analytics categories, cumulative/deleted-rule counters, parallel send/delete races, menu flows and expired/stale buttons. Do not run them against real user data. The pytest guard accepts local hosts by default and **refuses remote test database hosts** unless `ALLOW_REMOTE_TEST_DB=1` is explicitly set. **That opt-in is not proof a remote database is safe**; use it only for a separately provisioned throwaway test database.
+Database integration suites call `db.init_db()` and create/update/delete records. The Analytics suite includes **parallel database writes**, per-owner counters, date periods, chart rendering in Uzbek/English/Russian, and plan-gate tests. Scheduler tests cover owner isolation, weekday and overnight boundaries, stale draft buttons, concurrency, cache invalidation and reply priority. Automation tests cover single/OR keyword matching, optional day/time AND filters, input validation, plan downgrades, owner isolation, rule editing/priority, concurrent rule-limit protection, Analytics categories, cumulative/deleted-rule counters, parallel send/delete races, menu flows and expired/stale buttons. **Payments tests** include XTR prices, invoice creation/expiration/cancellation, buyer and amount validation, duplicate charge rejection, upgrade/downgrade/refund accounting, concurrent user/payment locks, recovery after restart, external refund reconciliation, network delivery failures, and rate limiting. Do not run them against real user data. The pytest guard accepts local hosts by default and **refuses remote test database hosts** unless `ALLOW_REMOTE_TEST_DB=1` is explicitly set. **That opt-in is not proof a remote database is safe**; use it only for a separately provisioned throwaway test database.
 
 **Important limitation:** the database guard is implemented in `tests/conftest.py`, which **pytest** loads. Running test modules directly with `unittest` bypasses this protection; do not do so with any production credentials or `DATABASE_URL`. A skipped test is **not** a passed test.
 
 **GitHub Actions CI:** [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs the full pytest suite on **pushes and pull requests** with **Python 3.13** and a disposable **PostgreSQL 16** service. Check the matching commit in [Actions](https://github.com/TheBigChanges/AutoReplyer/actions/workflows/tests.yml). Re-running an old workflow checks the **old commit**, not the latest `main` branch.
 
-**Recommended deployment workflow:** develop on a separate branch, use a distinct Telegram test bot token and PostgreSQL test database, manually test onboarding, Knowledge Base and Analytics (including owner isolation, downgrade restrictions, current-period charts, Scheduler/FAQ priority, overnight transitions, and a second Telegram account), then review and merge a pull request to `main`. Never run multiple polling processes with the production bot token.
+**Recommended deployment workflow:** develop on a separate branch, use a distinct Telegram test bot token and PostgreSQL test database, manually test onboarding, Knowledge Base, Analytics and **Stars invoice → pre-checkout → confirmed payment → plan renewal/change → refund/support** (including owner isolation, downgrade restrictions, current-period charts, Scheduler/FAQ priority, overnight transitions, and a second Telegram account), then review and merge a pull request to `main`. Never run multiple polling processes with the production bot token.
 
 ## 🔐 Privacy, security & limitations
 
 - **Official permissions only:** use the Telegram Business connection flow. The bot should never request Telegram passwords or authentication codes.
 - **AI message processing:** incoming text and relevant chat context may be sent to Google's Gemini API when AI replies are enabled. **Relevant owner-authored Personal Knowledge entries are also sent to Gemini** when retrieved. Don't store information you aren't willing to disclose to a chat contact and the AI provider.
-- **Stored data:** PostgreSQL stores settings, Business connections, **onboarding state/timestamps**, **Smart FAQ entries**, **Automation rule names, keyword(s), conditions, fixed reply, priority, enabled flag, sent count and last-sent timestamp (owner-scoped JSONB rules), historical counts of deleted rules and the counters' start date**, **AI Personal Knowledge titles, texts and keywords**, **owner-scoped hourly Analytics counters (without message text/chat IDs)**, **owner-scoped saved Scheduler days/hours and reply text**, AI conversation history, referrals, broadcasts, and related metadata. AI history retrieval is limited to recent messages and a background cleanup job purges old history; verify retention and deletion behavior in [`db.py`](db.py) for your own deployment.
+- **Stored data:** PostgreSQL stores settings, Business connections, **payment orders and audit/history data (including buyer IDs, charge IDs, Stars amounts and refund status)**, **onboarding state/timestamps**, **Smart FAQ entries**, **Automation rule names, keyword(s), conditions, fixed reply, priority, enabled flag, sent count and last-sent timestamp (owner-scoped JSONB rules), historical counts of deleted rules and the counters' start date**, **AI Personal Knowledge titles, texts and keywords**, **owner-scoped hourly Analytics counters (without message text/chat IDs)**, **owner-scoped saved Scheduler days/hours and reply text**, AI conversation history, referrals, broadcasts, and related metadata. AI history retrieval is limited to recent messages and a background cleanup job purges old history; verify retention and deletion behavior in [`db.py`](db.py) for your own deployment.
 - **Secrets:** never commit `.env`, API keys, database URLs, Telegram tokens, or customer information. Rotate any exposed secrets immediately.
 - **Analytics limitations:** counters are best-effort, begin only after the feature is running, and cannot recover past chat activity. Charts may be cached briefly.
 - **Scheduler limitations:** saved rules persist in PostgreSQL but unfinished drafts are temporary in-memory data. Replies require Telegram Business permissions, and separate worker instances can briefly see older rule data until cache expiry. Analytics and Gemini AI chat-history storage are separate.
 - **Automation Engine v1.2 limitations:** one required keyword condition (a single keyword or 2–5 OR alternatives), optionally combined with one days filter and one time filter via AND, and a single fixed `send_reply` action. No arbitrary nested Boolean conditions, ignore/block actions, or Automation Web App editor. Only Pro/Ultra have advanced conditions. Saved rules and cumulative counters persist in PostgreSQL; unfinished drafts/edit sessions and deletion confirmations stay in memory. Counters are best-effort and start from their recorded initialization date; earlier activity cannot be backfilled, and crashes or DB failures can cause missed counts. Matching fixed rules does not send chat text to Gemini.
 - **AI limitations:** the model may be inaccurate, unavailable, or rate-limited. Knowledge Base retrieval is heuristic, and even an instruction to avoid invented or confidential details **cannot guarantee** a safe or correct generated response. Static reply fallback is available, but delivery is not guaranteed under every failure mode.
-- **Telegram restrictions:** Business rights, flood limits, profile editing privileges, and availability of features are controlled by Telegram.
-- **Commercial use:** payment verification in the current code is manual; the repository does not provide a full automated billing provider integration.
+- **Telegram restrictions:** Business rights, flood limits, profile editing privileges, Stars payment rules and availability of features are controlled by Telegram.
+- **Payments:** Telegram Stars (XTR) is the implemented automatic checkout for digital subscriptions; the legacy manual-card/admin display route is disabled by default. Subscription purchases are **one-time**, not recurring auto-billing. Refunds and recovery can require administrator action after failures; do not assume every network error means a payment failed. See [Payments v1.0](#-telegram-stars-payments-v10).
 - **Responsible broadcasting:** only message users who have opted to interact with the bot and comply with Telegram policies and local messaging rules.
 
 ## 🤝 Contributing & support
