@@ -1986,6 +1986,33 @@ class AuditRound9Tests(BotBase):
         run(bot.process_payment(b, self.u, token, "chN2", q.pay, "XTR"))
         self.assertEqual(db.get_payment_by_charge("chN2")["status"], "refunding")
 
+    def _pre_with_answer_error(self, token, amount, exc):
+        q = MagicMock()
+        q.from_user.id = self.u
+        q.invoice_payload, q.total_amount, q.currency = token, amount, "XTR"
+        q.answer = AsyncMock(side_effect=exc)
+        upd = MagicMock()
+        upd.pre_checkout_query = q
+        run(bot.on_pre_checkout(upd, MagicMock()))
+
+    def test_failed_precheckout_answer_handles_checkout_claim_safely(self):
+        token, q = self.order(now=time.time())
+        # aniq rad etish: bandlik bo'shatiladi, keyingi urinish o'tadi
+        self._pre_with_answer_error(token, q.pay, bot.BadRequest("Query is too old"))
+        self.assertTrue(self.pre(token, amount=q.pay)["ok"])
+        # tarmoq xatosi: natija noma'lum — bandlik qoladi
+        token2, q2 = self.order(now=time.time())
+        self._pre_with_answer_error(token2, q2.pay, bot.NetworkError("timeout"))
+        self.assertFalse(self.pre(token2, amount=q2.pay)["ok"])
+
+    def test_release_checkout_only_own_claim(self):
+        token, q = self.order(now=time.time())
+        self.assertTrue(db.claim_checkout(token, self.u, 3000.0))
+        self.assertFalse(db.release_checkout(token, self.u, 2999.0))  # boshqaning bandligi
+        self.assertFalse(db.claim_checkout(token, self.u, 3010.0))
+        self.assertTrue(db.release_checkout(token, self.u, 3000.0))
+        self.assertTrue(db.claim_checkout(token, self.u, 3011.0))
+
     def test_checkout_claim_blocks_parallel_then_expires(self):
         token, q = self.order(now=time.time())
         self.assertTrue(db.claim_checkout(token, self.u, 1000.0))
