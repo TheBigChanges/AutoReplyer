@@ -5793,11 +5793,16 @@ async def on_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.pre_checkout_query
     lang = get_lang(q.from_user.id)
 
-    async def answer(ok: bool, key: str | None = None):
+    async def answer(ok: bool, key: str | None = None) -> str:
+        """'sent' | 'rejected' (Telegram aniq rad etdi) | 'unknown' (tarmoq xatosi: javob yetib borgan-bormagani noma'lum)."""
         try:
             await q.answer(ok=ok, error_message=None if ok else t(lang, key))
+            return "sent"
         except TelegramError as e:
             logger.info("pre_checkout javobi yuborilmadi: %s", e)
+            return "unknown" if isinstance(e, NetworkError) and not isinstance(e, BadRequest) else "rejected"
+
+    claimed_at = None
 
     try:
         if not PAYMENTS_STARS_ENABLED:
@@ -5817,12 +5822,27 @@ async def on_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         snap_exp = order["snap_expires"] or 0
         if state.plan != order["snap_plan"] or _snap_exp(state) != snap_exp:
             return await answer(False, "pay_err_changed")
-        if not db.claim_checkout(order["token"], q.from_user.id, time.time()):  # shu buyurtma uchun boshqa to'lov hozirgina tasdiqlangan
+        claimed_at = time.time()
+        if not db.claim_checkout(order["token"], q.from_user.id, claimed_at):  # shu buyurtma uchun boshqa to'lov hozirgina tasdiqlangan
+            claimed_at = None
             return await answer(False, "pay_err_in_progress")
     except Exception:
         logger.exception("pre_checkout xatosi")
+        if claimed_at is not None:  # band qilingan, lekin ruxsat berilmaydi — bandlik qoldirilmaydi
+            _release_claim(order["token"], q.from_user.id, claimed_at)
         return await answer(False, "pay_err_try_later")
-    await answer(True)
+    outcome = await answer(True)
+    if outcome == "rejected":
+        # Telegram ruxsat javobini aniq rad etdi: to'lov boshlanmaydi, bandlikni bo'shatamiz.
+        # Tarmoq xatosida ('unknown') javob yetib borgan bo'lishi mumkin — bandlik qoladi (ikki marta to'lovdan himoya).
+        _release_claim(order["token"], q.from_user.id, claimed_at)
+
+
+def _release_claim(token: str, user_id: int, claimed_at: float) -> None:
+    try:
+        db.release_checkout(token, user_id, claimed_at)
+    except Exception:
+        logger.exception("Checkout bandligini bo'shatib bo'lmadi (token=%s)", token)
 
 
 async def on_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
