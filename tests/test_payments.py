@@ -1478,6 +1478,126 @@ class AuditRound5Tests(BotBase):
         self.assertEqual(errors, [])
 
 
+class AuditRound6Tests(BotBase):
+    def _ctx(self, b):
+        ctx = MagicMock()
+        ctx.bot = b
+        return ctx
+
+    def _buy(self, b, price=15, plan="plus", months=1):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        run(bot.handle_pay_callback(q, self._ctx(b), self.u, f"pay_buy:{plan}:{months}:{price}"))
+        return q
+
+    def _pending(self):
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT token, status, invoice_msg_id FROM payments WHERE user_id = %s ORDER BY id", (self.u,))
+            return cur.fetchall()
+
+    def setUp(self):
+        super().setUp()
+        bot._pay_rate.pop(self.u, None)
+        self.addCleanup(lambda: bot._pay_rate.pop(self.u, None))
+
+    def test_failed_invoice_delivery_does_not_leave_orphaned_order(self):
+        from telegram.error import BadRequest
+        b = _bot_mock()
+        b.send_invoice.side_effect = BadRequest("Bad Request: invoice rejected")
+        q = self._buy(b)
+        rows = self._pending()
+        self.assertEqual([r[1] for r in rows], ["cancelled"])
+        self.assertTrue(q.answer.await_args.kwargs.get("show_alert"))
+        self.assertEqual(bot._pay_rate.get(self.u, []), [])  # urinish tezlik hisobidan chiqarildi
+        # Telegram nosozligida cheksiz ko'p urinish limitga urilmaydi
+        for _ in range(bot.PAY_RATE_MAX + 2):
+            self._buy(b)
+        self.assertEqual(sum(1 for r in self._pending() if r[1] == "pending"), 0)
+        b.send_invoice.side_effect = None
+        self._buy(b)  # Telegram tiklandi — xarid ishlaydi
+        self.assertEqual(sum(1 for r in self._pending() if r[1] == "pending"), 1)
+
+    def test_unknown_network_outcome_keeps_order_open_and_may_be_paid(self):
+        from telegram.error import TimedOut
+        b = _bot_mock()
+        b.send_invoice.side_effect = TimedOut()
+        self._buy(b)
+        rows = self._pending()
+        self.assertEqual([r[1] for r in rows], ["pending"])  # invoice aslida yetib borgan bo'lishi mumkin
+        token = rows[0][0]
+        order = db.get_payment(token)
+        self.assertTrue(self.pre(token, amount=order["stars"])["ok"])  # to'lansa qabul qilinadi
+        self.assertEqual(db.activate_payment(token, "chTO", self.u, order["stars"], add_months)["status"], "activated")
+
+    def test_retry_after_unknown_outcome_replaces_stale_order(self):
+        from telegram.error import TimedOut
+        b = _bot_mock()
+        b.send_invoice.side_effect = TimedOut()
+        self._buy(b)
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE payments SET created_at = created_at - 60 WHERE user_id = %s", (self.u,))
+        b.send_invoice.side_effect = None
+        self._buy(b)
+        self.assertEqual([r[1] for r in self._pending()], ["cancelled", "pending"])
+
+    def test_concurrent_invoice_requests_create_one_active_order(self):
+        now = time.time()
+        state = db.get_user_plan_state(self.u)
+        quote = pay.quote(state, "plus", 1, now, add_months)
+        results = []
+        barrier = threading.Barrier(8)
+
+        def go(i):
+            barrier.wait()
+            results.append(db.create_or_reuse_order(self.u, f"CC{i}_{self.u}", quote, state, 900, now)[0])
+
+        ts = [threading.Thread(target=go, args=(i,)) for i in range(8)]
+        [x.start() for x in ts]
+        [x.join() for x in ts]
+        self.assertEqual(sorted(results), ["created"] + ["reused"] * 7)
+        self.assertEqual([r[1] for r in self._pending()], ["pending"])
+
+    def test_order_creation_waits_for_user_lock(self):
+        """Foydalanuvchi qulfi band bo'lsa, buyurtma yaratish kutishi shart (aks holda parallel so'rovlar ikkita buyurtma yaratadi)."""
+        import psycopg2
+        now = time.time()
+        state = db.get_user_plan_state(self.u)
+        quote = pay.quote(state, "plus", 1, now, add_months)
+        holder = psycopg2.connect(os.environ["DATABASE_URL"])
+        try:
+            hc = holder.cursor()
+            hc.execute("SELECT pg_advisory_xact_lock(hashtext('payments_user'), (%s %% 2147483647)::int)", (self.u,))
+            result = []
+            th = threading.Thread(target=lambda: result.append(db.create_or_reuse_order(self.u, "LK" + str(self.u), quote, state, 900, now)[0]))
+            th.start()
+            time.sleep(0.6)
+            self.assertTrue(th.is_alive())  # kutyapti
+            holder.rollback()  # qulf bo'shaydi
+            th.join(10)
+            self.assertEqual(result, ["created"])
+        finally:
+            holder.close()
+
+    def test_inflight_order_reused_then_replaced_after_window(self):
+        now = time.time()
+        state = db.get_user_plan_state(self.u)
+        quote = pay.quote(state, "plus", 1, now, add_months)
+        self.assertEqual(db.create_or_reuse_order(self.u, "IF1" + str(self.u), quote, state, 900, now)[0], "created")
+        self.assertEqual(db.create_or_reuse_order(self.u, "IF2" + str(self.u), quote, state, 900, now + 5)[0], "reused")
+        out, info = db.create_or_reuse_order(self.u, "IF3" + str(self.u), quote, state, 900, now + 60)
+        self.assertEqual(out, "created")  # invoice yuborilmagan eski buyurtma almashtirildi
+
+    def test_different_choice_cancels_old_and_returns_its_invoice_message(self):
+        now = time.time()
+        state = db.get_user_plan_state(self.u)
+        q1 = pay.quote(state, "plus", 1, now, add_months)
+        db.create_or_reuse_order(self.u, "DC1" + str(self.u), q1, state, 900, now)
+        db.set_invoice_message("DC1" + str(self.u), 4242)
+        q2 = pay.quote(state, "plus", 3, now, add_months)
+        out, info = db.create_or_reuse_order(self.u, "DC2" + str(self.u), q2, state, 900, now)
+        self.assertEqual((out, info["cancelled_msgs"]), ("created", [4242]))
+
+
 class CardDefaultTests(unittest.TestCase):
     def test_card_route_off_by_default_stars_on(self):
         import importlib
