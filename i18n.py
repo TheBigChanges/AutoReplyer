@@ -997,6 +997,17 @@ T: dict[str, dict] = {
         "\U0001F464 Владелец карты: {holder}\n\n"
         "После оплаты отправьте чек (скриншот) админу — тариф будет активирован.",
     ),
+    "plan_pay_noholder": _(
+        "Sotib olish uchun quyidagi kartaga to'lov qiling:\n\n"
+        "\U0001F4B3 Karta raqami: {card}\n\n"
+        "To'lovdan so'ng chekni (skrinshot) adminga yuboring — tarifingiz faollashtiriladi.",
+        "To pay, transfer the amount to this card:\n\n"
+        "\U0001F4B3 Card number: {card}\n\n"
+        "After paying, send the receipt (screenshot) to the admin — your plan will be activated.",
+        "Для оплаты переведите сумму на эту карту:\n\n"
+        "\U0001F4B3 Номер карты: {card}\n\n"
+        "После оплаты отправьте чек (скриншот) админу — тариф будет активирован.",
+    ),
     "plan_no_card": _(
         "⚠️ To'lov kartasi hozircha sozlanmagan. Iltimos, admin bilan bog'laning.",
         "⚠️ The payment card is not set up yet. Please contact the admin.",
