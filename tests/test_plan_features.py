@@ -534,7 +534,8 @@ class AiLimitTests(Base):
              patch.object(bot, "ai_reply_still_allowed", return_value=True), \
              patch.object(db, "get_ai_history", return_value=[]), patch.object(db, "get_user", return_value={"full_name": "Ali"}), \
              patch.object(db, "add_ai_messages"), patch.object(bot.ai, "generate_reply", AsyncMock(return_value="Hi")):
-            for _ in range(times):
+            for i in range(times):
+                bm.message_id = 1000 + i  # har bir takror — alohida kiruvchi xabar
                 run(bot.run_ai_reply(ctx.bot, bm, user, 5, "hello", {"cooldown_hours": 1, "ai_info": None, "ai_role": None}, "fallback", "x"))
         return quota, ctx
 
