@@ -6739,6 +6739,8 @@ async def block_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     xabarlari) bu yerda e'tiborga olinmaydi — ular bot foydalanuvchisi emas."""
     if update.message is None and update.callback_query is None:
         return
+    if update.message is not None and update.message.chat.type != "private":
+        return  # bot faqat shaxsiy chatda ishlaydi: guruh xabariga bloklash javobi yuborilmaydi
     if update.message is not None and update.message.successful_payment is not None:
         return  # tasdiqlangan to'lov bloklangan foydalanuvchi uchun ham yo'qolmasin
     if update.message is not None and _is_paysupport(update.message):
@@ -6982,7 +6984,8 @@ def build_app() -> Application:
     # (mijozlarning xabarlari), tahrirlangan xabarlar va kanal postlari handlerlarga
     # tushmasligi uchun. Aks holda har bir mijoz "foydalanuvchi" bo'lib bazaga yozilib,
     # reklama ro'yxatiga kirib qolardi.
-    only_messages = filters.UpdateType.MESSAGE
+    # Faqat bot bilan SHAXSIY chatdagi xabarlar: guruhdagi xabar kutilayotgan matn/reklama/FAQ kiritishi sifatida qabul qilinmasin
+    only_messages = filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE
 
     app.add_error_handler(on_error)
 
