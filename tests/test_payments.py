@@ -1948,27 +1948,95 @@ class AuditRound9Tests(BotBase):
     def test_two_invoices_same_order_cannot_create_unintended_second_charge(self):
         now = time.time()
         token, q = self.order(now=now)
-        # ikkala invoice uchun pre_checkout birinchi to'lov yakunlanishidan oldin tasdiqlangan
         self.assertTrue(self.pre(token, amount=q.pay)["ok"])
+        second = self.pre(token, amount=q.pay)  # ikkinchi parallel checkout rad etiladi
+        self.assertFalse(second["ok"])
+        # himoya qatlami: claim muddati o'tgan deb faraz qilib, ikkinchi to'lov baribir o'tib ketdi
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE payments SET checkout_at=NULL WHERE token=%s", (token,))
         self.assertTrue(self.pre(token, amount=q.pay)["ok"])
         b = _bot_mock()
         self.assertEqual(run(bot.process_payment(b, self.u, token, "chTW1", q.pay, "XTR")), "activated")
         exp = self.plan().expires_at
         b.send_message.reset_mock()
         self.assertEqual(run(bot.process_payment(b, self.u, token, "chTW2", q.pay, "XTR")), "unmatched")
-        self.assertEqual(self.plan().expires_at, exp)  # ikkinchi to'lov tarifni uzaytirmadi
-        texts = " ".join(c.kwargs.get("text") or c.args[1] for c in b.send_message.await_args_list)
-        self.assertIn("/refund chTW2", texts)  # admin refund uchun xabardor qilindi
-        # ... va ikkinchi (ortiqcha) to'lovni refund qilib bo'ladi, obuna qisqarmaydi
-        upd = MagicMock()
-        upd.effective_user.id = 999
-        upd.message.reply_text = AsyncMock()
-        ctx = MagicMock()
-        ctx.args = ["chTW2"]
-        ctx.bot = _bot_mock()
-        run(bot.cmd_refund(upd, ctx))
-        self.assertEqual(db.get_payment_by_charge("chTW2")["status"], "refunded")
         self.assertEqual(self.plan().expires_at, exp)
+        b.refund_star_payment.assert_awaited()
+        self.assertEqual(db.get_payment_by_charge("chTW2")["status"], "refunded")  # avtomatik qaytarildi
+        self.assertEqual(self.plan().expires_at, exp)
+        self.assertNotIn("/refund chTW2", " ".join(self.sent_texts(b)))  # qo'lda refund talab qilinmaydi
+
+    def test_duplicate_auto_refund_api_failure_falls_back_to_admin(self):
+        now = time.time()
+        token, q = self.order(now=now)
+        b = _bot_mock()
+        self.assertEqual(run(bot.process_payment(b, self.u, token, "chA1", q.pay, "XTR")), "activated")
+        b.refund_star_payment.side_effect = bot.BadRequest("CHARGE_NOT_REFUNDABLE")
+        b.send_message.reset_mock()
+        self.assertEqual(run(bot.process_payment(b, self.u, token, "chA2", q.pay, "XTR")), "unmatched")
+        self.assertEqual(db.get_payment_by_charge("chA2")["status"], "unmatched")
+        self.assertIn("/refund chA2", " ".join(self.sent_texts(b)))
+
+    def test_duplicate_auto_refund_network_error_stays_refunding(self):
+        now = time.time()
+        token, q = self.order(now=now)
+        b = _bot_mock()
+        run(bot.process_payment(b, self.u, token, "chN1", q.pay, "XTR"))
+        b.refund_star_payment.side_effect = bot.NetworkError("timeout")
+        run(bot.process_payment(b, self.u, token, "chN2", q.pay, "XTR"))
+        self.assertEqual(db.get_payment_by_charge("chN2")["status"], "refunding")
+
+    def test_checkout_claim_blocks_parallel_then_expires(self):
+        token, q = self.order(now=time.time())
+        self.assertTrue(db.claim_checkout(token, self.u, 1000.0))
+        self.assertFalse(db.claim_checkout(token, self.u, 1050.0))
+        self.assertTrue(db.claim_checkout(token, self.u, 1100.0))
+        self.assertFalse(db.claim_checkout(token, self.u + 1, 5000.0))  # begona user
+
+    def test_checkout_claim_atomic_under_concurrency(self):
+        from concurrent.futures import ThreadPoolExecutor
+        token, q = self.order(now=time.time())
+        with ThreadPoolExecutor(8) as ex:
+            res = list(ex.map(lambda _: db.claim_checkout(token, self.u, 2000.0), range(8)))
+        self.assertEqual(sum(res), 1)
+
+    def test_failed_spool_read_does_not_overwrite_existing_backup(self):
+        path = bot.INVOICE_SPOOL_PATH
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"tokOLD": [5, 6]}')
+        bot._spool_loaded = False
+        bot._invoice_msgs_mem.clear()
+        real_open = open
+
+        def bad_open(file, mode="r", *a, **k):
+            if str(file) == path and "r" in mode and "+" not in mode:
+                raise PermissionError("denied")
+            return real_open(file, mode, *a, **k)
+
+        with patch("builtins.open", bad_open):
+            self.assertFalse(bot._load_invoice_spool())
+            bot._mem_set("tokNEW", (1.0, 2))
+        with open(path, encoding="utf-8") as f:
+            self.assertIn("tokOLD", f.read())  # eski zaxira ustidan yozilmadi
+        self.assertTrue(bot._load_invoice_spool())  # keyin muvaffaqiyatli yuklanadi va birlashadi
+        with open(path, encoding="utf-8") as f:
+            data = f.read()
+        self.assertIn("tokOLD", data)
+        self.assertIn("tokNEW", data)
+
+    def test_repeat_offer_presses_send_one_message(self):
+        bot._offer_at.clear()
+        query = MagicMock()
+        query.answer = AsyncMock()
+        ctx = MagicMock()
+        ctx.bot = _bot_mock()
+        for _ in range(3):
+            run(bot._offer_existing_order(query, ctx, self.u, {"token": "tkX", "id": 1}))
+        self.assertEqual(ctx.bot.send_message.await_count, 1)
+        self.assertEqual(query.answer.await_count, 3)
+        bot._offer_at[self.u] -= 10
+        run(bot._offer_existing_order(query, ctx, self.u, {"token": "tkX", "id": 1}))
+        self.assertEqual(ctx.bot.send_message.await_count, 2)
 
 
 class CardDefaultTests(unittest.TestCase):
