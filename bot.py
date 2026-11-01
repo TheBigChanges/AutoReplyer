@@ -5377,6 +5377,14 @@ def build_pay_duration_view(owner_id: int, plan: str):
     return t(lang, "pay_choose", name=t(lang, "plan_name_" + plan)), InlineKeyboardMarkup(rows)
 
 
+def _format_span(lang: str, seconds: float) -> str:
+    """Qolgan muddat: bir kundan kam bo'lsa soatlarda (kamida 1 soat), aks holda kunlarda."""
+    hours = max(1, round(seconds / 3600))
+    if seconds < 86400 and hours < 24:
+        return t(lang, "pay_span_hours", n=hours)
+    return t(lang, "pay_span_days", n=max(1, round(seconds / 86400)))
+
+
 def build_pay_quote_view(owner_id: int, plan: str, months: int):
     """(matn, tugmalar) yoki (xato_matni, None)."""
     lang = get_lang(owner_id)
@@ -5389,7 +5397,7 @@ def build_pay_quote_view(owner_id: int, plan: str, months: int):
     note = t(lang, "pay_note_" + q.kind)
     if q.kind == "downgrade":
         text = t(lang, "pay_quote_dg", name=t(lang, "plan_name_" + plan), value=int(payments.remaining_value(state, now)),
-                 days=max(1, round((q.new_state.expires_at - now) / 86400)), date=format_plan_date(q.new_state.expires_at), note=note)
+                 span=_format_span(lang, q.new_state.expires_at - now), date=format_plan_date(q.new_state.expires_at), note=note)
         go = InlineKeyboardButton(t(lang, "btn_pay_switch"), callback_data=f"pay_swy:{plan}:{months}:{state.plan}:{_snap_exp(state)}")
         return text, InlineKeyboardMarkup([[go], [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"plan:{plan}")]])
     text = t(lang, "pay_quote", name=t(lang, "plan_name_" + plan), months=months, lines=_quote_lines(lang, q),
