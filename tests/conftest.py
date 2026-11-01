@@ -36,7 +36,7 @@ def _language_already_chosen(monkeypatch):
         yield
         return
     bot._lang_cache.clear()
-    bot._ai_sent_at.clear()
+    bot._ai_answered.clear()
     monkeypatch.setattr(bot, "has_chosen_lang", lambda user_id: True)
     # Eski testlar tarif cheklovisiz ishlaydi; cheklovlarning o'zi tests/test_plan_features.py da tekshiriladi
     everyone = ("free", "plus", "pro", "ultra")
