@@ -2078,6 +2078,23 @@ def _prune_times(d: dict, ttl: float, max_size: int = 500) -> None:
         d.pop(k, None)
 
 
+_incoming_seen: dict = {}   # (owner, chat, kiruvchi xabar ID) -> vaqt: statistikada allaqachon sanalgan xabarlar
+
+
+def _first_time_seen(owner_id: int, chat_id: int, message_id) -> bool:
+    """Kiruvchi xabar statistikada birinchi marta sanalyaptimi (takroriy update ikki marta sanalmasin). Tekshiruv va yozuv orasida
+    await yo'q, shuning uchun bir jarayonda parallel takrorlar ham bir marta sanaladi. ID noma'lum bo'lsa — har doim sanaladi."""
+    if message_id is None:
+        return True
+    key = (owner_id, chat_id, message_id)
+    now = time.time()
+    if now - _incoming_seen.get(key, 0.0) < 600.0:
+        return False
+    _incoming_seen[key] = now
+    _prune_times(_incoming_seen, 600.0, max_size=5000)
+    return True
+
+
 _ai_answered: dict = {}   # (owner, chat, kiruvchi xabar ID) -> vaqt: AI shu AYNAN xabarga javob yuborgan (yoki yuborgan bo'lishi mumkin)
 AI_ANSWERED_TTL = 600.0
 
@@ -5642,8 +5659,8 @@ async def _pay_buy(query, context, owner_id: int, plan: str, months: int, shown:
     for old_token, mid in info["cancelled"]:  # eski buyurtmalarning invoice xabarlari ham o'chadi (ID bazaga yozilmagan bo'lsa — xotiradan)
         mem = _mem_pop(old_token)
         mid = mid or (mem[1] if mem else None)
-        if mid:
-            await _delete_message(context.bot, owner_id, mid)
+        if mid and not await _delete_message(context.bot, owner_id, mid):
+            await _disarm_message(context.bot, owner_id, mid)  # o'chmasa — eski invoice'ning to'lov tugmasi olib tashlanadi
     try:
         invoice = await _send_order_invoice(context.bot, owner_id, lang, token, plan, months, q.pay)
     except Exception as e:
@@ -6878,7 +6895,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Statistika: akkauntga kelgan HAMMA mijoz xabari sanaladi (egasi onlayn bo'lsa yoki cooldown
         # sabab javob ketmasa ham) — shunda "kelgan" va "yuborilgan" farqi tushuntirib beriladi.
-        if not (bm.from_user and bm.from_user.is_bot):
+        if not (bm.from_user and bm.from_user.is_bot) and _first_time_seen(owner_id, bm.chat.id, getattr(bm, "message_id", None)):
             track_analytics(owner_id, "incoming")
 
         settings = db.get_settings(owner_id)
