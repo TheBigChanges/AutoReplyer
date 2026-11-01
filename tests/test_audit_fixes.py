@@ -267,6 +267,18 @@ class TestBroadcastSourceMissing(unittest.TestCase):
         status.assert_called_once_with(1, "completed")
         self.assertEqual(fake_bot.copy_message.await_count, 20)
 
+    def test_broadcast_retry_after_then_forbidden_is_not_retryable(self):
+        from telegram.error import RetryAfter
+        fake_bot, record, status = _run_job([RetryAfter(1), Forbidden("bot was blocked by the user")], [1])
+        status.assert_called_once_with(1, "completed")
+        self.assertEqual([c.args[2] for c in record.call_args_list], [db.NON_RETRYABLE_FAILURE])
+
+    def test_broadcast_retry_after_then_other_error_stays_retryable(self):
+        from telegram.error import RetryAfter
+        _, record, _ = _run_job([RetryAfter(1), BadRequest("Chat not found")], [1])
+        self.assertEqual(len(record.call_args_list), 1)
+        self.assertNotEqual(record.call_args_list[0].args[2], db.NON_RETRYABLE_FAILURE)
+
     def test_blocked_users_are_recorded_as_non_retryable(self):
         fake_bot, record, status = _run_job(Forbidden("bot was blocked by the user"), [1, 2, 3])
         status.assert_called_once_with(1, "completed")
