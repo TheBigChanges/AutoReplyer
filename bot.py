@@ -5171,6 +5171,11 @@ async def _broadcast_loop(
                     )
                     sent += 1
                     sent_delta = 1
+                except Forbidden:
+                    # Kutish paytida foydalanuvchi botni bloklagan bo'lishi mumkin: qayta urinish ro'yxatiga qo'shilmaydi
+                    failed += 1
+                    failed_delta = 1
+                    db.record_broadcast_failure(job_id, user_id, db.NON_RETRYABLE_FAILURE)
                 except TelegramError as e2:
                     failed += 1
                     failed_delta = 1
