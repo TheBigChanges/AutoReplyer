@@ -1119,6 +1119,16 @@ def claim_checkout(token: str, user_id: int, now: float | None = None, window_se
         return cur.fetchone() is not None
 
 
+def release_checkout(token: str, user_id: int, claimed_at: float) -> bool:
+    """O'zimiz band qilgan checkout'ni bo'shatadi (faqat shu `claimed_at` qiymati hali o'zimizniki bo'lsa — boshqa to'lovning bandligi buzilmaydi)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE payments SET checkout_at = NULL WHERE token = %s AND user_id = %s AND status = 'pending' AND checkout_at = %s RETURNING id",
+            (token, user_id, claimed_at),
+        )
+        return cur.fetchone() is not None
+
+
 def cancel_order(token: str, user_id: int):
     """Foydalanuvchi o'z kutilayotgan buyurtmasini bekor qiladi. Bekor qilingan buyurtma qatori yoki None (topilmadi / sizniki emas / allaqachon yopilgan)."""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
