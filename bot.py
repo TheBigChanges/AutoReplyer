@@ -5480,10 +5480,18 @@ async def _send_order_invoice(bot, owner_id: int, lang: str, token: str, plan: s
     )
 
 
+_offer_at: dict = {}
+OFFER_COOLDOWN = 5.0
+
+
 async def _offer_existing_order(query, context, owner_id: int, order: dict):
     """Faol buyurtma bor: foydalanuvchi invoice xabarini o'chirib yuborgan bo'lishi mumkin — qayta yuborish yoki bekor qilish taklif etiladi."""
     lang = get_lang(owner_id)
     await query.answer()
+    now = time.time()
+    if now - _offer_at.get(owner_id, 0.0) < OFFER_COOLDOWN:  # takroriy bosishlarda xabar ko'paytirilmaydi (flood himoyasi)
+        return
+    _offer_at[owner_id] = now
     await context.bot.send_message(
         owner_id, t(lang, "pay_invoice_active"),
         reply_markup=InlineKeyboardMarkup([[
@@ -5600,7 +5608,10 @@ _spool_loaded = False
 
 
 def _spool_sync() -> None:
-    """Saqlanmagan invoice ID'larini diskka yozadi (jarayon qayta ishga tushsa ham tiklash uchun). Disk xatosi asosiy oqimga xalaqit bermaydi."""
+    """Saqlanmagan invoice ID'larini diskka yozadi (jarayon qayta ishga tushsa ham tiklash uchun). Disk xatosi asosiy oqimga xalaqit bermaydi.
+    Eski zaxira hali o'qilmagan bo'lsa (o'qib bo'lmagan) — fayl ALMASHTIRILMAYDI, eski yozuvlar yo'qolmasligi uchun."""
+    if not _spool_loaded:
+        return
     try:
         tmp = INVOICE_SPOOL_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -5610,23 +5621,23 @@ def _spool_sync() -> None:
         logger.warning("Invoice ID zaxira faylini yozib bo'lmadi")
 
 
-def _load_invoice_spool(force: bool = False) -> None:
+def _load_invoice_spool(force: bool = False) -> bool:
     """Disk zaxirasini o'qiydi (jarayon boshida va har bir yozishdan OLDIN chaqiriladi — eski yozuvlar yo'qolmasligi uchun).
     Tuzilishi noto'g'ri fayl yoki elementlar e'tiborsiz qoldiriladi; yaroqsiz fayl `.corrupt` nomi bilan saqlab qo'yiladi."""
     global _spool_loaded
     if _spool_loaded and not force:
-        return
+        return True
     try:
         with open(INVOICE_SPOOL_PATH, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         _spool_loaded = True
-        return
+        return True
     except ValueError:  # JSON sintaksis xatosi
         data = None
     except OSError:
         logger.warning("Invoice ID zaxira faylini o'qib bo'lmadi — keyingi urinishda qayta uriniladi")
-        return  # _spool_loaded o'zgarmaydi: yuklash keyinroq qayta uriniladi
+        return False  # _spool_loaded o'zgarmaydi: yuklash keyinroq qayta uriniladi, shu orada fayl ustidan yozilmaydi
     if not isinstance(data, dict):
         logger.warning("Invoice ID zaxira fayli yaroqsiz tuzilishda — .corrupt sifatida saqlandi")
         try:
@@ -5634,13 +5645,16 @@ def _load_invoice_spool(force: bool = False) -> None:
         except OSError:
             pass
         _spool_loaded = True
-        return
+        return True
     for token, item in data.items():
         try:
             _invoice_msgs_mem.setdefault(str(token), (float(item[0]), int(item[1])))
         except (TypeError, ValueError, IndexError, KeyError):
             logger.warning("Zaxiradagi yaroqsiz element o'tkazib yuborildi: %r", token)
     _spool_loaded = True
+    if _invoice_msgs_mem:
+        _spool_sync()  # kechikib yuklangan zaxira xotiradagi yangi yozuvlar bilan birlashtirilib saqlanadi
+    return True
 
 
 def _mem_set(token: str, item) -> None:
@@ -5803,6 +5817,8 @@ async def on_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         snap_exp = order["snap_expires"] or 0
         if state.plan != order["snap_plan"] or _snap_exp(state) != snap_exp:
             return await answer(False, "pay_err_changed")
+        if not db.claim_checkout(order["token"], q.from_user.id, time.time()):  # shu buyurtma uchun boshqa to'lov hozirgina tasdiqlangan
+            return await answer(False, "pay_err_in_progress")
     except Exception:
         logger.exception("pre_checkout xatosi")
         return await answer(False, "pay_err_try_later")
@@ -5854,10 +5870,36 @@ async def process_payment(bot, user_id: int, token: str, charge_id: str, amount:
         note = "\n⚠️ Buyurtmadan keyin tarif holati o'zgargan edi — mavjud huquqlar saqlab qolindi, to'langan qiymat qo'shildi." if res.get("state_changed") else ""
         await _notify_admin(bot, f"⭐ To'lov: {_label_for(user_id)}\n{plan}, {amount} ⭐, order {token}\ncharge: {charge_id}{note}")
     elif status == "unmatched":
+        if str(res.get("reason", "")).startswith("order_closed") and currency == "XTR" and await _auto_refund_duplicate(bot, user_id, charge_id, amount):
+            return status  # bir buyurtma ikki marta to'langan: ortiqcha to'lov avtomatik qaytarildi
         if notify_user:
             await _try_send(bot, user_id, t(lang, "pay_unmatched"))
         await _notify_admin(bot, f"🚨 Mos kelmagan to'lov ({res.get('reason')}): {_label_for(user_id)}\n{amount} {currency}, order {token}\ncharge: {charge_id}\nQaytarish: /refund {charge_id}")
     return status
+
+
+async def _auto_refund_duplicate(bot, user_id: int, charge_id: str, amount: int) -> bool:
+    """Bir buyurtma uchun ikkinchi (ortiqcha) to'lov: obunaga tegmasdan Stars avtomatik qaytariladi. Muvaffaqiyatsiz bo'lsa — False (admin qo'lda hal qiladi)."""
+    try:
+        row, _ = db.begin_refund(charge_id)
+        if row is None:
+            return False
+        try:
+            await bot.refund_star_payment(user_id=user_id, telegram_payment_charge_id=charge_id)
+        except Exception as e:
+            if "ALREADY_REFUNDED" not in str(e).upper().replace(" ", "_"):
+                logger.warning("Ortiqcha to'lovni avtomatik qaytarib bo'lmadi (charge=%s): %s", charge_id, e)
+                if isinstance(e, TelegramError) and not (isinstance(e, NetworkError) and not isinstance(e, BadRequest)):
+                    db.fail_refund(row["id"])  # aniq rad etildi: 'unmatched' holatiga qaytadi, admin qo'lda ko'radi
+                return False  # tarmoq xatosida 'refunding' qoladi: solishtirish/qo'lda /refund yakunlaydi
+        db.finish_refund(row["id"])
+    except Exception:
+        logger.exception("Avtomatik refund xatosi (charge=%s)", charge_id)
+        return False
+    lang = get_lang(user_id)
+    await _try_send(bot, user_id, t(lang, "pay_duplicate_refunded", stars=amount))
+    await _notify_admin(bot, f"↩️ Ikki marta to'langan buyurtma: ortiqcha {amount} ⭐ avtomatik qaytarildi — {_label_for(user_id)}, charge {charge_id}")
+    return True
 
 
 async def payment_retry_job(context: ContextTypes.DEFAULT_TYPE):
