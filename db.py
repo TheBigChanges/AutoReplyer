@@ -282,6 +282,7 @@ def init_db():
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS grant_end DOUBLE PRECISION")
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS grant_value DOUBLE PRECISION")
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS invoice_msg_id BIGINT")
+        cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS checkout_at DOUBLE PRECISION")
         # Kelgan to'lov hodisalari (inbox): qayta ishlanmaguncha saqlanadi — server qayta ishga tushsa ham yo'qolmaydi
         cur.execute(
             """
@@ -1103,6 +1104,19 @@ def get_reusable_order(user_id: int, plan: str, months: int, stars: int, snap_pl
         )
         row = cur.fetchone()
         return dict(row) if row else None
+
+
+def claim_checkout(token: str, user_id: int, now: float | None = None, window_seconds: float = 90.0) -> bool:
+    """Buyurtma uchun to'lov jarayonini (pre_checkout) atomik 'band qiladi': oxirgi `window_seconds` ichida boshqa checkout tasdiqlangan bo'lsa — False.
+    Shunda bir buyurtmaning ikki invoice'i bir vaqtda to'lanmaydi (ikkinchi to'lov ortiqcha Stars yechilishiga olib kelardi)."""
+    now = time.time() if now is None else now
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE payments SET checkout_at = %s WHERE token = %s AND user_id = %s AND status = 'pending' "
+            "AND (checkout_at IS NULL OR checkout_at < %s) RETURNING id",
+            (now, token, user_id, now - window_seconds),
+        )
+        return cur.fetchone() is not None
 
 
 def cancel_order(token: str, user_id: int):
