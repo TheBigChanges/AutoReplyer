@@ -433,6 +433,27 @@ class DigestTests(unittest.TestCase):
         rel.assert_called_once_with(1, "2026-11-01")
         b.send_message.assert_not_awaited()
 
+    def test_release_failure_does_not_crash_job_and_is_retried_on_disconnect(self):
+        import psycopg2
+        b = MagicMock()
+        b.send_message = AsyncMock()
+        with patch.object(db, "get_settings", return_value={}), patch.object(db, "get_block", return_value=None), \
+                patch.object(db, "claim_inbox_digest", return_value=True), \
+                patch.object(db, "release_inbox_digest", side_effect=psycopg2.OperationalError("down")), \
+                patch.object(db, "get_pending_chats", side_effect=RuntimeError("db down")), \
+                patch.object(bot, "plan_of", return_value="plus"), patch.object(bot, "ADMIN_ID", ADMIN):
+            self.assertEqual(run(bot.send_inbox_digest(b, self._owner(), self.NOW)), "failed")  # istisno tashqariga chiqmaydi
+        calls = []
+
+        def flaky(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise psycopg2.OperationalError("lost")
+        wrapped = db.retry_on_disconnect(flaky)
+        wrapped(1, "2026-11-01")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("release_inbox_digest", [n for n in ("release_inbox_digest",) if getattr(db.release_inbox_digest, "__wrapped__", None)])
+
     def test_digest_text_build_failure_allows_retry(self):
         res, b, cl, rel, _ = self._send()  # normal holat: bandlik qaytarilmaydi
         rel.assert_not_called()
