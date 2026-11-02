@@ -291,6 +291,8 @@ Smart Inbox helps you notice conversations you have not answered yourself. It ru
 - Stored per chat: Telegram chat ID, the customer's display name, message IDs, counters and timestamps. **No message text or media.**
 - Data older than **14 days** is deleted automatically. Turning Smart Inbox off deletes everything tracked for you immediately.
 - Only chats the bot actually received (through your Telegram Business connection) are counted; messages the bot never saw cannot be reported, and chats from before you enabled the feature are not included.
+- Smart Inbox only observes, so it keeps tracking even when the connection has no "reply" permission (auto-replies stay off in that case). Messages sent by the bot itself are recognised through Telegram's `sender_business_bot` field and never count as your reply.
+- **MVP limitation:** if a customer deletes a message, Telegram sends a separate "deleted messages" event that v1.3 does not process yet, so a chat may stay in the unanswered list until you reply or the 14-day retention expires.
 - After you disconnect the Business connection, the digest still reminds you about chats tracked earlier until you turn Smart Inbox off.
 
 ### 🔀 How automatic replies are chosen
