@@ -2652,7 +2652,10 @@ def set_inbox_settings(owner_id: int, **fields) -> None:
     if "digest_minutes" in fields and not (0 <= int(fields["digest_minutes"]) < 1440):
         raise ValueError("digest_minutes 0..1439 bo'lishi kerak")
     cols = list(fields)
-    with get_conn() as conn, conn.cursor() as cur:
+
+    def tx(cur):
+        # Sozlama qatori shu tranzaksiyada qulflanadi: kuzatuv yozuvlari (FOR SHARE) o'chirish tugamaguncha kutadi,
+        # shuning uchun o'chirilgandan keyin eski ma'lumot qayta paydo bo'lmaydi.
         cur.execute(
             f"INSERT INTO inbox_settings (owner_user_id, {', '.join(cols)}) VALUES (%s, {', '.join(['%s'] * len(cols))}) "
             f"ON CONFLICT (owner_user_id) DO UPDATE SET {', '.join(f'{c} = EXCLUDED.{c}' for c in cols)}",
@@ -2660,6 +2663,8 @@ def set_inbox_settings(owner_id: int, **fields) -> None:
         )
         if fields.get("enabled") is False:
             cur.execute("DELETE FROM inbox_chats WHERE owner_user_id = %s", (owner_id,))
+
+    _run_tx(tx)
 
 
 def inbox_enabled(owner_id: int) -> bool:
@@ -2678,8 +2683,9 @@ def record_customer_message(owner_id: int, chat_id: int, message_id: int, name: 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
+            WITH s AS (SELECT 1 FROM inbox_settings WHERE owner_user_id = %s AND enabled FOR SHARE)
             INSERT INTO inbox_chats (owner_user_id, chat_id, customer_name, last_customer_msg_id, pending, pending_count, waiting_since, last_customer_at)
-            VALUES (%s, %s, %s, %s, TRUE, 1, %s, %s)
+            SELECT %s, %s, %s, %s, TRUE, 1, %s, %s FROM s
             ON CONFLICT (owner_user_id, chat_id) DO UPDATE SET
                 customer_name = CASE WHEN EXCLUDED.customer_name <> '' THEN EXCLUDED.customer_name ELSE inbox_chats.customer_name END,
                 last_customer_msg_id = EXCLUDED.last_customer_msg_id,
@@ -2692,7 +2698,7 @@ def record_customer_message(owner_id: int, chat_id: int, message_id: int, name: 
             WHERE inbox_chats.last_customer_msg_id < EXCLUDED.last_customer_msg_id
             RETURNING 1
             """,
-            (owner_id, chat_id, name, message_id, now, now),
+            (owner_id, owner_id, chat_id, name, message_id, now, now),
         )
         return cur.fetchone() is not None
 
@@ -2706,8 +2712,9 @@ def record_owner_reply(owner_id: int, chat_id: int, message_id: int, now: float 
         # keyin kelgan eski mijoz xabari suhbatni noto'g'ri "javobsiz" qilmaydi.
         cur.execute(
             """
+            WITH s AS (SELECT 1 FROM inbox_settings WHERE owner_user_id = %s AND enabled FOR SHARE)
             INSERT INTO inbox_chats (owner_user_id, chat_id, last_owner_msg_id, last_owner_at, pending, pending_count)
-            VALUES (%s, %s, %s, %s, FALSE, 0)
+            SELECT %s, %s, %s, %s, FALSE, 0 FROM s
             ON CONFLICT (owner_user_id, chat_id) DO UPDATE SET
                 last_owner_msg_id = GREATEST(inbox_chats.last_owner_msg_id, EXCLUDED.last_owner_msg_id),
                 last_owner_at = EXCLUDED.last_owner_at,
@@ -2716,7 +2723,7 @@ def record_owner_reply(owner_id: int, chat_id: int, message_id: int, now: float 
                 waiting_since = CASE WHEN EXCLUDED.last_owner_msg_id > inbox_chats.last_customer_msg_id THEN NULL ELSE inbox_chats.waiting_since END
             RETURNING pending
             """,
-            (owner_id, chat_id, message_id, now),
+            (owner_id, owner_id, chat_id, message_id, now),
         )
         row = cur.fetchone()
     return row is not None and row[0] is False
