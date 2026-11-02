@@ -38,6 +38,7 @@ It includes **Smart Onboarding**, **Smart FAQ**, **AI Personal Knowledge**, **Sm
 - [AI Personal Knowledge guide](#-ai-personal-knowledge-guide)
 - [AutoReply Analytics guide](#-autoreply-analytics-guide)
 - [Smart Auto-Reply Scheduler guide](#-smart-auto-reply-scheduler-guide)
+- [Smart Inbox Digest guide](#-smart-inbox-digest-guide)
 - [How automatic replies are chosen](#-how-automatic-replies-are-chosen)
 - [Plans & pricing](#-plans--pricing)
 - [Getting started as a user](#-getting-started-as-a-user)
@@ -257,6 +258,40 @@ From the Scheduler menu, **edit a rule's days, time or eligible custom text**, *
 - **Time zone:** Scheduler and Sleep Mode share the Name Clock time-zone setting if configured, otherwise **Asia/Tashkent**. The effective zone is shown in the Scheduler settings; access to extra selectable zones depends on the plan.
 - When a plan expires or is downgraded, existing saved rules remain in PostgreSQL, but only the **earliest rules within the new plan's limit** run. Per-rule custom reply text requires eligible access at reply time.
 - Owner-specific rules are persisted in the `schedule_rules` table. Reads use a **60-second in-memory cache** invalidated on local changes; on multi-worker deployments, another worker may briefly see old data until its cache expires. Unsaved editing drafts are temporary and may be lost on restart.
+
+### 📥 Smart Inbox Digest guide
+
+Smart Inbox helps you notice conversations you have not answered yourself. It runs without AI and **does not store message texts**.
+
+**How to turn it on**
+
+1. Open the control panel and press **📥 Smart Inbox**.
+2. Press **Enable**. The feature is off by default and only watches chats while it is on.
+3. Use **📋 Unanswered chats** to see the current list at any time, and **🔔 / 🔕** to turn the daily digest on or off.
+
+**What counts as unanswered**
+
+- A chat is unanswered until **you personally reply** in it. Replies sent by the bot (plain auto-reply, Smart FAQ, Automation, AI assistant) do **not** count as your reply.
+- When the customer writes again after your reply, the chat becomes unanswered again.
+- Repeated or late Telegram updates are not counted twice.
+
+**Daily digest**
+
+- One message per day with the number of unanswered chats, the longest wait and a list of chats (the customer's name links to the chat).
+- Default time: **20:00** in your time zone (the name-clock zone if your plan allows it, otherwise Tashkent). If there is nothing to report, no message is sent.
+- Each day's digest is claimed in the database before sending, so a restart or a second instance does not send it twice. If Telegram clearly rejects it, the bot retries a minute later; after a network timeout it does **not** resend (the message may have arrived).
+
+| Plan | Chats listed | Digest time |
+|---|---|---|
+| Free | up to **3** | fixed 20:00 |
+| Plus / Pro / Ultra | up to **20** | choose 08:00-22:00 (every 2 hours) |
+
+**Privacy, storage and limitations**
+
+- Stored per chat: Telegram chat ID, the customer's display name, message IDs, counters and timestamps. **No message text or media.**
+- Data older than **14 days** is deleted automatically. Turning Smart Inbox off deletes everything tracked for you immediately.
+- Only chats the bot actually received (through your Telegram Business connection) are counted; messages the bot never saw cannot be reported, and chats from before you enabled the feature are not included.
+- After you disconnect the Business connection, the digest still reminds you about chats tracked earlier until you turn Smart Inbox off.
 
 ### 🔀 How automatic replies are chosen
 
