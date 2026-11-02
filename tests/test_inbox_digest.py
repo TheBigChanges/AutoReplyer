@@ -104,6 +104,14 @@ class TrackingTests(DbBase):
         db.record_customer_message(self.o, 5, 100, "Ali", 1001.0)  # 100 < 101: bu xabarga allaqachon javob berilgan
         self.assertEqual(db.get_pending_chats(self.o, 10, 1002.0)[0], 0)
 
+    def test_owner_reply_before_first_customer_row_does_not_create_false_pending(self):
+        # hodisalar teskari tartibda: egasi javobi (101) mijoz xabaridan (100) oldin keladi, suhbat qatori hali yo'q
+        self.assertTrue(db.record_owner_reply(self.o, 31, 101, 1000.0))
+        db.record_customer_message(self.o, 31, 100, "Ali", 990.0)
+        self.assertEqual(db.get_pending_chats(self.o, 10, 1100.0)[0], 0)
+        db.record_customer_message(self.o, 31, 102, "Ali", 1200.0)  # keyingi yangi xabar esa javobsiz bo'ladi
+        self.assertEqual(db.get_pending_chats(self.o, 10, 1300.0)[0], 1)
+
     def test_concurrent_duplicates_count_once(self):
         res = []
         threads = [threading.Thread(target=lambda: res.append(db.record_customer_message(self.o, 7, 500, "X", 1000.0))) for _ in range(8)]
@@ -325,6 +333,31 @@ class DigestTests(unittest.TestCase):
                 patch.object(bot, "ADMIN_ID", ADMIN):
             self.assertEqual(run(bot.send_inbox_digest(b, self._owner(), self.NOW)), "skipped")
         b.send_message.assert_not_awaited()
+
+    def test_digest_db_failure_after_claim_allows_retry(self):
+        b = MagicMock()
+        b.send_message = AsyncMock()
+        with patch.object(db, "get_settings", return_value={}), patch.object(db, "get_block", return_value=None), \
+                patch.object(db, "claim_inbox_digest", return_value=True), patch.object(db, "release_inbox_digest") as rel, \
+                patch.object(db, "get_pending_chats", side_effect=RuntimeError("db down")), \
+                patch.object(bot, "plan_of", return_value="plus"), patch.object(bot, "ADMIN_ID", ADMIN):
+            res = run(bot.send_inbox_digest(b, self._owner(), self.NOW))
+        self.assertEqual(res, "failed")
+        rel.assert_called_once_with(1, "2026-11-01")
+        b.send_message.assert_not_awaited()
+
+    def test_digest_text_build_failure_allows_retry(self):
+        res, b, cl, rel, _ = self._send()  # normal holat: bandlik qaytarilmaydi
+        rel.assert_not_called()
+        b2 = MagicMock()
+        b2.send_message = AsyncMock()
+        with patch.object(db, "get_settings", return_value={}), patch.object(db, "get_block", return_value=None), \
+                patch.object(db, "claim_inbox_digest", return_value=True), patch.object(db, "release_inbox_digest") as rel2, \
+                patch.object(db, "get_pending_chats", return_value=(1, _rows(1, self.NOW))), \
+                patch.object(bot, "build_inbox_digest", side_effect=RuntimeError("fmt")), \
+                patch.object(bot, "plan_of", return_value="plus"), patch.object(bot, "ADMIN_ID", ADMIN):
+            self.assertEqual(run(bot.send_inbox_digest(b2, self._owner(), self.NOW)), "failed")
+        rel2.assert_called_once()
 
     def test_digest_html_escapes_customer_name(self):
         rows = [{"chat_id": 1, "customer_name": "<b>X&Y</b>", "pending_count": 1, "waiting_since": self.NOW - 60}]
