@@ -31,7 +31,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, TransactionPartnerUser, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, TransactionPartnerUser, Update, User
 from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
@@ -2325,6 +2325,16 @@ def inbox_limit_for(owner_id: int, plan: str | None = None) -> int:
     return inbox.INBOX_PLAN_LIMITS.get(plan, inbox.INBOX_PLAN_LIMITS["free"])
 
 
+async def _inbox_observe_only(bot, connection: dict, bm) -> None:
+    owner_id = connection["owner_user_id"]
+    if connection.get("is_blocked") or not await is_subscribed_cached(bot, owner_id):
+        return
+    if bm.from_user and bm.from_user.id == owner_id:
+        track_inbox_owner_reply(owner_id, bm)
+    elif bm.from_user and not bm.from_user.is_bot:
+        track_inbox_customer(owner_id, bm)
+
+
 def track_inbox_customer(owner_id: int, bm) -> None:
     """Mijoz xabarini (faqat Smart Inbox yoqilgan bo'lsa) yozadi. Xato asosiy avtojavob oqimiga xalaqit bermaydi."""
     try:
@@ -2337,8 +2347,18 @@ def track_inbox_customer(owner_id: int, bm) -> None:
         logger.exception("Smart Inbox: mijoz xabarini yozib bo'lmadi (owner=%s)", owner_id)
 
 
+def _is_bot_sent(bm) -> bool:
+    """Xabarni bot (biznes-bot) o'zi yuborganmi: Telegram'ning `sender_business_bot` maydoni (qayta ishga tushgandan keyin ham ishonchli)
+    yoki xotiradagi so'nggi yuborilganlar ro'yxati."""
+    if isinstance(getattr(bm, "sender_business_bot", None), User):
+        return True
+    return (bm.chat.id, bm.message_id) in _bot_sent_ids
+
+
 def track_inbox_owner_reply(owner_id: int, bm) -> None:
-    """Egasining SHAXSIY javobi (botning o'z xabari emas — chaqiruvchi _bot_sent_ids bilan filtrlaydi)."""
+    """Egasining SHAXSIY javobi (botning o'z xabari hisoblanmaydi)."""
+    if _is_bot_sent(bm):
+        return
     try:
         if db.inbox_enabled(owner_id):
             db.record_owner_reply(owner_id, bm.chat.id, bm.message_id)
@@ -7069,7 +7089,11 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bm = update.business_message
     if bm is not None:
         connection = db.get_connection_by_business_id(bm.business_connection_id)
-        if connection is None or not connection["is_enabled"] or not connection["can_reply"]:
+        if connection is None or not connection["is_enabled"]:
+            return
+        if not connection["can_reply"]:
+            # Javob berish huquqi yo'q: avtojavob ishlamaydi, lekin Smart Inbox faqat KUZATADI — kuzatuv davom etadi
+            await _inbox_observe_only(context.bot, connection, bm)
             return
 
         owner_id = connection["owner_user_id"]
@@ -7087,7 +7111,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # mijozlarga javob berishimiz kerak, shuning uchun o'tkazib yuboramiz.
         if bm.from_user and bm.from_user.id == owner_id:
             # Egasi chatga o'zi yozdi — AI shu chatda biroz jim turadi (botning o'z xabari bo'lsa — yo'q).
-            if (bm.chat.id, bm.message_id) not in _bot_sent_ids:
+            if not _is_bot_sent(bm):
                 try:
                     adopt_new_base_name(owner_id, getattr(bm.from_user, "first_name", None), getattr(bm.from_user, "last_name", None))
                 except Exception:
