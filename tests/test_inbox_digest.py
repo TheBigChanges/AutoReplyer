@@ -112,6 +112,41 @@ class TrackingTests(DbBase):
         db.record_customer_message(self.o, 31, 102, "Ali", 1200.0)  # keyingi yangi xabar esa javobsiz bo'ladi
         self.assertEqual(db.get_pending_chats(self.o, 10, 1300.0)[0], 1)
 
+    def test_disable_during_record_never_recreates_rows(self):
+        import psycopg2
+        holder = psycopg2.connect(TEST_DB_URL)
+        holder.autocommit = False
+        out = {}
+        try:
+            cur = holder.cursor()
+            # "o'chirish" tranzaksiyasi ochiq: sozlama qatori qulflangan, ma'lumot hali o'chirilmagan
+            cur.execute("UPDATE inbox_settings SET enabled = FALSE WHERE owner_user_id = %s", (self.o,))
+            t1 = threading.Thread(target=lambda: out.update(c=db.record_customer_message(self.o, 41, 1, "Ali", 1000.0)))
+            t2 = threading.Thread(target=lambda: out.update(r=db.record_owner_reply(self.o, 42, 1, 1000.0)))
+            t1.start(); t2.start()
+            time.sleep(0.4)
+            self.assertTrue(t1.is_alive() and t2.is_alive(), "yozuv o'chirish tranzaksiyasini kutishi kerak")
+            cur.execute("DELETE FROM inbox_chats WHERE owner_user_id = %s", (self.o,))
+            holder.commit()
+            t1.join(5); t2.join(5)
+        finally:
+            holder.close()
+        self.assertFalse(out["c"])
+        with db.get_conn() as conn, conn.cursor() as c2:
+            c2.execute("SELECT COUNT(*) FROM inbox_chats WHERE owner_user_id=%s", (self.o,))
+            self.assertEqual(c2.fetchone()[0], 0)
+
+    def test_records_ignored_when_feature_disabled_or_never_enabled(self):
+        other = self.o + 1
+        self.addCleanup(lambda: db.set_inbox_settings(other, enabled=False))
+        self.assertFalse(db.record_customer_message(other, 1, 1, "X", 1.0))  # sozlama qatori yo'q
+        db.set_inbox_settings(self.o, enabled=False)
+        self.assertFalse(db.record_customer_message(self.o, 1, 1, "X", 1.0))
+        self.assertFalse(db.record_owner_reply(self.o, 1, 2, 1.0))
+        with db.get_conn() as conn, conn.cursor() as c2:
+            c2.execute("SELECT COUNT(*) FROM inbox_chats WHERE owner_user_id IN (%s, %s)", (self.o, other))
+            self.assertEqual(c2.fetchone()[0], 0)
+
     def test_concurrent_duplicates_count_once(self):
         res = []
         threads = [threading.Thread(target=lambda: res.append(db.record_customer_message(self.o, 7, 500, "X", 1000.0))) for _ in range(8)]
@@ -169,8 +204,9 @@ class TrackingTests(DbBase):
 
 
 # --------------------------------------------------------------------------- bot
-def _bm(chat=5, mid=100, from_id=5, first="Ali", last=None, is_bot=False):
+def _bm(chat=5, mid=100, from_id=5, first="Ali", last=None, is_bot=False, via_bot=None):
     bm = MagicMock()
+    bm.sender_business_bot = via_bot
     bm.chat.id = chat
     bm.message_id = mid
     bm.from_user.id = from_id
@@ -237,6 +273,57 @@ class BotTrackingTests(unittest.TestCase):
                 patch.object(db, "record_owner_reply") as ro:
             run(bot.on_raw_update(u, MagicMock()))
         ro.assert_not_called()  # botning o'zi yuborgan xabar egasining javobi hisoblanmaydi
+
+    def test_bot_echo_after_restart_does_not_close_pending(self):
+        from telegram import User
+        # xotiradagi ro'yxat bo'sh (qayta ishga tushgan), lekin Telegram xabarni biznes-bot yuborgan deb belgilagan
+        echo = _bm(from_id=1, mid=555, via_bot=User(id=777, first_name="AutoReplyer", is_bot=True))
+        rc, ro = self._raw(echo, owner=1)
+        ro.assert_not_called()
+        rc.assert_not_called()
+        rc, ro = self._raw(_bm(from_id=1, mid=556), owner=1)  # oddiy shaxsiy javob — hisoblanadi
+        ro.assert_called_once()
+
+    def test_bot_echo_does_not_pause_ai_or_adopt_name(self):
+        from telegram import User
+        echo = _bm(from_id=1, mid=557, via_bot=User(id=777, first_name="B", is_bot=True))
+        with patch.object(bot, "adopt_new_base_name") as adopt:
+            self._raw(echo, owner=1)
+        adopt.assert_not_called()
+
+    def _raw_conn(self, bm, conn, subscribed=True):
+        u = MagicMock()
+        u.channel_post = None
+        u.business_connection = None
+        u.business_message = bm
+        with patch.object(db, "get_connection_by_business_id", return_value=conn), \
+                patch.object(bot, "is_subscribed_cached", AsyncMock(return_value=subscribed)), \
+                patch.object(bot, "_bot_sent_ids", set()), \
+                patch.object(db, "inbox_enabled", return_value=True), \
+                patch.object(db, "record_customer_message") as rc, patch.object(db, "record_owner_reply") as ro, \
+                patch.object(db, "get_settings") as gs:
+            ctx = MagicMock()
+            ctx.bot.send_message = AsyncMock()
+            run(bot.on_raw_update(u, ctx))
+        return rc, ro, gs, ctx
+
+    def test_inbox_keeps_tracking_when_can_reply_is_false_but_never_replies(self):
+        conn = {"owner_user_id": 1, "is_enabled": True, "can_reply": False}
+        rc, ro, gs, ctx = self._raw_conn(_bm(from_id=5), conn)
+        rc.assert_called_once()
+        gs.assert_not_called()  # avtojavob oqimiga o'tilmaydi
+        ctx.bot.send_message.assert_not_awaited()
+        rc, ro, *_ = self._raw_conn(_bm(from_id=1, mid=700), conn)
+        ro.assert_called_once()
+
+    def test_observe_only_respects_block_subscription_and_disabled_connection(self):
+        base = {"owner_user_id": 1, "is_enabled": True, "can_reply": False}
+        rc, *_ = self._raw_conn(_bm(), {**base, "is_blocked": True})
+        rc.assert_not_called()
+        rc, *_ = self._raw_conn(_bm(), base, subscribed=False)
+        rc.assert_not_called()
+        rc, *_ = self._raw_conn(_bm(), {**base, "is_enabled": False})
+        rc.assert_not_called()
 
     def test_bot_users_are_not_tracked(self):
         rc, _ = self._raw(_bm(from_id=77, is_bot=True), owner=1)
