@@ -2803,7 +2803,7 @@ for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
     "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_user_plan_state", "get_payment", "get_payment_by_charge", "list_user_payments", "list_recent_payments", "list_unprocessed_payment_events", "get_payment_recon_mark", "get_faq_entry", "count_faq_entries",
-    "get_analytics_rows", "get_inbox_settings", "inbox_enabled", "get_pending_chats", "list_inbox_owners", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
+    "get_analytics_rows", "release_inbox_digest", "get_inbox_settings", "inbox_enabled", "get_pending_chats", "list_inbox_owners", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
