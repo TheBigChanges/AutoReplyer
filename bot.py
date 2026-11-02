@@ -2468,6 +2468,17 @@ def build_inbox_digest(total: int, rows: list, now: float, lang: str) -> str:
     return "\n".join(lines)
 
 
+def _release_digest_safely(owner_id: int, date_str: str) -> bool:
+    """Bandlikni qaytaradi; baza ulanishi uzilgan bo'lsa db qatlami bir marta qayta uriniladi. Baribir bo'lmasa — xato jobni
+    yiqitmaydi, ogohlantirish yoziladi (kun o'tkazib yuborilishi mumkin; keyingi kun odatdagidek ishlaydi)."""
+    try:
+        db.release_inbox_digest(owner_id, date_str)
+        return True
+    except Exception:
+        logger.exception("Smart Inbox: kunlik bandlikni qaytarib bo'lmadi (owner=%s, kun=%s)", owner_id, date_str)
+        return False
+
+
 async def send_inbox_digest(bot, owner: dict, now_ts: float) -> str:
     """Bitta egasi uchun xulosani (vaqti kelgan bo'lsa) BIR MARTA yuboradi. Natija: 'not_due' | 'skipped' | 'empty' | 'sent' | 'unknown' | 'failed'."""
     owner_id = owner["owner_user_id"]
@@ -2487,8 +2498,8 @@ async def send_inbox_digest(bot, owner: dict, now_ts: float) -> str:
         text = build_inbox_digest(total, rows, now_ts, get_lang(owner_id))
     except Exception:
         # Yuborish hali boshlanmagan (baza/matn tayyorlash xatosi): kunlik bandlik qaytariladi, keyingi daqiqada qayta uriniladi
-        db.release_inbox_digest(owner_id, date_str)
         logger.exception("Smart Inbox: xulosani tayyorlashda xato (owner=%s) — qayta uriniladi", owner_id)
+        _release_digest_safely(owner_id, date_str)
         return "failed"
     try:
         await bot.send_message(owner_id, text, parse_mode="HTML")
@@ -2499,7 +2510,7 @@ async def send_inbox_digest(bot, owner: dict, now_ts: float) -> str:
         if isinstance(e, Forbidden):
             logger.info("Smart Inbox: egasi botni bloklagan (owner=%s)", owner_id)
             return "failed"
-        db.release_inbox_digest(owner_id, date_str)  # aniq rad etildi: keyingi daqiqada qayta uriniladi
+        _release_digest_safely(owner_id, date_str)  # aniq rad etildi: keyingi daqiqada qayta uriniladi
         logger.warning("Smart Inbox: xulosa yuborilmadi (owner=%s): %s", owner_id, e)
         return "failed"
     return "sent"
