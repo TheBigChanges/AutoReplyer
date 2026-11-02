@@ -2702,18 +2702,21 @@ def record_owner_reply(owner_id: int, chat_id: int, message_id: int, now: float 
     kechikib kelgan eski javob yangi mijoz xabarini yopib qo'ymasin). Bot avtojavoblari bu yerga yuborilmaydi."""
     now = time.time() if now is None else now
     with get_conn() as conn, conn.cursor() as cur:
+        # UPSERT: hodisalar teskari tartibda kelsa (egasi javobi mijoz xabaridan oldin) ham javob ID'si saqlanadi,
+        # keyin kelgan eski mijoz xabari suhbatni noto'g'ri "javobsiz" qilmaydi.
         cur.execute(
             """
-            UPDATE inbox_chats SET
-                last_owner_msg_id = GREATEST(last_owner_msg_id, %s),
-                last_owner_at = %s,
-                pending = CASE WHEN %s > last_customer_msg_id THEN FALSE ELSE pending END,
-                pending_count = CASE WHEN %s > last_customer_msg_id THEN 0 ELSE pending_count END,
-                waiting_since = CASE WHEN %s > last_customer_msg_id THEN NULL ELSE waiting_since END
-            WHERE owner_user_id = %s AND chat_id = %s
+            INSERT INTO inbox_chats (owner_user_id, chat_id, last_owner_msg_id, last_owner_at, pending, pending_count)
+            VALUES (%s, %s, %s, %s, FALSE, 0)
+            ON CONFLICT (owner_user_id, chat_id) DO UPDATE SET
+                last_owner_msg_id = GREATEST(inbox_chats.last_owner_msg_id, EXCLUDED.last_owner_msg_id),
+                last_owner_at = EXCLUDED.last_owner_at,
+                pending = CASE WHEN EXCLUDED.last_owner_msg_id > inbox_chats.last_customer_msg_id THEN FALSE ELSE inbox_chats.pending END,
+                pending_count = CASE WHEN EXCLUDED.last_owner_msg_id > inbox_chats.last_customer_msg_id THEN 0 ELSE inbox_chats.pending_count END,
+                waiting_since = CASE WHEN EXCLUDED.last_owner_msg_id > inbox_chats.last_customer_msg_id THEN NULL ELSE inbox_chats.waiting_since END
             RETURNING pending
             """,
-            (message_id, now, message_id, message_id, message_id, owner_id, chat_id),
+            (owner_id, chat_id, message_id, now),
         )
         row = cur.fetchone()
     return row is not None and row[0] is False
