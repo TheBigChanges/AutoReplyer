@@ -2460,12 +2460,18 @@ async def send_inbox_digest(bot, owner: dict, now_ts: float) -> str:
     date_str = now_local.date().isoformat()
     if not db.claim_inbox_digest(owner_id, date_str):  # parallel job/qayta ishga tushish: kun faqat bir marta band qilinadi
         return "skipped"
-    total, rows = db.get_pending_chats(owner_id, inbox_limit_for(owner_id), now_ts)
-    if total == 0:
-        return "empty"  # javobsiz suhbat yo'q — bo'sh xulosa yuborilmaydi
-    lang = get_lang(owner_id)
     try:
-        await bot.send_message(owner_id, build_inbox_digest(total, rows, now_ts, lang), parse_mode="HTML")
+        total, rows = db.get_pending_chats(owner_id, inbox_limit_for(owner_id), now_ts)
+        if total == 0:
+            return "empty"  # javobsiz suhbat yo'q — bo'sh xulosa yuborilmaydi
+        text = build_inbox_digest(total, rows, now_ts, get_lang(owner_id))
+    except Exception:
+        # Yuborish hali boshlanmagan (baza/matn tayyorlash xatosi): kunlik bandlik qaytariladi, keyingi daqiqada qayta uriniladi
+        db.release_inbox_digest(owner_id, date_str)
+        logger.exception("Smart Inbox: xulosani tayyorlashda xato (owner=%s) — qayta uriniladi", owner_id)
+        return "failed"
+    try:
+        await bot.send_message(owner_id, text, parse_mode="HTML")
     except TelegramError as e:
         if _send_outcome_unknown(e):
             logger.warning("Smart Inbox: xulosa natijasi noma'lum (owner=%s): %s — takror yuborilmaydi", owner_id, e)
