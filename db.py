@@ -373,6 +373,35 @@ def init_db():
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_inbox_pending ON inbox_chats(owner_user_id, pending, waiting_since)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_inbox_last_customer ON inbox_chats(last_customer_at)")
+        # Smart Inbox v1.2: digest holati (preparing -> sending -> sent), muhim suhbatlar, eslatmalar.
+        # digest_phase standarti 'sent': eski last_digest_date yozuvlari saqlanadi va qayta yuborilmaydi.
+        cur.execute("ALTER TABLE inbox_settings ADD COLUMN IF NOT EXISTS digest_phase TEXT NOT NULL DEFAULT 'sent'")
+        cur.execute("ALTER TABLE inbox_settings ADD COLUMN IF NOT EXISTS digest_claimed_at DOUBLE PRECISION")
+        cur.execute("ALTER TABLE inbox_settings ADD COLUMN IF NOT EXISTS digest_claim_token TEXT")
+        cur.execute("ALTER TABLE inbox_chats ADD COLUMN IF NOT EXISTS is_priority BOOLEAN NOT NULL DEFAULT FALSE")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_inbox_priority ON inbox_chats (owner_user_id, is_priority, waiting_since) WHERE pending = TRUE")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inbox_reminders (
+                id BIGSERIAL PRIMARY KEY,
+                owner_user_id BIGINT NOT NULL,
+                chat_id BIGINT NOT NULL,
+                due_at DOUBLE PRECISION NOT NULL,
+                due_local_date DATE NOT NULL,
+                state TEXT NOT NULL DEFAULT 'scheduled'
+                    CHECK (state IN ('scheduled', 'preparing', 'sending', 'sent', 'unknown', 'failed', 'cancelled')),
+                attempt_token TEXT,
+                claimed_at DOUBLE PRECISION,
+                created_at DOUBLE PRECISION NOT NULL,
+                sent_at DOUBLE PRECISION
+            )
+            """
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_one_active_reminder ON inbox_reminders(owner_user_id, chat_id) "
+            "WHERE state IN ('scheduled', 'preparing', 'sending')"
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_inbox_reminders_due ON inbox_reminders(state, due_at)")
         # Smart Auto-Reply Scheduler: haftalik jadvallar (days — bitmask, 0-bit = Dushanba; text NULL = standart matn)
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS scheduler_enabled BOOLEAN NOT NULL DEFAULT TRUE")
         cur.execute(
@@ -2637,10 +2666,14 @@ INBOX_NAME_MAX = 64
 def get_inbox_settings(owner_id: int) -> dict:
     """Smart Inbox sozlamalari (qator yo'q bo'lsa — standart: o'chiq, eslatma yoqiq, 20:00)."""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("SELECT enabled, notify, digest_minutes, last_digest_date FROM inbox_settings WHERE owner_user_id = %s", (owner_id,))
+        cur.execute(
+            "SELECT enabled, notify, digest_minutes, last_digest_date, digest_phase, digest_claimed_at FROM inbox_settings WHERE owner_user_id = %s",
+            (owner_id,),
+        )
         row = cur.fetchone()
     if row is None:
-        return {"enabled": False, "notify": True, "digest_minutes": INBOX_DEFAULT_MINUTES, "last_digest_date": None}
+        return {"enabled": False, "notify": True, "digest_minutes": INBOX_DEFAULT_MINUTES, "last_digest_date": None,
+                "digest_phase": "sent", "digest_claimed_at": None}
     return dict(row)
 
 
@@ -2663,6 +2696,7 @@ def set_inbox_settings(owner_id: int, **fields) -> None:
         )
         if fields.get("enabled") is False:
             cur.execute("DELETE FROM inbox_chats WHERE owner_user_id = %s", (owner_id,))
+            cur.execute("DELETE FROM inbox_reminders WHERE owner_user_id = %s", (owner_id,))  # bitta tranzaksiyada: priority va eslatmalar ham o'chadi
 
     _run_tx(tx)
 
@@ -2705,9 +2739,11 @@ def record_customer_message(owner_id: int, chat_id: int, message_id: int, name: 
 
 def record_owner_reply(owner_id: int, chat_id: int, message_id: int, now: float | None = None) -> bool:
     """Egasining SHAXSIY javobi: suhbat javobsizlar ro'yxatidan chiqadi (faqat javob ID'si oxirgi mijoz xabaridan katta bo'lsa —
-    kechikib kelgan eski javob yangi mijoz xabarini yopib qo'ymasin). Bot avtojavoblari bu yerga yuborilmaydi."""
+    kechikib kelgan eski javob yangi mijoz xabarini yopib qo'ymasin). Suhbat yopilsa, yuborilmagan eslatmalari ham BIR tranzaksiyada
+    bekor qilinadi. Bot avtojavoblari bu yerga yuborilmaydi."""
     now = time.time() if now is None else now
-    with get_conn() as conn, conn.cursor() as cur:
+
+    def tx(cur):
         # UPSERT: hodisalar teskari tartibda kelsa (egasi javobi mijoz xabaridan oldin) ham javob ID'si saqlanadi,
         # keyin kelgan eski mijoz xabari suhbatni noto'g'ri "javobsiz" qilmaydi.
         cur.execute(
@@ -2726,13 +2762,23 @@ def record_owner_reply(owner_id: int, chat_id: int, message_id: int, now: float 
             (owner_id, owner_id, chat_id, message_id, now),
         )
         row = cur.fetchone()
-    return row is not None and row[0] is False
+        answered = row is not None and row["pending"] is False
+        if answered:
+            cur.execute(
+                "UPDATE inbox_reminders SET state = 'cancelled' WHERE owner_user_id = %s AND chat_id = %s AND state IN ('scheduled', 'preparing')",
+                (owner_id, chat_id),
+            )
+        return answered
+
+    return _run_tx(tx)
 
 
-def get_pending_chats(owner_id: int, limit: int, now: float | None = None) -> tuple[int, list]:
-    """(javobsiz suhbatlar soni, eng uzoq kutayotgan `limit` tasi). 14 kundan eski suhbatlar hisobga olinmaydi."""
+def get_pending_chats(owner_id: int, limit: int, now: float | None = None, priority_first: bool = False) -> tuple[int, list]:
+    """(javobsiz suhbatlar soni, `limit` tasi). Tartib: priority_first=True (faqat Pro/Ultra) bo'lsa muhimlar avval, so'ng eng uzoq
+    kutayotgani; aks holda faqat kutish vaqti bo'yicha. 14 kundan eski suhbatlar hisobga olinmaydi."""
     now = time.time() if now is None else now
     cutoff = now - INBOX_RETENTION_DAYS * 86400
+    order = "is_priority DESC, waiting_since ASC, chat_id ASC" if priority_first else "waiting_since ASC, chat_id ASC"
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             "SELECT COUNT(*) AS n FROM inbox_chats WHERE owner_user_id = %s AND pending AND last_customer_at >= %s",
@@ -2740,43 +2786,287 @@ def get_pending_chats(owner_id: int, limit: int, now: float | None = None) -> tu
         )
         total = cur.fetchone()["n"]
         cur.execute(
-            "SELECT chat_id, customer_name, pending_count, waiting_since FROM inbox_chats "
-            "WHERE owner_user_id = %s AND pending AND last_customer_at >= %s ORDER BY waiting_since ASC, chat_id ASC LIMIT %s",
+            "SELECT chat_id, customer_name, pending_count, waiting_since, is_priority FROM inbox_chats "
+            f"WHERE owner_user_id = %s AND pending AND last_customer_at >= %s ORDER BY {order} LIMIT %s",
             (owner_id, cutoff, max(0, limit)),
         )
         rows = [dict(r) for r in cur.fetchall()]
     return total, rows
 
 
+def get_inbox_chat(owner_id: int, chat_id: int) -> dict | None:
+    """Bitta suhbat holati (faqat shu egasiniki: boshqa egasining chat_id'si None qaytaradi)."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT chat_id, customer_name, pending, pending_count, waiting_since, is_priority FROM inbox_chats "
+            "WHERE owner_user_id = %s AND chat_id = %s", (owner_id, chat_id))
+        r = cur.fetchone()
+    return dict(r) if r else None
+
+
+def get_pending_stats(owner_id: int, now: float | None = None) -> dict:
+    """BARCHA javobsiz suhbatlar bo'yicha: soni, eng uzoq kutish boshlangan vaqt va muhimlar soni (ro'yxat limitiga bog'liq emas)."""
+    now = time.time() if now is None else now
+    cutoff = now - INBOX_RETENTION_DAYS * 86400
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS total, MIN(waiting_since) AS oldest, COUNT(*) FILTER (WHERE is_priority) AS priority "
+            "FROM inbox_chats WHERE owner_user_id = %s AND pending AND last_customer_at >= %s",
+            (owner_id, cutoff),
+        )
+        r = cur.fetchone()
+    return {"total": r["total"], "oldest_waiting_since": r["oldest"], "priority": r["priority"]}
+
+
 def list_inbox_owners() -> list:
     """Smart Inbox yoqilgan va eslatmalari ochiq egalar."""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("SELECT owner_user_id, digest_minutes, last_digest_date FROM inbox_settings WHERE enabled AND notify ORDER BY owner_user_id")
+        cur.execute(
+            "SELECT owner_user_id, digest_minutes, last_digest_date, digest_phase, digest_claimed_at "
+            "FROM inbox_settings WHERE enabled AND notify ORDER BY owner_user_id"
+        )
         return [dict(r) for r in cur.fetchall()]
 
 
-def claim_inbox_digest(owner_id: int, date_str: str) -> bool:
-    """Shu kun uchun xulosani ATOMIK band qiladi (bir kunda bir marta yuborish: parallel job'lar/qayta ishga tushish ikki marta yubormaydi)."""
+# ---- Kunlik xulosa: preparing -> sending -> sent/unknown/empty/failed (har bir qadam token bilan himoyalangan)
+DIGEST_LEASE_SECONDS = 300.0
+
+
+def claim_inbox_digest(owner_id: int, date_str: str, token: str, now: float | None = None) -> bool:
+    """Shu kun uchun xulosani ATOMIK band qiladi ('preparing'). Kun band bo'lsa ham, agar u 'preparing' holatida qolib ketgan bo'lsa
+    (ishchi to'xtagan) va 5 daqiqalik lease tugagan bo'lsa — qayta band qilish mumkin. 'sending' va undan keyingi holatlar qayta olinmaydi."""
+    now = time.time() if now is None else now
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE inbox_settings SET last_digest_date = %s WHERE owner_user_id = %s AND enabled AND notify "
-            "AND (last_digest_date IS NULL OR last_digest_date <> %s) RETURNING 1",
-            (date_str, owner_id, date_str),
+            "UPDATE inbox_settings SET last_digest_date = %s, digest_phase = 'preparing', digest_claimed_at = %s, digest_claim_token = %s "
+            "WHERE owner_user_id = %s AND enabled AND notify AND (last_digest_date IS NULL OR last_digest_date <> %s "
+            "OR (digest_phase = 'preparing' AND digest_claimed_at < %s)) RETURNING 1",
+            (date_str, now, token, owner_id, date_str, now - DIGEST_LEASE_SECONDS),
         )
         return cur.fetchone() is not None
 
 
-def release_inbox_digest(owner_id: int, date_str: str) -> None:
-    """Xulosa aniq yuborilmagan bo'lsa (rad etildi) — band qilingan kunni qaytaradi (keyingi daqiqada qayta uriniladi)."""
+def start_inbox_digest_sending(owner_id: int, date_str: str, token: str, now: float | None = None) -> bool:
+    """'preparing' -> 'sending' (Telegram'ga yuborishdan OLDIN). Token mos kelmasa (boshqa ishchi qayta band qilgan) — False: yuborilmaydi."""
+    now = time.time() if now is None else now
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("UPDATE inbox_settings SET last_digest_date = NULL WHERE owner_user_id = %s AND last_digest_date = %s", (owner_id, date_str))
+        cur.execute(
+            "UPDATE inbox_settings SET digest_phase = 'sending', digest_claimed_at = %s WHERE owner_user_id = %s AND last_digest_date = %s "
+            "AND digest_claim_token = %s AND digest_phase = 'preparing' RETURNING 1",
+            (now, owner_id, date_str, token),
+        )
+        return cur.fetchone() is not None
+
+
+def finish_inbox_digest(owner_id: int, date_str: str, token: str, phase: str) -> bool:
+    """Yakuniy holat: 'sent' | 'unknown' | 'empty' | 'failed' (faqat o'z tokenimiz bilan)."""
+    if phase not in ("sent", "unknown", "empty", "failed"):
+        raise ValueError("Noto'g'ri digest holati")
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE inbox_settings SET digest_phase = %s WHERE owner_user_id = %s AND last_digest_date = %s AND digest_claim_token = %s "
+            "AND digest_phase IN ('preparing', 'sending') RETURNING 1",
+            (phase, owner_id, date_str, token),
+        )
+        return cur.fetchone() is not None
+
+
+def release_inbox_digest(owner_id: int, date_str: str, token: str) -> bool:
+    """Xulosa aniq yuborilmagan bo'lsa — band qilingan kunni qaytaradi (keyingi daqiqada qayta uriniladi). FAQAT o'z tokenimiz bilan:
+    eskirgan ishchi boshqa ishchining yangi band qilishini bekor qila olmaydi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE inbox_settings SET last_digest_date = NULL, digest_phase = 'sent', digest_claimed_at = NULL, digest_claim_token = NULL "
+            "WHERE owner_user_id = %s AND last_digest_date = %s AND digest_claim_token = %s AND digest_phase IN ('preparing', 'sending') RETURNING 1",
+            (owner_id, date_str, token),
+        )
+        return cur.fetchone() is not None
+
+
+# ---- Muhim (priority) suhbatlar
+def _priority_count(cur, owner_id: int, cutoff: float) -> int:
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM inbox_chats WHERE owner_user_id = %s AND is_priority AND pending AND last_customer_at >= %s",
+        (owner_id, cutoff),
+    )
+    return cur.fetchone()["n"]
+
+
+def count_priority_chats(owner_id: int, now: float | None = None) -> int:
+    now = time.time() if now is None else now
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        return _priority_count(cur, owner_id, now - INBOX_RETENTION_DAYS * 86400)
+
+
+def set_inbox_priority(owner_id: int, chat_id: int, priority: bool, limit: int, now: float | None = None) -> str:
+    """Suhbatni muhim deb belgilaydi / belgini olib tashlaydi. Natija: 'ok' | 'disabled' | 'no_chat' | 'forbidden' | 'limit'.
+    Tekshiruv va yozuv BITTA tranzaksiyada, inbox_settings qatori FOR UPDATE bilan qulflanadi (parallel bosishlar limitdan oshirmaydi).
+    Belgini olib tashlash tarifdan qat'i nazar mumkin. Faqat shu egasiga tegishli suhbat o'zgaradi."""
+    now = time.time() if now is None else now
+
+    def tx(cur):
+        cur.execute("SELECT enabled FROM inbox_settings WHERE owner_user_id = %s FOR UPDATE", (owner_id,))
+        st = cur.fetchone()
+        if st is None or not st["enabled"]:
+            return "disabled"
+        cur.execute("SELECT is_priority FROM inbox_chats WHERE owner_user_id = %s AND chat_id = %s FOR UPDATE", (owner_id, chat_id))
+        chat = cur.fetchone()
+        if chat is None:
+            return "no_chat"
+        if bool(chat["is_priority"]) == bool(priority):
+            return "ok"  # idempotent: eski tugma qayta bosilsa holat teskarilanmaydi
+        if priority:
+            if limit <= 0:
+                return "forbidden"
+            if _priority_count(cur, owner_id, now - INBOX_RETENTION_DAYS * 86400) >= limit:
+                return "limit"
+        cur.execute("UPDATE inbox_chats SET is_priority = %s WHERE owner_user_id = %s AND chat_id = %s", (bool(priority), owner_id, chat_id))
+        return "ok"
+
+    return _run_tx(tx)
+
+
+# ---- Eslatmalar (follow-up reminders)
+REMINDER_LEASE_SECONDS = 300.0
+_REMINDER_COUNTED = ("scheduled", "preparing", "sending", "sent", "unknown")  # kunlik limitga kiradi (cancelled/failed — kirmaydi)
+
+
+def schedule_inbox_reminder(owner_id: int, chat_id: int, due_at: float, due_local_date, daily_limit: int, now: float | None = None):
+    """Eslatma yaratadi (suhbat uchun bitta faol; qayta belgilansa eskisi bekor qilinadi). Natija: eslatma ID (int) yoki
+    'disabled' | 'forbidden' | 'no_chat' | 'limit'. Kunlik limit tekshiruvi va yaratish BITTA tranzaksiyada (qator FOR UPDATE)."""
+    now = time.time() if now is None else now
+
+    def tx(cur):
+        cur.execute("SELECT enabled FROM inbox_settings WHERE owner_user_id = %s FOR UPDATE", (owner_id,))
+        st = cur.fetchone()
+        if st is None or not st["enabled"]:
+            return "disabled"
+        if daily_limit <= 0:
+            return "forbidden"
+        cur.execute("SELECT pending FROM inbox_chats WHERE owner_user_id = %s AND chat_id = %s FOR UPDATE", (owner_id, chat_id))
+        chat = cur.fetchone()
+        if chat is None or not chat["pending"]:
+            return "no_chat"  # suhbat yo'q yoki allaqachon javob berilgan
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM inbox_reminders WHERE owner_user_id = %s AND due_local_date = %s AND state = ANY(%s) "
+            "AND NOT (chat_id = %s AND state IN ('scheduled', 'preparing', 'sending'))",
+            (owner_id, due_local_date, list(_REMINDER_COUNTED), chat_id),
+        )
+        if cur.fetchone()["n"] >= daily_limit:
+            return "limit"
+        cur.execute(
+            "UPDATE inbox_reminders SET state = 'cancelled' WHERE owner_user_id = %s AND chat_id = %s AND state IN ('scheduled', 'preparing')",
+            (owner_id, chat_id),
+        )
+        # shu suhbatda eslatma hozir yuborilmoqda ('sending') bo'lsa — UniqueViolation (tashqarida 'busy')
+        cur.execute(
+            "INSERT INTO inbox_reminders (owner_user_id, chat_id, due_at, due_local_date, created_at) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (owner_id, chat_id, due_at, due_local_date, now),
+        )
+        return cur.fetchone()["id"]
+
+    try:
+        return _run_tx(tx)
+    except psycopg2.errors.UniqueViolation:
+        return "busy"
+
+
+def count_inbox_reminders_for_date(owner_id: int, due_local_date) -> int:
+    """Shu mahalliy sana uchun kunlik limitga kiradigan eslatmalar (sent + unknown + faol; cancelled/failed kirmaydi)."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM inbox_reminders WHERE owner_user_id = %s AND due_local_date = %s AND state = ANY(%s)",
+            (owner_id, due_local_date, list(_REMINDER_COUNTED)),
+        )
+        return cur.fetchone()["n"]
+
+
+def cancel_inbox_reminder(owner_id: int, chat_id: int) -> bool:
+    """Faol (hali yuborilmagan) eslatmani bekor qiladi. Faqat shu egasining eslatmasi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE inbox_reminders SET state = 'cancelled' WHERE owner_user_id = %s AND chat_id = %s AND state IN ('scheduled', 'preparing') RETURNING 1",
+            (owner_id, chat_id),
+        )
+        return cur.fetchone() is not None
+
+
+def list_inbox_reminders(owner_id: int) -> list:
+    """Faol eslatmalar (suhbat ismi bilan), vaqt bo'yicha."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT r.chat_id, r.due_at, c.customer_name FROM inbox_reminders r "
+            "LEFT JOIN inbox_chats c ON c.owner_user_id = r.owner_user_id AND c.chat_id = r.chat_id "
+            "WHERE r.owner_user_id = %s AND r.state IN ('scheduled', 'preparing', 'sending') ORDER BY r.due_at",
+            (owner_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def claim_due_inbox_reminders(now: float, limit: int = 20) -> list:
+    """Vaqti kelgan eslatmalarni ATOMIK band qiladi (FOR UPDATE SKIP LOCKED: parallel nusxalar bir xil eslatmani olmaydi).
+    'preparing'da qolib ketgan (lease tugagan) eslatmalar ham qayta olinadi; 'sending' qayta olinmaydi."""
+    def tx(cur):
+        cur.execute(
+            "SELECT id FROM inbox_reminders WHERE (state = 'scheduled' AND due_at <= %s) "
+            "OR (state = 'preparing' AND claimed_at < %s) ORDER BY due_at LIMIT %s FOR UPDATE SKIP LOCKED",
+            (now, now - REMINDER_LEASE_SECONDS, limit),
+        )
+        ids = [r["id"] for r in cur.fetchall()]
+        if not ids:
+            return []
+        cur.execute(
+            "UPDATE inbox_reminders SET state = 'preparing', claimed_at = %s, attempt_token = md5(random()::text || id::text) "
+            "WHERE id = ANY(%s) RETURNING id, owner_user_id, chat_id, due_at, attempt_token",
+            (now, ids),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    return _run_tx(tx)
+
+
+def mark_inbox_reminder_sending(reminder_id: int, token: str, now: float | None = None) -> bool:
+    """'preparing' -> 'sending' (Telegram'ga yuborishdan OLDIN). Token mos bo'lmasa yoki bekor qilingan bo'lsa — False."""
+    now = time.time() if now is None else now
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE inbox_reminders SET state = 'sending', claimed_at = %s WHERE id = %s AND attempt_token = %s AND state = 'preparing' RETURNING 1",
+            (now, reminder_id, token),
+        )
+        return cur.fetchone() is not None
+
+
+def finish_inbox_reminder(reminder_id: int, token: str, state: str, now: float | None = None) -> bool:
+    """Yakuniy holat: 'sent' | 'unknown' | 'failed' | 'cancelled' (faqat o'z tokenimiz bilan, 'preparing'/'sending'dan)."""
+    if state not in ("sent", "unknown", "failed", "cancelled"):
+        raise ValueError("Noto'g'ri eslatma holati")
+    now = time.time() if now is None else now
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE inbox_reminders SET state = %s, sent_at = CASE WHEN %s = 'sent' THEN %s ELSE sent_at END "
+            "WHERE id = %s AND attempt_token = %s AND state IN ('preparing', 'sending') RETURNING 1",
+            (state, state, now, reminder_id, token),
+        )
+        return cur.fetchone() is not None
+
+
+def mark_stale_sending_reminders(now: float) -> int:
+    """'sending'da qolib ketgan (ishchi to'xtagan) eslatmalar 'unknown' bo'ladi va AVTOMATIK qayta yuborilmaydi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE inbox_reminders SET state = 'unknown' WHERE state = 'sending' AND claimed_at < %s",
+            (now - REMINDER_LEASE_SECONDS,),
+        )
+        return cur.rowcount
 
 
 def purge_old_inbox(max_age_days: int = INBOX_RETENTION_DAYS) -> int:
     cutoff = time.time() - max_age_days * 86400
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM inbox_chats WHERE COALESCE(last_customer_at, last_owner_at, 0) < %s", (cutoff,))
-        return cur.rowcount
+        n = cur.rowcount
+        cur.execute("DELETE FROM inbox_reminders WHERE created_at < %s", (cutoff,))
+        return n
 
 
 # --------------------------------------------------------------------------
@@ -2803,7 +3093,7 @@ for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
     "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_user_plan_state", "get_payment", "get_payment_by_charge", "list_user_payments", "list_recent_payments", "list_unprocessed_payment_events", "get_payment_recon_mark", "get_faq_entry", "count_faq_entries",
-    "get_analytics_rows", "release_inbox_digest", "get_inbox_settings", "inbox_enabled", "get_pending_chats", "list_inbox_owners", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
+    "get_analytics_rows", "release_inbox_digest", "finish_inbox_digest", "get_inbox_settings", "inbox_enabled", "get_pending_chats", "get_pending_stats", "count_priority_chats", "list_inbox_reminders", "get_inbox_chat", "count_inbox_reminders_for_date", "list_inbox_owners", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
