@@ -2,6 +2,7 @@
 import asyncio
 import os
 import random
+import secrets
 import sys
 import threading
 import time
@@ -60,6 +61,7 @@ class DbBase(unittest.TestCase):
 
     def _clean(self):
         with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM inbox_reminders WHERE owner_user_id=%s", (self.o,))
             cur.execute("DELETE FROM inbox_chats WHERE owner_user_id=%s", (self.o,))
             cur.execute("DELETE FROM inbox_settings WHERE owner_user_id=%s", (self.o,))
 
@@ -193,14 +195,14 @@ class TrackingTests(DbBase):
 
     def test_claim_digest_once_even_under_concurrency(self):
         res = []
-        threads = [threading.Thread(target=lambda: res.append(db.claim_inbox_digest(self.o, "2026-11-01"))) for _ in range(8)]
+        threads = [threading.Thread(target=lambda: res.append(db.claim_inbox_digest(self.o, "2026-11-01", secrets.token_hex(4)))) for _ in range(8)]
         [x.start() for x in threads]
         [x.join() for x in threads]
         self.assertEqual(sum(res), 1)
-        self.assertFalse(db.claim_inbox_digest(self.o, "2026-11-01"))  # qayta ishga tushgandan keyin ham
-        self.assertTrue(db.claim_inbox_digest(self.o, "2026-11-02"))
-        db.release_inbox_digest(self.o, "2026-11-02")
-        self.assertTrue(db.claim_inbox_digest(self.o, "2026-11-02"))
+        self.assertFalse(db.claim_inbox_digest(self.o, "2026-11-01", "x"))  # qayta ishga tushgandan keyin ham
+        self.assertTrue(db.claim_inbox_digest(self.o, "2026-11-02", "a"))
+        db.release_inbox_digest(self.o, "2026-11-02", "a")
+        self.assertTrue(db.claim_inbox_digest(self.o, "2026-11-02", "b"))
 
 
 # --------------------------------------------------------------------------- bot
@@ -344,9 +346,13 @@ class DigestTests(unittest.TestCase):
         b = MagicMock()
         b.send_message = AsyncMock(side_effect=send_side)
         rows = rows if rows is not None else _rows(min(total, 3), now or self.NOW)
+        stats = {"total": total, "oldest_waiting_since": (now or self.NOW) - 3600.0 * max(total, 1), "priority": 0}
         with patch.object(db, "get_settings", return_value={}), patch.object(db, "get_block", return_value=None), \
                 patch.object(db, "claim_inbox_digest", return_value=claim) as cl, \
                 patch.object(db, "release_inbox_digest") as rel, \
+                patch.object(db, "get_pending_stats", return_value=stats), \
+                patch.object(db, "start_inbox_digest_sending", return_value=True) as self.start, \
+                patch.object(db, "finish_inbox_digest") as self.fin, \
                 patch.object(db, "get_pending_chats", return_value=(total, rows)) as gp, \
                 patch.object(bot, "plan_of", return_value=plan), patch.object(bot, "ADMIN_ID", ADMIN), \
                 patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS)):  # conftest barcha funksiyani ochadi: haqiqiy tarif jadvali
@@ -360,7 +366,8 @@ class DigestTests(unittest.TestCase):
         self.assertIn("tg://user?id=100", text)
         self.assertIn("Mijoz0", text)
         self.assertEqual(b.send_message.await_args.kwargs["parse_mode"], "HTML")
-        cl.assert_called_once_with(1, "2026-11-01")
+        self.assertEqual(cl.call_args.args[:2], (1, "2026-11-01"))
+        self.assertEqual(self.fin.call_args.args[1:], ("2026-11-01", cl.call_args.args[2], "sent"))
 
     def test_not_due_before_time(self):
         early = datetime(2026, 11, 1, 19, 0, tzinfo=bot.TASHKENT_TZ).timestamp()
@@ -402,11 +409,13 @@ class DigestTests(unittest.TestCase):
         res, b, cl, rel, _ = self._send(send_side=TimedOut())
         self.assertEqual(res, "unknown")
         rel.assert_not_called()
+        self.assertEqual(self.fin.call_args.args[-1], "unknown")
 
     def test_definite_rejection_releases_day_for_retry(self):
         res, b, cl, rel, _ = self._send(send_side=BadRequest("x"))
         self.assertEqual(res, "failed")
-        rel.assert_called_once_with(1, "2026-11-01")
+        self.assertEqual(rel.call_args.args[:2], (1, "2026-11-01"))
+        rel.assert_called_once()
 
     def test_blocked_owner_keeps_day_claimed(self):
         res, b, cl, rel, _ = self._send(send_side=Forbidden("blocked"))
@@ -426,11 +435,12 @@ class DigestTests(unittest.TestCase):
         b.send_message = AsyncMock()
         with patch.object(db, "get_settings", return_value={}), patch.object(db, "get_block", return_value=None), \
                 patch.object(db, "claim_inbox_digest", return_value=True), patch.object(db, "release_inbox_digest") as rel, \
-                patch.object(db, "get_pending_chats", side_effect=RuntimeError("db down")), \
+                patch.object(db, "get_pending_stats", side_effect=RuntimeError("db down")), \
                 patch.object(bot, "plan_of", return_value="plus"), patch.object(bot, "ADMIN_ID", ADMIN):
             res = run(bot.send_inbox_digest(b, self._owner(), self.NOW))
         self.assertEqual(res, "failed")
-        rel.assert_called_once_with(1, "2026-11-01")
+        self.assertEqual(rel.call_args.args[:2], (1, "2026-11-01"))
+        rel.assert_called_once()
         b.send_message.assert_not_awaited()
 
     def test_release_failure_does_not_crash_job_and_is_retried_on_disconnect(self):
@@ -440,7 +450,7 @@ class DigestTests(unittest.TestCase):
         with patch.object(db, "get_settings", return_value={}), patch.object(db, "get_block", return_value=None), \
                 patch.object(db, "claim_inbox_digest", return_value=True), \
                 patch.object(db, "release_inbox_digest", side_effect=psycopg2.OperationalError("down")), \
-                patch.object(db, "get_pending_chats", side_effect=RuntimeError("db down")), \
+                patch.object(db, "get_pending_stats", side_effect=RuntimeError("db down")), \
                 patch.object(bot, "plan_of", return_value="plus"), patch.object(bot, "ADMIN_ID", ADMIN):
             self.assertEqual(run(bot.send_inbox_digest(b, self._owner(), self.NOW)), "failed")  # istisno tashqariga chiqmaydi
         calls = []
@@ -450,7 +460,7 @@ class DigestTests(unittest.TestCase):
             if len(calls) == 1:
                 raise psycopg2.OperationalError("lost")
         wrapped = db.retry_on_disconnect(flaky)
-        wrapped(1, "2026-11-01")
+        wrapped(1, "2026-11-01", "tok")
         self.assertEqual(len(calls), 2)
         self.assertIn("release_inbox_digest", [n for n in ("release_inbox_digest",) if getattr(db.release_inbox_digest, "__wrapped__", None)])
 
@@ -461,6 +471,7 @@ class DigestTests(unittest.TestCase):
         b2.send_message = AsyncMock()
         with patch.object(db, "get_settings", return_value={}), patch.object(db, "get_block", return_value=None), \
                 patch.object(db, "claim_inbox_digest", return_value=True), patch.object(db, "release_inbox_digest") as rel2, \
+                patch.object(db, "get_pending_stats", return_value={"total": 1, "oldest_waiting_since": self.NOW - 60, "priority": 0}), \
                 patch.object(db, "get_pending_chats", return_value=(1, _rows(1, self.NOW))), \
                 patch.object(bot, "build_inbox_digest", side_effect=RuntimeError("fmt")), \
                 patch.object(bot, "plan_of", return_value="plus"), patch.object(bot, "ADMIN_ID", ADMIN):
@@ -498,6 +509,332 @@ class DigestTests(unittest.TestCase):
             self.assertTrue(any(j.callback.__name__ == "inbox_digest_job" for j in app.job_queue.jobs()))
 
 
+PLANS = lambda plan: (  # noqa: E731
+    patch.object(bot, "FEATURE_PLANS", dict(bot.DEFAULT_FEATURE_PLANS)), patch.object(bot, "plan_of", return_value=plan),
+    patch.object(bot, "ADMIN_ID", ADMIN))
+
+
+class _Plan:
+    """with _Plan('pro'): haqiqiy tarif jadvali (conftest hamma funksiyani ochadi) va tarif almashtiriladi."""
+    def __init__(self, plan):
+        self.ps = PLANS(plan)
+
+    def __enter__(self):
+        [p.start() for p in self.ps]
+
+    def __exit__(self, *a):
+        [p.stop() for p in self.ps]
+
+
+NOW_TS = datetime(2026, 11, 1, 20, 30, tzinfo=bot.TASHKENT_TZ).timestamp()
+
+
+@unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL yo'q")
+class DigestRecoveryTests(DbBase):
+    """Digest recovery: preparing -> sending -> sent/unknown (token + 5 daqiqalik lease)."""
+
+    def _owner(self):
+        return next(o for o in db.list_inbox_owners() if o["owner_user_id"] == self.o)
+
+    def _bot(self, side=None):
+        b = MagicMock()
+        b.send_message = AsyncMock(side_effect=side)
+        return b
+
+    def _run_send(self, b, now):
+        with patch.object(bot, "plan_of", return_value="plus"), patch.object(bot, "ADMIN_ID", ADMIN), \
+                patch.object(db, "get_block", return_value=None):
+            return run(bot.send_inbox_digest(b, self._owner(), now))
+
+    def _phase(self):
+        return db.get_inbox_settings(self.o)["digest_phase"]
+
+    def test_preparing_claim_recovers_after_db_outage(self):
+        import psycopg2
+        db.record_customer_message(self.o, 5, 100, "Ali", NOW_TS - 3600)
+        b = self._bot()
+        with patch.object(db, "get_pending_stats", side_effect=psycopg2.OperationalError("down")), \
+                patch.object(db, "release_inbox_digest", side_effect=psycopg2.OperationalError("down")):
+            self.assertEqual(self._run_send(b, NOW_TS), "failed")  # tayyorlash ham, qaytarish ham yiqildi
+        self.assertEqual(self._phase(), "preparing")  # bandlik 'preparing'da qolib ketdi
+        self.assertEqual(self._run_send(b, NOW_TS + 60), "not_due")  # lease (5 daq) hali tugamagan
+        self.assertEqual(self._run_send(b, NOW_TS + 301), "sent")  # lease tugadi: qayta olinadi
+        self.assertEqual(b.send_message.await_count, 1)
+        self.assertEqual(self._phase(), "sent")
+
+    def test_sending_claim_is_not_retried(self):
+        db.record_customer_message(self.o, 5, 100, "Ali", NOW_TS - 3600)
+        b = self._bot(side=TimedOut())
+        self.assertEqual(self._run_send(b, NOW_TS), "unknown")
+        self.assertEqual(self._phase(), "unknown")
+        for later in (NOW_TS + 400, NOW_TS + 4000):
+            self.assertEqual(self._run_send(b, later), "not_due")
+        self.assertEqual(b.send_message.await_count, 1)
+        # ishchi 'sending' da o'lgan: qayta olinmaydi
+        db.set_inbox_settings(self.o, notify=True)
+        self.assertTrue(db.claim_inbox_digest(self.o, "2026-11-02", "t1", NOW_TS))
+        self.assertTrue(db.start_inbox_digest_sending(self.o, "2026-11-02", "t1", NOW_TS))
+        self.assertFalse(db.claim_inbox_digest(self.o, "2026-11-02", "t2", NOW_TS + 10000))
+        self.assertFalse(inbox.digest_due(datetime(2026, 11, 2, 21, 0), 1200, "2026-11-02", "sending", NOW_TS, NOW_TS + 10000))
+
+    def test_stale_worker_cannot_release_new_claim(self):
+        self.assertTrue(db.claim_inbox_digest(self.o, "2026-11-01", "A", 1000.0))
+        self.assertFalse(db.claim_inbox_digest(self.o, "2026-11-01", "B", 1100.0))  # lease hali tugamagan
+        self.assertTrue(db.claim_inbox_digest(self.o, "2026-11-01", "B", 1400.0))  # tugagan: B oldi
+        self.assertFalse(db.release_inbox_digest(self.o, "2026-11-01", "A"))  # eskirgan ishchi B ning bandini bekor qila olmaydi
+        self.assertFalse(db.start_inbox_digest_sending(self.o, "2026-11-01", "A", 1401.0))
+        self.assertFalse(db.finish_inbox_digest(self.o, "2026-11-01", "A", "sent"))
+        self.assertEqual(self._phase(), "preparing")
+        self.assertTrue(db.start_inbox_digest_sending(self.o, "2026-11-01", "B", 1402.0))
+        self.assertFalse(db.release_inbox_digest(self.o, "2026-11-01", "A"))
+        self.assertTrue(db.finish_inbox_digest(self.o, "2026-11-01", "B", "sent"))
+
+    def test_stale_worker_does_not_send_after_losing_claim(self):
+        db.record_customer_message(self.o, 5, 100, "Ali", NOW_TS - 3600)
+        b = self._bot()
+        real_start = db.start_inbox_digest_sending
+
+        def lose_claim(owner_id, date_str, token, now=None):
+            db.claim_inbox_digest(owner_id, date_str, "other", NOW_TS + 400)  # boshqa ishchi lease tugagach oldi
+            return real_start(owner_id, date_str, token, now)
+        with patch.object(db, "start_inbox_digest_sending", side_effect=lose_claim):
+            self.assertEqual(self._run_send(b, NOW_TS), "skipped")
+        b.send_message.assert_not_awaited()
+
+    def test_digest_does_not_duplicate_after_restart(self):
+        db.record_customer_message(self.o, 5, 100, "Ali", NOW_TS - 3600)
+        b = self._bot()
+        self.assertEqual(self._run_send(b, NOW_TS), "sent")
+        db.init_db()  # qayta ishga tushish (migratsiyalar qayta ishlaydi)
+        self.assertEqual(self._run_send(b, NOW_TS + 60), "not_due")
+        self.assertEqual(self._run_send(b, NOW_TS + 900), "not_due")
+        self.assertEqual(b.send_message.await_count, 1)
+
+    def test_legacy_digest_date_is_preserved(self):
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE inbox_settings SET last_digest_date='2026-11-01', digest_phase=DEFAULT, digest_claimed_at=NULL, "
+                        "digest_claim_token=NULL WHERE owner_user_id=%s", (self.o,))
+        db.init_db()
+        cfg = db.get_inbox_settings(self.o)
+        self.assertEqual((cfg["last_digest_date"], cfg["digest_phase"]), ("2026-11-01", "sent"))  # eski yozuv 'sent' hisoblanadi
+        db.record_customer_message(self.o, 5, 100, "Ali", NOW_TS - 3600)
+        b = self._bot()
+        self.assertEqual(self._run_send(b, NOW_TS), "not_due")  # qayta yuborilmaydi
+        b.send_message.assert_not_awaited()
+
+    def test_digest_due_pure_lease(self):
+        d = datetime(2026, 11, 1, 21, 0)
+        self.assertFalse(inbox.digest_due(d, 1200, "2026-11-01", "preparing", 1000.0, 1200.0))
+        self.assertTrue(inbox.digest_due(d, 1200, "2026-11-01", "preparing", 1000.0, 1301.0))
+        for ph in ("sending", "sent", "unknown", "empty", "failed"):
+            self.assertFalse(inbox.digest_due(d, 1200, "2026-11-01", ph, 1000.0, 99999.0), ph)
+
+    def test_unknown_phase_blocks_retry_and_empty_is_final(self):
+        self.assertTrue(db.claim_inbox_digest(self.o, "2026-11-01", "A", 1000.0))
+        self.assertTrue(db.finish_inbox_digest(self.o, "2026-11-01", "A", "empty"))
+        self.assertFalse(db.claim_inbox_digest(self.o, "2026-11-01", "B", 99999.0))
+        with self.assertRaises(ValueError):
+            db.finish_inbox_digest(self.o, "2026-11-01", "A", "bogus")
+
+
+@unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL yo'q")
+class PriorityDbTests(DbBase):
+    NOW = 100000.0
+
+    def _chat(self, chat_id, since=None):
+        db.record_customer_message(self.o, chat_id, 1, f"M{chat_id}", since or self.NOW - 100)
+
+    def test_set_unset_and_double_press_idempotent(self):
+        self._chat(1)
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, self.NOW), "ok")
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, self.NOW), "ok")  # qayta bosish
+        self.assertEqual(db.count_priority_chats(self.o, self.NOW), 1)
+        self.assertEqual(db.set_inbox_priority(self.o, 1, False, 5, self.NOW), "ok")
+        self.assertEqual(db.set_inbox_priority(self.o, 1, False, 5, self.NOW), "ok")
+        self.assertEqual(db.count_priority_chats(self.o, self.NOW), 0)
+
+    def test_limit_enforced_and_unmark_frees_slot(self):
+        for i in range(1, 7):
+            self._chat(i)
+        res = [db.set_inbox_priority(self.o, i, True, 5, self.NOW) for i in range(1, 7)]
+        self.assertEqual(res, ["ok"] * 5 + ["limit"])
+        self.assertEqual(db.set_inbox_priority(self.o, 1, False, 5, self.NOW), "ok")
+        self.assertEqual(db.set_inbox_priority(self.o, 6, True, 5, self.NOW), "ok")
+
+    def test_zero_limit_forbidden_and_missing_or_disabled(self):
+        self._chat(1)
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 0, self.NOW), "forbidden")  # Free/Plus
+        self.assertEqual(db.set_inbox_priority(self.o, 999, True, 5, self.NOW), "no_chat")
+        db.set_inbox_settings(self.o, enabled=False)
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, self.NOW), "disabled")
+
+    def test_other_owner_chat_rejected(self):
+        self._chat(1)
+        other = self.o + 1
+        db.set_inbox_settings(other, enabled=True)
+        self.addCleanup(lambda: db.set_inbox_settings(other, enabled=False))
+        self.assertEqual(db.set_inbox_priority(other, 1, True, 5, self.NOW), "no_chat")
+        self.assertEqual(db.count_priority_chats(self.o, self.NOW), 0)
+
+    def test_parallel_presses_do_not_exceed_limit(self):
+        for i in range(1, 11):
+            self._chat(i)
+        res = []
+        ts = [threading.Thread(target=lambda i=i: res.append(db.set_inbox_priority(self.o, i, True, 3, self.NOW))) for i in range(1, 11)]
+        [x.start() for x in ts]
+        [x.join() for x in ts]
+        self.assertEqual(res.count("ok"), 3)
+        self.assertEqual(db.count_priority_chats(self.o, self.NOW), 3)
+
+    def test_ordering_priority_first_only_when_requested(self):
+        self._chat(1, self.NOW - 900)  # eng uzoq kutayotgan
+        self._chat(2, self.NOW - 500)
+        self._chat(3, self.NOW - 100)
+        db.set_inbox_priority(self.o, 3, True, 5, self.NOW)
+        db.set_inbox_priority(self.o, 2, True, 5, self.NOW)
+        _, rows = db.get_pending_chats(self.o, 10, self.NOW, priority_first=True)
+        self.assertEqual([r["chat_id"] for r in rows], [2, 3, 1])  # muhimlar (eskisi avval), keyin oddiy
+        _, rows = db.get_pending_chats(self.o, 10, self.NOW)  # Free/Plus/tarifi pasaygan: belgi e'tiborga olinmaydi
+        self.assertEqual([r["chat_id"] for r in rows], [1, 2, 3])
+
+    def test_priority_persists_on_new_customer_message_and_answered_leaves_pending(self):
+        self._chat(1)
+        db.set_inbox_priority(self.o, 1, True, 5, self.NOW)
+        db.record_customer_message(self.o, 1, 2, "M1", self.NOW - 50)
+        self.assertEqual(db.count_priority_chats(self.o, self.NOW), 1)
+        self.assertTrue(db.record_owner_reply(self.o, 1, 3, self.NOW - 10))
+        self.assertEqual(db.get_pending_chats(self.o, 10, self.NOW)[0], 0)  # javob berilgan — pendingdan chiqdi
+        self.assertEqual(db.get_pending_stats(self.o, self.NOW)["priority"], 0)
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, self.NOW), "ok")  # chat bor, lekin ro'yxatda ko'rinmaydi
+
+    def test_disable_deletes_priority_data(self):
+        self._chat(1)
+        db.set_inbox_priority(self.o, 1, True, 5, self.NOW)
+        db.set_inbox_settings(self.o, enabled=False)
+        db.set_inbox_settings(self.o, enabled=True)
+        self.assertEqual(db.count_priority_chats(self.o, self.NOW), 0)
+        self.assertIsNone(db.get_inbox_chat(self.o, 1))
+
+    def test_retention_14_days(self):
+        self._chat(1, self.NOW - 100)
+        db.set_inbox_priority(self.o, 1, True, 5, self.NOW)
+        self.assertEqual(db.count_priority_chats(self.o, self.NOW + 15 * 86400), 0)
+
+    def test_stats_oldest_wait_covers_all_pending_not_top_n(self):
+        for i in range(1, 6):
+            self._chat(i, self.NOW - 1000 * i)  # chat 5 eng eski
+        db.set_inbox_priority(self.o, 1, True, 5, self.NOW)
+        total, rows = db.get_pending_chats(self.o, 1, self.NOW, priority_first=True)
+        self.assertEqual([r["chat_id"] for r in rows], [1])  # eng eski (5) qaytgan ro'yxatda yo'q
+        st = db.get_pending_stats(self.o, self.NOW)
+        self.assertEqual((st["total"], st["oldest_waiting_since"], st["priority"]), (5, self.NOW - 5000, 1))
+
+
+class PriorityBotTests(unittest.TestCase):
+    def _query(self):
+        q = MagicMock()
+        q.answer = AsyncMock()
+        q.edit_message_text = AsyncMock()
+        return q
+
+    def test_limits_by_plan_server_side(self):
+        for plan, lim in (("free", 0), ("plus", 0), ("pro", 5), ("ultra", 20)):
+            with _Plan(plan):
+                self.assertEqual(bot.inbox_priority_limit_for(1, plan), lim, plan)
+        with _Plan("free"):
+            self.assertEqual(bot.inbox_priority_limit_for(ADMIN, "free"), 20)  # admin — eng yuqori
+        self.assertEqual(bot.DEFAULT_FEATURE_PLANS["inbox_priority"], ("pro", "ultra"))
+        self.assertEqual(bot.DEFAULT_FEATURE_PLANS["inbox_reminder"], ("pro", "ultra"))
+
+    def test_free_plus_and_downgraded_ignore_priority_ordering(self):
+        for plan, expected in (("free", False), ("plus", False), ("pro", True), ("ultra", True)):
+            with _Plan(plan), patch.object(db, "get_pending_chats", return_value=(0, [])) as gp:
+                bot.build_inbox_view(1)
+            self.assertEqual(gp.call_args.kwargs.get("priority_first"), expected, plan)
+
+    def test_callbacks_locked_for_free_but_unmark_allowed(self):
+        self.assertEqual(bot.locked_feature_for("ib_priority"), "inbox_priority")
+        self.assertEqual(bot.locked_feature_for("ib_pr:5"), "inbox_priority")
+        self.assertIsNone(bot.locked_feature_for("ib_unpr:5"))  # belgini olib tashlash tarifdan qat'i nazar
+        self.assertEqual(bot.locked_feature_for("ib_reminders"), "inbox_reminder")
+        self.assertEqual(bot.locked_feature_for("ib_rem:5"), "inbox_reminder")
+        self.assertEqual(bot.locked_feature_for("ib_rt:5:1h"), "inbox_reminder")
+        self.assertIsNone(bot.locked_feature_for("ib_rc:5"))
+        for plan, locked in (("free", True), ("plus", True), ("pro", False)):
+            with _Plan(plan):
+                self.assertEqual(not bot.has_feature(1, "inbox_priority"), locked, plan)
+
+    def test_priority_buttons_are_explicit_and_stale_safe(self):
+        q = self._query()
+        with _Plan("pro"), patch.object(db, "set_inbox_priority", return_value="ok") as sp, \
+                patch.object(db, "get_pending_chats", return_value=(0, [])), patch.object(db, "count_priority_chats", return_value=0):
+            run(bot.handle_inbox_callback(q, 1, "ib_pr:5", "uz"))
+            run(bot.handle_inbox_callback(q, 1, "ib_pr:5", "uz"))
+            run(bot.handle_inbox_callback(q, 1, "ib_unpr:5", "uz"))
+        self.assertEqual([c.args[2] for c in sp.call_args_list], [True, True, False])  # toggle emas
+        self.assertEqual(sp.call_args.args[3], 5)
+
+    def test_invalid_and_stale_callbacks_do_not_crash(self):
+        q = self._query()
+        for data in ("ib_pr:abc", "ib_pr:", "ib_unpr:x", "ib_rem:zz", "ib_rt:5", "ib_rt:5:99h", "ib_rt:x:1h", "ib_rc:q"):
+            q.edit_message_text.reset_mock()
+            with _Plan("pro"), patch.object(db, "get_pending_chats", return_value=(0, [])), patch.object(db, "count_priority_chats", return_value=0), \
+                    patch.object(db, "list_inbox_reminders", return_value=[]), patch.object(db, "get_settings", return_value={}), \
+                    patch.object(db, "count_inbox_reminders_for_date", return_value=0), \
+                    patch.object(db, "get_inbox_chat", return_value=None):
+                self.assertTrue(run(bot.handle_inbox_callback(q, 1, data, "uz")), data)
+            q.edit_message_text.assert_awaited_once()
+
+    def test_stale_priority_results_show_warning(self):
+        for result, key in (("limit", "inbox_priority_limit"), ("no_chat", "inbox_chat_gone"), ("disabled", "inbox_disabled_warn")):
+            q = self._query()
+            with _Plan("pro"), patch.object(db, "set_inbox_priority", return_value=result), \
+                    patch.object(db, "get_pending_chats", return_value=(0, [])), patch.object(db, "count_priority_chats", return_value=0):
+                run(bot.handle_inbox_callback(q, 1, "ib_pr:5", "uz"))
+            self.assertIn(bot.t("uz", key), q.edit_message_text.await_args.args[0])
+
+    def test_view_and_digest_mark_priority_only_for_pro_ultra(self):
+        now = time.time()
+        rows = [{"chat_id": 7, "customer_name": "Vip", "pending_count": 1, "waiting_since": now - 60, "is_priority": True}]
+        for plan, star in (("free", False), ("plus", False), ("pro", True), ("ultra", True)):
+            with _Plan(plan), patch.object(db, "get_pending_chats", return_value=(1, rows)):
+                text, _ = bot.build_inbox_view(1)
+            self.assertEqual("⭐" in text, star, plan)
+        self.assertIn("⭐", bot.build_inbox_digest(1, rows, now, "uz", None, True))
+        self.assertNotIn("⭐", bot.build_inbox_digest(1, rows, now, "uz", None, False))
+
+    def test_digest_oldest_wait_from_all_pending_chats(self):
+        now = 10 ** 6
+        rows = [{"chat_id": 1, "customer_name": "A", "pending_count": 1, "waiting_since": now - 600, "is_priority": True}]
+        text = bot.build_inbox_digest(9, rows, now, "en", oldest_since=now - 3 * 86400 - 5)
+        self.assertIn("3 d", text.splitlines()[1])  # qatorlardagi 10 daqiqa emas, jami eng uzoq — 3 kun
+
+    def test_menu_shows_priority_line_and_buttons(self):
+        cfg = {"enabled": True, "notify": True, "digest_minutes": 1200, "last_digest_date": None}
+        with _Plan("pro"), patch.object(db, "get_inbox_settings", return_value=cfg), \
+                patch.object(db, "get_pending_stats", return_value={"total": 2, "oldest_waiting_since": 1.0, "priority": 2}):
+            text, markup = bot.build_inbox_menu(1)
+        self.assertIn("2/5", text)
+        data = [b.callback_data for row in markup.inline_keyboard for b in row]
+        self.assertIn("ib_priority", data)
+        self.assertIn("ib_reminders", data)
+        for d in data:
+            self.assertLessEqual(len(d.encode()), 64)
+
+    def test_plan_texts_mention_priority_and_reminders(self):
+        with _Plan("pro"):
+            txt = bot.plan_features_text("en", "pro")
+        self.assertIn("5 important", txt)
+        self.assertIn("3 reminders", txt)
+        with _Plan("free"):
+            txt = bot.plan_features_text("en", "free")
+        self.assertIn("Pro — 5", txt)
+        with _Plan("ultra"):
+            txt = bot.plan_features_text("en", "ultra")
+        self.assertIn("20 important", txt)
+        self.assertIn("10 reminders", txt)
+
+
 class PanelTests(unittest.TestCase):
     def _query(self):
         q = MagicMock()
@@ -515,7 +852,8 @@ class PanelTests(unittest.TestCase):
         q = self._query()
         cfg = {"enabled": True, "notify": True, "digest_minutes": 1200, "last_digest_date": None}
         with patch.object(db, "set_inbox_settings") as st, patch.object(db, "get_inbox_settings", return_value=cfg), \
-                patch.object(db, "get_pending_chats", return_value=(0, [])), patch.object(bot, "plan_of", return_value="free"):
+                patch.object(db, "get_pending_stats", return_value={"total": 0, "oldest_waiting_since": None, "priority": 0}), \
+                patch.object(bot, "plan_of", return_value="free"):
             run(bot.handle_inbox_callback(q, 1, "ib_on", "uz"))
             run(bot.handle_inbox_callback(q, 1, "ib_on", "uz"))
             run(bot.handle_inbox_callback(q, 1, "ib_off", "uz"))
@@ -525,7 +863,8 @@ class PanelTests(unittest.TestCase):
         q = self._query()
         cfg = {"enabled": True, "notify": True, "digest_minutes": 1200, "last_digest_date": None}
         with patch.object(db, "set_inbox_settings") as st, patch.object(db, "get_inbox_settings", return_value=cfg), \
-                patch.object(db, "get_pending_chats", return_value=(0, [])), patch.object(bot, "plan_of", return_value="plus"):
+                patch.object(db, "get_pending_stats", return_value={"total": 0, "oldest_waiting_since": None, "priority": 0}), \
+                patch.object(bot, "plan_of", return_value="plus"):
             run(bot.handle_inbox_callback(q, 1, "ib_t:600", "uz"))
             run(bot.handle_inbox_callback(q, 1, "ib_t:601", "uz"))
             run(bot.handle_inbox_callback(q, 1, "ib_t:abc", "uz"))
