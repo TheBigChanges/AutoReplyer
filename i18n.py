@@ -1837,6 +1837,84 @@ T: dict[str, dict] = {
         "Неотвеченных чатов: {total}. Дольше всех ждёт: {oldest}.",
     ),
     "inbox_digest_item": _("{count} ta xabar, {wait} kutmoqda", "{count} message(s), waiting {wait}", "сообщений: {count}, ждёт {wait}"),
+    # ---- Smart Inbox v1.2: muhim suhbatlar va eslatmalar
+    "btn_inbox_priority": _("⭐ Muhim suhbatlarni boshqarish", "⭐ Manage important chats", "⭐ Управление важными чатами"),
+    "btn_inbox_reminders": _("🔔 Eslatmalar", "🔔 Reminders", "🔔 Напоминания"),
+    "btn_inbox_prio_add": _("⭐ Muhim qilish", "⭐ Mark important", "⭐ Отметить важным"),
+    "btn_inbox_prio_remove": _("✖ Muhimlikni olib tashlash", "✖ Remove importance", "✖ Снять отметку"),
+    "btn_inbox_remind": _("⏰ Eslatma", "⏰ Remind", "⏰ Напомнить"),
+    "btn_inbox_remind_cancel": _("🚫 Eslatmani bekor qilish", "🚫 Cancel reminder", "🚫 Отменить напоминание"),
+    "btn_inbox_rt_1h": _("1 soatdan keyin", "In 1 hour", "Через 1 час"),
+    "btn_inbox_rt_3h": _("3 soatdan keyin", "In 3 hours", "Через 3 часа"),
+    "btn_inbox_rt_6h": _("6 soatdan keyin", "In 6 hours", "Через 6 часов"),
+    "btn_inbox_rt_next9": _("Ertaga 09:00", "Tomorrow 09:00", "Завтра в 09:00"),
+    "feature_inbox_priority": _("Smart Inbox: muhim suhbatlar", "Smart Inbox: important chats", "Smart Inbox: важные чаты"),
+    "feature_inbox_reminder": _("Smart Inbox: eslatmalar", "Smart Inbox: reminders", "Smart Inbox: напоминания"),
+    "pf_inbox_priority": _(
+        "Smart Inbox: {n} tagacha muhim suhbat (⭐)", "Smart Inbox: up to {n} important chats (⭐)", "Smart Inbox: до {n} важных чатов (⭐)",
+    ),
+    "pf_inbox_priority_locked": _(
+        "Smart Inbox: muhim suhbatlar (Pro — {pro}, Ultra — {ultra})",
+        "Smart Inbox: important chats (Pro — {pro}, Ultra — {ultra})",
+        "Smart Inbox: важные чаты (Pro — {pro}, Ultra — {ultra})",
+    ),
+    "pf_inbox_reminder": _(
+        "Smart Inbox: kuniga {n} tagacha eslatma", "Smart Inbox: up to {n} reminders a day", "Smart Inbox: до {n} напоминаний в день",
+    ),
+    "pf_inbox_reminder_locked": _(
+        "Smart Inbox: eslatmalar (Pro — kuniga {pro}, Ultra — kuniga {ultra})",
+        "Smart Inbox: reminders (Pro — {pro}/day, Ultra — {ultra}/day)",
+        "Smart Inbox: напоминания (Pro — {pro}/день, Ultra — {ultra}/день)",
+    ),
+    "inbox_priority_title": _(
+        "⭐ Muhim suhbatlar: {n}/{limit}\n\nMuhim suhbat xulosada va ro'yxatda birinchi chiqadi. Belgilash uchun suhbatni tanlang:",
+        "⭐ Important chats: {n}/{limit}\n\nImportant chats come first in the digest and the list. Pick a chat to mark:",
+        "⭐ Важные чаты: {n}/{limit}\n\nВажные чаты идут первыми в сводке и списке. Выберите чат, чтобы отметить:",
+    ),
+    "inbox_priority_line": _("⭐ Muhim suhbatlar: {n}/{limit}", "⭐ Important chats: {n}/{limit}", "⭐ Важные чаты: {n}/{limit}"),
+    "inbox_priority_empty": _("Hozir javobsiz suhbat yo'q.", "There are no unanswered chats right now.", "Сейчас нет неотвеченных чатов."),
+    "inbox_priority_added": _("⭐ Suhbat muhim deb belgilandi.", "⭐ Chat marked as important.", "⭐ Чат отмечен как важный."),
+    "inbox_priority_removed": _("Muhimlik belgisi olib tashlandi.", "Importance mark removed.", "Отметка важности снята."),
+    "inbox_priority_limit": _(
+        "Muhim suhbatlar limiti to'ldi. Avval boshqasidan belgini olib tashlang.",
+        "Important chats limit reached. Remove the mark from another chat first.",
+        "Лимит важных чатов исчерпан. Сначала снимите отметку с другого чата.",
+    ),
+    "inbox_chat_gone": _(
+        "Bu suhbat endi javobsiz emas yoki topilmadi.", "This chat is no longer unanswered or was not found.",
+        "Этот чат больше не без ответа или не найден.",
+    ),
+    "inbox_disabled_warn": _("Smart Inbox o'chirilgan.", "Smart Inbox is turned off.", "Smart Inbox выключен."),
+    "inbox_reminders_title": _(
+        "🔔 Eslatmalar (bugun yana {left} ta mumkin)\n\nSuhbatni tanlang — belgilangan vaqtda sizga eslatma keladi (xabar matni ko'rsatilmaydi). "
+        "Siz javob bersangiz, eslatma bekor bo'ladi.",
+        "🔔 Reminders ({left} more allowed today)\n\nPick a chat — you will get a reminder at the chosen time (no message text is shown). "
+        "If you reply, the reminder is cancelled.",
+        "🔔 Напоминания (сегодня можно ещё {left})\n\nВыберите чат — в нужное время придёт напоминание (текст сообщения не показывается). "
+        "Если вы ответите, напоминание отменится.",
+    ),
+    "inbox_reminders_active": _("Faol eslatmalar:", "Active reminders:", "Активные напоминания:"),
+    "inbox_reminder_title": _(
+        "⏰ {name} uchun eslatma qachon kelsin?", "⏰ When should the reminder for {name} arrive?", "⏰ Когда напомнить о чате {name}?",
+    ),
+    "inbox_reminder_created": _("✅ Eslatma qo'yildi: {time}.", "✅ Reminder set for {time}.", "✅ Напоминание установлено на {time}."),
+    "inbox_reminder_cancelled": _("Eslatma bekor qilindi.", "Reminder cancelled.", "Напоминание отменено."),
+    "inbox_reminder_limit": _(
+        "Bu kun uchun eslatmalar limiti to'ldi.", "The reminder limit for that day is reached.", "Лимит напоминаний на этот день исчерпан.",
+    ),
+    "inbox_reminder_busy": _(
+        "Bu suhbat uchun eslatma hozir yuborilmoqda.", "A reminder for this chat is being sent right now.",
+        "Напоминание по этому чату сейчас отправляется.",
+    ),
+    "inbox_reminder_already_answered": _(
+        "Bu suhbatga allaqachon javob berilgan — eslatma kerak emas.", "This chat is already answered — no reminder needed.",
+        "На этот чат уже отвечено — напоминание не нужно.",
+    ),
+    "inbox_reminder_sent": _(
+        "🔔 Eslatma: {name} javobingizni kutmoqda ({wait}). Suhbatni ochish uchun ismni bosing.",
+        "🔔 Reminder: {name} is waiting for your reply ({wait}). Tap the name to open the chat.",
+        "🔔 Напоминание: {name} ждёт вашего ответа ({wait}). Нажмите на имя, чтобы открыть чат.",
+    ),
     "btn_analytics": _("\U0001F4CA Statistika", "\U0001F4CA Analytics", "\U0001F4CA Аналитика"),
     "btn_an_today": _("\U0001F4C5 Bugun", "\U0001F4C5 Today", "\U0001F4C5 Сегодня"),
     "btn_an_7": _("\U0001F4C6 7 kun", "\U0001F4C6 7 days", "\U0001F4C6 7 дней"),
