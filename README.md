@@ -281,10 +281,31 @@ Smart Inbox helps you notice conversations you have not answered yourself. It ru
 - Default time: **20:00** in your time zone (the name-clock zone if your plan allows it, otherwise Tashkent). If there is nothing to report, no message is sent.
 - Each day's digest is claimed in the database before sending, so a restart or a second instance does not send it twice. If Telegram clearly rejects it, the bot retries a minute later; after a network timeout it does **not** resend (the message may have arrived).
 
-| Plan | Chats listed | Digest time |
-|---|---|---|
-| Free | up to **3** | fixed 20:00 |
-| Plus / Pro / Ultra | up to **20** | choose 08:00-22:00 (every 2 hours) |
+- **Recovery (v1.4):** every digest goes through `preparing → sending → sent` (or `unknown` / `empty` / `failed`), and each step is guarded by a unique claim token. If the worker or the database dies while the digest is still being *prepared*, the claim expires after **5 minutes** and the digest is retried automatically. Once the message is marked `sending`, it is **never** resent automatically (it may already have arrived). Digests recorded before this version keep their date and are not sent again.
+- "Longest wait" is calculated over **all** unanswered chats, not only the ones listed.
+
+| Plan | Chats listed | Digest time | Important chats ⭐ | Reminders per day |
+|---|---|---|---|---|
+| Free | up to **3** | fixed 20:00 | – | – |
+| Plus | up to **20** | choose 08:00-22:00 (every 2 hours) | – | – |
+| Pro | up to **20** | choose | up to **5** | up to **3** |
+| Ultra | up to **20** | choose | up to **20** | up to **10** |
+
+**⭐ Important chats (Pro / Ultra)**
+
+- **📥 Smart Inbox → ⭐ Manage important chats**: tap an unanswered chat to mark it; tap again (✖) to remove the mark. Buttons are explicit, so an old button never flips the state by accident.
+- Important chats are listed first (⭐), in the list and in the digest, then ordered by longest wait. Free/Plus (or a downgraded plan) ignore the marks, though they are kept.
+- The mark stays when the customer writes again; the chat leaves the unanswered list when you reply. Turning Smart Inbox off deletes the marks; the 14-day retention applies as usual.
+- The limit is checked on the server in one database transaction, so pressing buttons in parallel cannot exceed it.
+
+**🔔 Follow-up reminders (Pro / Ultra)**
+
+- **📥 Smart Inbox → 🔔 Reminders**: choose an unanswered chat, then **1 hour / 3 hours / 6 hours / tomorrow 09:00** (your time zone). One active reminder per chat; choosing again replaces it. The exact time is stored as an absolute moment, so later time-zone changes do not move it.
+- Daily limit (by the reminder's local date): Pro **3**, Ultra **10**. Sent and unknown reminders count; cancelled and failed ones do not.
+- The reminder is sent **only to your private chat with the bot** and contains the customer's name (a link) and the waiting time — never the message text.
+- Before sending, the bot checks that Smart Inbox is on, the chat is still unanswered, your plan is Pro/Ultra and you are not blocked. If you reply, the reminder is cancelled in the same database step. Turning Smart Inbox off deletes chats and reminders together.
+- The job runs every 60 seconds, claims reminders with `FOR UPDATE SKIP LOCKED` (two instances never send the same one) and marks `sending` before the Telegram call. After a network timeout the result is `unknown` and the reminder is **not** resent. Reminders survive restarts.
+- Not included yet: AI Summary and the Web App.
 
 **Privacy, storage and limitations**
 
