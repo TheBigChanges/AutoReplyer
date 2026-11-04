@@ -380,6 +380,8 @@ def init_db():
         cur.execute("ALTER TABLE inbox_settings ADD COLUMN IF NOT EXISTS digest_claim_token TEXT")
         cur.execute("ALTER TABLE inbox_chats ADD COLUMN IF NOT EXISTS is_priority BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_inbox_priority ON inbox_chats (owner_user_id, is_priority, waiting_since) WHERE pending = TRUE")
+        # Yangi qoida: ⭐ faqat javobsiz suhbatda turadi. Eski versiyada javob berilgan suhbatda qolgan belgilar tozalanadi (idempotent).
+        cur.execute("UPDATE inbox_chats SET is_priority = FALSE WHERE is_priority AND NOT pending")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS inbox_reminders (
@@ -2775,25 +2777,52 @@ def record_owner_reply(owner_id: int, chat_id: int, message_id: int, now: float 
     return _run_tx(tx)
 
 
-def get_pending_chats(owner_id: int, limit: int, now: float | None = None, priority_first: bool = False, offset: int = 0) -> tuple[int, list]:
-    """(javobsiz suhbatlar soni, `limit` tasi). Tartib: priority_first=True (faqat Pro/Ultra) bo'lsa muhimlar avval, so'ng eng uzoq
-    kutayotgani; aks holda faqat kutish vaqti bo'yicha. 14 kundan eski suhbatlar hisobga olinmaydi."""
+def get_pending_chats(owner_id: int, limit: int, now: float | None = None, priority_first: bool = False, offset: int = 0,
+                      priority_limit: int | None = None) -> tuple[int, list]:
+    """(javobsiz suhbatlar soni, `limit` tasi). priority_first=True (faqat Pro/Ultra) bo'lsa muhimlar avval, so'ng eng uzoq kutgani.
+    priority_limit — tarif ruxsat bergan FAOL muhimlar soni: belgilari undan ko'p bo'lsa (masalan Ultra -> Pro), faqat eng uzoq kutayotgan
+    shuncha belgi faol (`is_priority`); qolganlari saqlanadi (`marked`), lekin tartibda hisobga olinmaydi. 14 kundan eski suhbatlar chiqmaydi."""
     now = time.time() if now is None else now
     cutoff = now - INBOX_RETENTION_DAYS * 86400
-    order = "is_priority DESC, waiting_since ASC, chat_id ASC" if priority_first else "waiting_since ASC, chat_id ASC"
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             "SELECT COUNT(*) AS n FROM inbox_chats WHERE owner_user_id = %s AND pending AND last_customer_at >= %s",
             (owner_id, cutoff),
         )
         total = cur.fetchone()["n"]
-        cur.execute(
-            "SELECT chat_id, customer_name, pending_count, waiting_since, is_priority FROM inbox_chats "
-            f"WHERE owner_user_id = %s AND pending AND last_customer_at >= %s ORDER BY {order} LIMIT %s OFFSET %s",
-            (owner_id, cutoff, max(0, limit), max(0, offset)),
-        )
+        if priority_first:
+            lim = 10 ** 9 if priority_limit is None else max(0, priority_limit)
+            cur.execute(
+                "WITH base AS (SELECT chat_id, customer_name, pending_count, waiting_since, is_priority AS marked, "
+                "CASE WHEN is_priority THEN ROW_NUMBER() OVER (PARTITION BY is_priority ORDER BY waiting_since ASC, chat_id ASC) END AS rn "
+                "FROM inbox_chats WHERE owner_user_id = %s AND pending AND last_customer_at >= %s) "
+                "SELECT chat_id, customer_name, pending_count, waiting_since, marked, (marked AND rn <= %s) AS is_priority FROM base "
+                "ORDER BY (marked AND rn <= %s) DESC, waiting_since ASC, chat_id ASC LIMIT %s OFFSET %s",
+                (owner_id, cutoff, lim, lim, max(0, limit), max(0, offset)),
+            )
+        else:
+            cur.execute(
+                "SELECT chat_id, customer_name, pending_count, waiting_since, is_priority AS marked, FALSE AS is_priority FROM inbox_chats "
+                "WHERE owner_user_id = %s AND pending AND last_customer_at >= %s ORDER BY waiting_since ASC, chat_id ASC LIMIT %s OFFSET %s",
+                (owner_id, cutoff, max(0, limit), max(0, offset)),
+            )
         rows = [dict(r) for r in cur.fetchall()]
     return total, rows
+
+
+def get_pending_stats(owner_id: int, now: float | None = None, priority_limit: int | None = None) -> dict:
+    """BARCHA javobsiz suhbatlar bo'yicha: soni, eng uzoq kutish boshlangan vaqt va FAOL muhimlar soni (priority_limit bilan cheklangan)."""
+    now = time.time() if now is None else now
+    cutoff = now - INBOX_RETENTION_DAYS * 86400
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS total, MIN(waiting_since) AS oldest, COUNT(*) FILTER (WHERE is_priority) AS priority "
+            "FROM inbox_chats WHERE owner_user_id = %s AND pending AND last_customer_at >= %s",
+            (owner_id, cutoff),
+        )
+        r = cur.fetchone()
+    prio = r["priority"] if priority_limit is None else min(r["priority"], max(0, priority_limit))
+    return {"total": r["total"], "oldest_waiting_since": r["oldest"], "priority": prio}
 
 
 def get_inbox_chat(owner_id: int, chat_id: int) -> dict | None:
@@ -2804,20 +2833,6 @@ def get_inbox_chat(owner_id: int, chat_id: int) -> dict | None:
             "WHERE owner_user_id = %s AND chat_id = %s", (owner_id, chat_id))
         r = cur.fetchone()
     return dict(r) if r else None
-
-
-def get_pending_stats(owner_id: int, now: float | None = None) -> dict:
-    """BARCHA javobsiz suhbatlar bo'yicha: soni, eng uzoq kutish boshlangan vaqt va muhimlar soni (ro'yxat limitiga bog'liq emas)."""
-    now = time.time() if now is None else now
-    cutoff = now - INBOX_RETENTION_DAYS * 86400
-    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
-            "SELECT COUNT(*) AS total, MIN(waiting_since) AS oldest, COUNT(*) FILTER (WHERE is_priority) AS priority "
-            "FROM inbox_chats WHERE owner_user_id = %s AND pending AND last_customer_at >= %s",
-            (owner_id, cutoff),
-        )
-        r = cur.fetchone()
-    return {"total": r["total"], "oldest_waiting_since": r["oldest"], "priority": r["priority"]}
 
 
 def list_inbox_owners() -> list:
@@ -2916,6 +2931,8 @@ def set_inbox_priority(owner_id: int, chat_id: int, priority: bool, limit: int, 
         if chat is None:
             return "no_chat"
         if bool(chat["is_priority"]) == bool(priority):
+            if priority and limit > 0 and _priority_count(cur, owner_id, now - INBOX_RETENTION_DAYS * 86400) > limit:
+                return "limit"  # tarif pasaygan: belgi saqlangan, lekin faol emas — avval ortiqcha belgilarni olib tashlash kerak
             return "ok"  # idempotent: eski tugma qayta bosilsa holat teskarilanmaydi
         if priority:
             # yangi belgi faqat hozir javobsiz (pending) va 14 kunlik muddat ichidagi suhbatga (eski tugma limitni buzmasin)
