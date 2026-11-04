@@ -306,6 +306,8 @@ Smart Inbox helps you notice conversations you have not answered yourself. It ru
 - Before sending, the bot checks that Smart Inbox is on, the chat is still unanswered, your plan is Pro/Ultra and you are not blocked. If you reply, the reminder is cancelled in the same database step. Turning Smart Inbox off deletes chats and reminders together.
 - The job runs every 60 seconds, claims reminders with `FOR UPDATE SKIP LOCKED` (two instances never send the same one) and marks `sending` before the Telegram call. After a network timeout the result is `unknown` and the reminder is **not** resent. Reminders survive restarts.
 - **Known limitation:** the "chat still unanswered?" check and the switch to `sending` happen in one database transaction, so a reply made *before* that moment cancels the reminder. If you reply in the short window after `sending` and before Telegram delivers the reminder, it can still arrive — an external API call cannot be undone.
+- Replying to a chat also removes its ⭐ mark (so an answered chat never holds a slot, and reopening it cannot push you over the limit). Purging a chat after 14 days also deletes its not-yet-sent reminders; sent/unknown ones stay (up to 14 days) only to keep the daily count accurate.
+- The time picker shows the remaining limit for today and tomorrow, and the confirmation shows what is left for the chosen date.
 - Reminders can only be created for chats that are unanswered **and** within the 14-day retention window.
 - Both the ⭐ and the reminder chat pickers are paged (10 chats per page, stable order, ◀ ▶ buttons); older buttons keep working. New ⭐ marks go only to currently unanswered chats within retention; removing a mark is always allowed.
 - Not included yet: AI Summary and the Web App.
