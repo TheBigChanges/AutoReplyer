@@ -409,7 +409,7 @@ class UiTests(DbBase):
     def test_button_creates_reminder_and_shows_time(self):
         self.chat()
         text = self._press("ib_rt:5:3h")
-        self.assertIn(bot.t("uz", "inbox_reminder_created", time="")[:10], text)
+        self.assertIn(bot.t("uz", "inbox_reminder_created", time="", date="", left=0)[:10], text)
         self.assertEqual(self.state(), "scheduled")
 
     def test_all_choices_work_and_callback_length_ok(self):
@@ -509,6 +509,61 @@ class RaceAndRetentionTests(DbBase):
         self.assertEqual(self.sched(), "no_chat")
         self.chat(6, at=NOW - 13 * 86400)
         self.assertIsInstance(self.sched(6), int)
+
+
+class PurgeAndLimitUiTests(DbBase):
+    def test_purge_cleans_reminders_for_expired_chats(self):
+        now = __import__("time").time()
+        self.chat(at=now - 13 * 86400)
+        rid = db.schedule_inbox_reminder(self.o, 5, now + 3600, "2999-01-01", 3, now)
+        self.assertIsInstance(rid, int)
+        self.chat(6, at=now - 13 * 86400)
+        sent = db.schedule_inbox_reminder(self.o, 6, now + 3600, "2999-01-01", 3, now)
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE inbox_reminders SET state='sent' WHERE id=%s", (sent,))
+            cur.execute("UPDATE inbox_chats SET last_customer_at = %s WHERE owner_user_id=%s", (now - 15 * 86400, self.o))
+        db.purge_old_inbox()
+        self.assertEqual(db.list_inbox_reminders(self.o), [])
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT state FROM inbox_reminders WHERE owner_user_id=%s ORDER BY id", (self.o,))
+            self.assertEqual([r[0] for r in cur.fetchall()], ["sent"])  # faol eslatma o'chdi; yuborilgani limit hisobi uchun qoladi
+        self.assertEqual(db.count_inbox_reminders_for_date(self.o, "2999-01-01"), 1)
+
+    def test_list_reminders_skips_orphans(self):
+        self.chat()
+        self.sched()
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM inbox_chats WHERE owner_user_id=%s", (self.o,))
+        self.assertEqual(db.list_inbox_reminders(self.o), [])
+
+    def test_created_message_shows_remaining_for_chosen_date(self):
+        for i in (1, 2):
+            self.chat(i)
+        q = MagicMock()
+        q.answer = AsyncMock()
+        q.edit_message_text = AsyncMock()
+        with _Plan("pro"):
+            run(bot.handle_inbox_callback(q, self.o, "ib_rt:1:next9", "uz"))
+            run(bot.handle_inbox_callback(q, self.o, "ib_rt:2:next9", "uz"))
+        text = q.edit_message_text.await_args.args[0]
+        tomorrow = inbox.reminder_due("next9", __import__("time").time(), TZ)[1]
+        self.assertIn(tomorrow, text)
+        self.assertIn("1", text.split("\n")[0])  # Pro 3 - 2 = 1 ta qoldi
+
+    def test_choice_view_shows_today_and_tomorrow_remaining(self):
+        self.chat()
+        with _Plan("pro"):
+            text, _ = bot.build_inbox_reminder_choice(self.o, 5)
+        self.assertIn("bugun: 3", text)
+        self.assertIn("ertaga: 3", text)
+        tomorrow = inbox.reminder_due("next9", __import__("time").time(), TZ)[1]
+        for i in (11, 12, 13):
+            self.chat(i)
+            db.schedule_inbox_reminder(self.o, i, 1.0, tomorrow, 3, __import__("time").time())
+        with _Plan("pro"):
+            text, _ = bot.build_inbox_reminder_choice(self.o, 5)
+        self.assertIn("bugun: 3", text)
+        self.assertIn("ertaga: 0", text)
 
 
 class PriorityOldButtonTests(DbBase):
