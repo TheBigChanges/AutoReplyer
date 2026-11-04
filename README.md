@@ -294,8 +294,9 @@ Smart Inbox helps you notice conversations you have not answered yourself. It ru
 **⭐ Important chats (Pro / Ultra)**
 
 - **📥 Smart Inbox → ⭐ Manage important chats**: tap an unanswered chat to mark it; tap again (✖) to remove the mark. Buttons are explicit, so an old button never flips the state by accident.
-- Important chats are listed first (⭐), in the list and in the digest, then ordered by longest wait. Free/Plus (or a downgraded plan) ignore the marks, though they are kept.
-- The mark stays when the customer writes again; the chat leaves the unanswered list when you reply. Turning Smart Inbox off deletes the marks; the 14-day retention applies as usual.
+- Important chats are listed first (⭐), in the list and in the digest, then ordered by longest wait. Free/Plus ignore the marks entirely, though they are kept.
+- A ⭐ mark exists only while the chat is unanswered. When you personally reply, the mark is removed; if the customer writes again later, the chat does **not** return to important automatically. Turning Smart Inbox off deletes the marks; the 14-day retention applies as usual. Marks left on already-answered chats by older versions are cleaned up automatically on upgrade.
+- **Downgrade rule (e.g. Ultra → Pro):** existing marks are kept, but only the longest-waiting ones up to the new plan limit are active (shown ⭐ and sorted first). The rest show as ☆ in the manage screen — you can remove them, and they become active again if you return to a higher plan. New marks are refused until the count is back under the limit.
 - The limit is checked on the server in one database transaction, so pressing buttons in parallel cannot exceed it.
 
 **🔔 Follow-up reminders (Pro / Ultra)**
@@ -310,6 +311,7 @@ Smart Inbox helps you notice conversations you have not answered yourself. It ru
 - The time picker shows the remaining limit for today and tomorrow, and the confirmation shows what is left for the chosen date.
 - Reminders can only be created for chats that are unanswered **and** within the 14-day retention window.
 - Both the ⭐ and the reminder chat pickers are paged (10 chats per page, stable order, ◀ ▶ buttons); older buttons keep working. New ⭐ marks go only to currently unanswered chats within retention; removing a mark is always allowed.
+- Data retention note: a reminder that is already `sending` when its chat expires is kept until it finishes (it becomes `sent` or `unknown`); finished reminder rows (with the chat ID) are deleted after 14 days.
 - Not included yet: AI Summary and the Web App.
 
 **Privacy, storage and limitations**
