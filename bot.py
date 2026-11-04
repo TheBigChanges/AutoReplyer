@@ -2415,6 +2415,13 @@ def _inbox_priority_active(owner_id: int) -> bool:
     return inbox_priority_limit_for(owner_id) > 0
 
 
+def _prio_kw(owner_id: int) -> dict:
+    """get_pending_chats uchun: muhimlar faqat tarif ruxsat bergan miqdorda FAOL (Ultra -> Pro: faqat eng uzoq kutgan 5 tasi)."""
+    if not _inbox_priority_active(owner_id):
+        return {"priority_first": False}
+    return {"priority_first": True, "priority_limit": inbox_priority_limit_for(owner_id)}
+
+
 def _inbox_name(row: dict) -> str:
     return (row.get("customer_name") or "").strip() or str(row["chat_id"])
 
@@ -2423,7 +2430,7 @@ def build_inbox_menu(owner_id: int):
     lang = get_lang(owner_id)
     cfg = db.get_inbox_settings(owner_id)
     enabled = bool(cfg["enabled"])
-    stats = db.get_pending_stats(owner_id) if enabled else {"total": 0, "priority": 0}
+    stats = db.get_pending_stats(owner_id, priority_limit=inbox_priority_limit_for(owner_id)) if enabled else {"total": 0, "priority": 0}
     text = t(
         lang, "inbox_menu",
         state=t(lang, "inbox_state_on" if enabled else "inbox_state_off"),
@@ -2458,7 +2465,7 @@ def build_inbox_view(owner_id: int):
     lang = get_lang(owner_id)
     now = time.time()
     prio = _inbox_priority_active(owner_id)
-    total, rows = db.get_pending_chats(owner_id, inbox_limit_for(owner_id), now, priority_first=prio)
+    total, rows = db.get_pending_chats(owner_id, inbox_limit_for(owner_id), now, **_prio_kw(owner_id))
     back = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")]])
     if total == 0:
         return t(lang, "inbox_view_empty"), back
@@ -2485,11 +2492,11 @@ def _paged_pending(owner_id: int, page: int, now: float):
     """Javobsiz suhbatlarning bitta sahifasi (barqaror tartib: muhim(Pro/Ultra) -> eng uzoq kutgan -> chat_id). Sahifa chegaradan oshsa —
     oxirgisiga tushadi (eskirgan tugma xato bermaydi). Qaytaradi: (qatorlar, sahifa, sahifalar soni)."""
     prio = _inbox_priority_active(owner_id)
-    total, rows = db.get_pending_chats(owner_id, PRIORITY_VIEW_ROWS, now, priority_first=prio, offset=page * PRIORITY_VIEW_ROWS)
+    total, rows = db.get_pending_chats(owner_id, PRIORITY_VIEW_ROWS, now, offset=page * PRIORITY_VIEW_ROWS, **_prio_kw(owner_id))
     pages = max(1, -(-total // PRIORITY_VIEW_ROWS))
     if page >= pages:
         page = pages - 1
-        _, rows = db.get_pending_chats(owner_id, PRIORITY_VIEW_ROWS, now, priority_first=prio, offset=page * PRIORITY_VIEW_ROWS)
+        _, rows = db.get_pending_chats(owner_id, PRIORITY_VIEW_ROWS, now, offset=page * PRIORITY_VIEW_ROWS, **_prio_kw(owner_id))
     return rows, page, pages
 
 
@@ -2520,6 +2527,8 @@ def build_inbox_priority_view(owner_id: int, notice: str = "", page: int = 0):
         cid = int(r["chat_id"])
         if r.get("is_priority"):
             kb.append([InlineKeyboardButton(f"⭐ {_inbox_name(r)} ✖", callback_data=f"ib_unpr:{cid}:{page}")])
+        elif r.get("marked"):  # belgi saqlangan, lekin tarif limitidan ortiq (faol emas): olib tashlash mumkin
+            kb.append([InlineKeyboardButton(f"☆ {_inbox_name(r)} ✖", callback_data=f"ib_unpr:{cid}:{page}")])
         else:
             kb.append([InlineKeyboardButton(f"{_inbox_name(r)}", callback_data=f"ib_pr:{cid}:{page}")])
     kb += _page_nav("ib_priority", page, pages)
@@ -2724,7 +2733,7 @@ async def send_inbox_digest(bot, owner: dict, now_ts: float) -> str:
             _digest_db_safely(db.finish_inbox_digest, owner_id, date_str, token, "empty")
             return "empty"  # javobsiz suhbat yo'q — bo'sh xulosa yuborilmaydi
         prio = _inbox_priority_active(owner_id)
-        total, rows = db.get_pending_chats(owner_id, inbox_limit_for(owner_id), now_ts, priority_first=prio)
+        total, rows = db.get_pending_chats(owner_id, inbox_limit_for(owner_id), now_ts, **_prio_kw(owner_id))
         text = build_inbox_digest(stats["total"], rows, now_ts, get_lang(owner_id), stats["oldest_waiting_since"], prio)
     except Exception:
         # Yuborish hali boshlanmagan (baza/matn tayyorlash xatosi): bandlik qaytariladi; qaytarib bo'lmasa — 5 daqiqalik lease'dan keyin qayta olinadi
