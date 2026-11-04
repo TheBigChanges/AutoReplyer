@@ -566,6 +566,61 @@ class PurgeAndLimitUiTests(DbBase):
         self.assertIn("ertaga: 0", text)
 
 
+class LegacyAndDowngradeTests(DbBase):
+    def test_legacy_answered_priority_rows_are_migrated(self):
+        for i in range(1, 6):
+            self.chat(i)
+        with db.get_conn() as conn, conn.cursor() as cur:  # eski versiya: javob berilgan suhbatlarda ⭐ qolgan
+            cur.execute("UPDATE inbox_chats SET is_priority = TRUE WHERE owner_user_id=%s", (self.o,))
+            cur.execute("UPDATE inbox_chats SET pending = FALSE, pending_count = 0, waiting_since = NULL WHERE owner_user_id=%s AND chat_id IN (1,2,3)", (self.o,))
+        self.assertEqual(db.count_priority_chats(self.o, NOW), 5)
+        db.init_db()
+        db.init_db()  # idempotent
+        self.assertEqual(db.count_priority_chats(self.o, NOW), 2)  # faqat javobsiz 4, 5 qoldi
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, NOW), "no_chat")
+
+    def _mark_many(self, n):
+        for i in range(1, n + 1):
+            self.chat(i, at=NOW - 1000 * (n - i + 1))  # chat 1 eng eski
+            db.set_inbox_priority(self.o, i, True, 20, NOW)
+
+    def test_ultra_to_pro_enforces_effective_priority_limit(self):
+        self._mark_many(20)
+        self.chat(99, at=NOW - 10)  # oddiy suhbat
+        _, rows = db.get_pending_chats(self.o, 30, NOW, priority_first=True, priority_limit=5)
+        active = [r["chat_id"] for r in rows if r["is_priority"]]
+        self.assertEqual(active, [1, 2, 3, 4, 5])  # eng uzoq kutgan 5 tasi
+        self.assertEqual([r["chat_id"] for r in rows[:5]], [1, 2, 3, 4, 5])
+        self.assertEqual(sum(1 for r in rows if r["marked"]), 20)  # qolgan belgilar saqlanadi (Ultra'ga qaytsa ishlaydi)
+        self.assertEqual(db.get_pending_stats(self.o, NOW, priority_limit=5)["priority"], 5)
+        _, rows = db.get_pending_chats(self.o, 30, NOW, priority_first=True, priority_limit=20)
+        self.assertEqual(sum(1 for r in rows if r["is_priority"]), 20)  # Ultra'ga qaytdi
+        # yangi belgi qo'yib bo'lmaydi; ortiqcha belgilarni olib tashlash mumkin
+        self.assertEqual(db.set_inbox_priority(self.o, 99, True, 5, NOW), "limit")
+        self.assertEqual(db.set_inbox_priority(self.o, 20, True, 5, NOW), "limit")  # saqlangan, lekin faol emas
+        for i in range(6, 21):
+            self.assertEqual(db.set_inbox_priority(self.o, i, False, 5, NOW), "ok")
+        self.assertEqual(db.count_priority_chats(self.o, NOW), 5)
+
+    def test_bot_views_use_effective_limit_after_downgrade(self):
+        self._mark_many(8)
+        with _Plan("pro"), patch("bot.time.time", return_value=NOW):
+            text, m = bot.build_inbox_view(self.o)
+            self.assertEqual(text.count("⭐"), 5)
+            _, m = bot.build_inbox_priority_view(self.o)
+        labels = [b.text for row in m.inline_keyboard for b in row]
+        self.assertEqual(sum(1 for x in labels if x.startswith("⭐")), 5)
+        self.assertEqual(sum(1 for x in labels if x.startswith("☆")), 3)  # faol emas, lekin olib tashlash mumkin
+        data = [b.callback_data for row in m.inline_keyboard for b in row]
+        self.assertEqual(sum(1 for d in data if d.startswith("ib_unpr:")), 8)
+
+    def test_free_plus_ignore_marks_entirely(self):
+        self._mark_many(3)
+        with _Plan("plus"), patch("bot.time.time", return_value=NOW):
+            text, _ = bot.build_inbox_view(self.o)
+        self.assertNotIn("⭐", text)
+
+
 class PriorityOldButtonTests(DbBase):
     def test_old_button_cannot_mark_answered_chat(self):
         for i in range(1, 8):
