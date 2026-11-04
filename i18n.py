@@ -1897,7 +1897,16 @@ T: dict[str, dict] = {
     "inbox_reminder_title": _(
         "⏰ {name} uchun eslatma qachon kelsin?", "⏰ When should the reminder for {name} arrive?", "⏰ Когда напомнить о чате {name}?",
     ),
-    "inbox_reminder_created": _("✅ Eslatma qo'yildi: {time}.", "✅ Reminder set for {time}.", "✅ Напоминание установлено на {time}."),
+    "inbox_reminder_created": _(
+        "✅ Eslatma qo'yildi: {time}. {date} uchun yana {left} ta eslatma mumkin.",
+        "✅ Reminder set for {time}. {left} more allowed for {date}.",
+        "✅ Напоминание установлено на {time}. На {date} можно ещё: {left}.",
+    ),
+    "inbox_reminder_left": _(
+        "Qolgan limit — bugun: {today}, ertaga: {tomorrow}.",
+        "Remaining limit — today: {today}, tomorrow: {tomorrow}.",
+        "Остаток лимита — сегодня: {today}, завтра: {tomorrow}.",
+    ),
     "inbox_reminder_cancelled": _("Eslatma bekor qilindi.", "Reminder cancelled.", "Напоминание отменено."),
     "inbox_reminder_limit": _(
         "Bu kun uchun eslatmalar limiti to'ldi.", "The reminder limit for that day is reached.", "Лимит напоминаний на этот день исчерпан.",
