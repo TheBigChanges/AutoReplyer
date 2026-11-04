@@ -705,7 +705,22 @@ class PriorityDbTests(DbBase):
         self.assertTrue(db.record_owner_reply(self.o, 1, 3, self.NOW - 10))
         self.assertEqual(db.get_pending_chats(self.o, 10, self.NOW)[0], 0)  # javob berilgan — pendingdan chiqdi
         self.assertEqual(db.get_pending_stats(self.o, self.NOW)["priority"], 0)
-        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, self.NOW), "ok")  # chat bor, lekin ro'yxatda ko'rinmaydi
+        self.assertEqual(db.count_priority_chats(self.o, self.NOW), 0)  # javob berilgan suhbat ⭐ belgisini yo'qotadi (kvotani band qilmaydi)
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, self.NOW), "no_chat")  # javobsiz emas — belgilab bo'lmaydi
+
+    def test_priority_limit_after_answer_and_reopen(self):
+        """Pro, limit 5: ⭐ Ali -> shaxsiy javob -> yana 5 ta ⭐ -> Ali qayta yozadi: jami faol ⭐ 5 tadan oshmaydi."""
+        for i in range(1, 8):
+            self._chat(i)
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, self.NOW), "ok")  # Ali
+        self.assertTrue(db.record_owner_reply(self.o, 1, 9, self.NOW - 50))
+        res = [db.set_inbox_priority(self.o, i, True, 5, self.NOW) for i in range(2, 7)]
+        self.assertEqual(res, ["ok"] * 5)
+        db.record_customer_message(self.o, 1, 20, "M1", self.NOW - 10)  # Ali qayta yozdi
+        self.assertEqual(db.count_priority_chats(self.o, self.NOW), 5)
+        self.assertEqual(db.get_pending_stats(self.o, self.NOW)["priority"], 5)
+        self.assertFalse(db.get_inbox_chat(self.o, 1)["is_priority"])
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, self.NOW), "limit")  # qayta belgilash limitga uriladi
 
     def test_disable_deletes_priority_data(self):
         self._chat(1)
