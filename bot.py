@@ -24,7 +24,7 @@ import threading
 import weakref
 from collections import deque
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from datetime import time as dtime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote
@@ -2562,7 +2562,13 @@ def build_inbox_reminder_choice(owner_id: int, chat_id: int, page: int = 0):
     if any(r["chat_id"] == chat_id for r in db.list_inbox_reminders(owner_id)):
         rows.append([InlineKeyboardButton(t(lang, "btn_inbox_remind_cancel"), callback_data=f"ib_rc:{chat_id}:{page}")])
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"ib_reminders:{page}")])
-    return t(lang, "inbox_reminder_title", name=_inbox_name(chat)), InlineKeyboardMarkup(rows)
+    tz = tz_from_settings(db.get_settings(owner_id), owner_id)
+    today = datetime.fromtimestamp(time.time(), tz).date()
+    limit = inbox_reminder_limit_for(owner_id)
+    left_today = max(0, limit - db.count_inbox_reminders_for_date(owner_id, today.isoformat()))
+    left_tomorrow = max(0, limit - db.count_inbox_reminders_for_date(owner_id, (today + timedelta(days=1)).isoformat()))
+    text = t(lang, "inbox_reminder_title", name=_inbox_name(chat)) + "\n" + t(lang, "inbox_reminder_left", today=left_today, tomorrow=left_tomorrow)
+    return text, InlineKeyboardMarkup(rows)
 
 
 def _parse_chat_id(part: str) -> int | None:
@@ -2654,7 +2660,8 @@ async def _schedule_reminder_from_button(owner_id: int, chat_id: int | None, cho
     due_at, due_date = due
     result = db.schedule_inbox_reminder(owner_id, chat_id, due_at, due_date, inbox_reminder_limit_for(owner_id))
     if isinstance(result, int):
-        return t(lang, "inbox_reminder_created", time=_reminder_time_text(owner_id, due_at))
+        left = max(0, inbox_reminder_limit_for(owner_id) - db.count_inbox_reminders_for_date(owner_id, due_date))
+        return t(lang, "inbox_reminder_created", time=_reminder_time_text(owner_id, due_at), date=due_date, left=left)
     return {
         "limit": t(lang, "inbox_reminder_limit"),
         "forbidden": t(lang, "inbox_reminder_limit"),
