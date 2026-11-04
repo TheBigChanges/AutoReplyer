@@ -2768,6 +2768,8 @@ def record_owner_reply(owner_id: int, chat_id: int, message_id: int, now: float 
                 "UPDATE inbox_reminders SET state = 'cancelled' WHERE owner_user_id = %s AND chat_id = %s AND state IN ('scheduled', 'preparing')",
                 (owner_id, chat_id),
             )
+            # javob berilgan suhbat ⭐ belgisini yo'qotadi: aks holda u kvotani band qilib turadi yoki qayta ochilganda limitdan oshiradi
+            cur.execute("UPDATE inbox_chats SET is_priority = FALSE WHERE owner_user_id = %s AND chat_id = %s", (owner_id, chat_id))
         return answered
 
     return _run_tx(tx)
@@ -2886,7 +2888,7 @@ def release_inbox_digest(owner_id: int, date_str: str, token: str) -> bool:
 # ---- Muhim (priority) suhbatlar
 def _priority_count(cur, owner_id: int, cutoff: float) -> int:
     cur.execute(
-        "SELECT COUNT(*) AS n FROM inbox_chats WHERE owner_user_id = %s AND is_priority AND pending AND last_customer_at >= %s",
+        "SELECT COUNT(*) AS n FROM inbox_chats WHERE owner_user_id = %s AND is_priority AND last_customer_at >= %s",
         (owner_id, cutoff),
     )
     return cur.fetchone()["n"]
@@ -3000,7 +3002,7 @@ def list_inbox_reminders(owner_id: int) -> list:
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             "SELECT r.chat_id, r.due_at, c.customer_name FROM inbox_reminders r "
-            "LEFT JOIN inbox_chats c ON c.owner_user_id = r.owner_user_id AND c.chat_id = r.chat_id "
+            "JOIN inbox_chats c ON c.owner_user_id = r.owner_user_id AND c.chat_id = r.chat_id "
             "WHERE r.owner_user_id = %s AND r.state IN ('scheduled', 'preparing', 'sending') ORDER BY r.due_at",
             (owner_id,),
         )
@@ -3085,6 +3087,12 @@ def purge_old_inbox(max_age_days: int = INBOX_RETENTION_DAYS) -> int:
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM inbox_chats WHERE COALESCE(last_customer_at, last_owner_at, 0) < %s", (cutoff,))
         n = cur.rowcount
+        # suhbat saqlash muddati tugab o'chirilsa, unga bog'liq HALI YUBORILMAGAN eslatmalar ham o'chiriladi (chat_id qolib ketmasin).
+        # Yuborilgan/noma'lum/bekor qilinganlar kunlik limit hisobi uchun created_at bo'yicha 14 kungacha saqlanadi.
+        cur.execute(
+            "DELETE FROM inbox_reminders r WHERE r.state IN ('scheduled', 'preparing') AND NOT EXISTS "
+            "(SELECT 1 FROM inbox_chats c WHERE c.owner_user_id = r.owner_user_id AND c.chat_id = r.chat_id)"
+        )
         cur.execute("DELETE FROM inbox_reminders WHERE created_at < %s", (cutoff,))
         return n
 
