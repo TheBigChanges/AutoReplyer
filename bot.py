@@ -1239,9 +1239,9 @@ def locked_feature_for(data: str) -> str | None:
         return "custom_text"  # jadval uchun alohida matn — Plus'dan
     if data == "ib_time" or data.startswith("ib_t:"):
         return "inbox_time"
-    if data == "ib_priority" or data.startswith("ib_pr:"):  # ib_unpr: (belgini olib tashlash) tarifdan qat'i nazar mumkin
+    if data == "ib_priority" or data.startswith(("ib_priority:", "ib_pr:")):  # ib_unpr: (belgini olib tashlash) tarifdan qat'i nazar mumkin
         return "inbox_priority"
-    if data == "ib_reminders" or data.startswith(("ib_rem:", "ib_rt:")):  # ib_rc: (bekor qilish) doim mumkin
+    if data == "ib_reminders" or data.startswith(("ib_reminders:", "ib_rem:", "ib_rt:")):  # ib_rc: (bekor qilish) doim mumkin
         return "inbox_reminder"
     if data == "an:7":
         return "analytics_7"
@@ -2471,24 +2471,58 @@ def build_inbox_view(owner_id: int):
     return "\n".join(lines), back
 
 
-PRIORITY_VIEW_ROWS = 10
+PRIORITY_VIEW_ROWS = 10  # bir sahifadagi suhbatlar soni (Priority va Eslatmalar oynalari uchun umumiy sahifalash)
 
 
-def build_inbox_priority_view(owner_id: int, notice: str = ""):
+def _parse_page(part) -> int:
+    try:
+        return max(0, int(part))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _paged_pending(owner_id: int, page: int, now: float):
+    """Javobsiz suhbatlarning bitta sahifasi (barqaror tartib: muhim(Pro/Ultra) -> eng uzoq kutgan -> chat_id). Sahifa chegaradan oshsa —
+    oxirgisiga tushadi (eskirgan tugma xato bermaydi). Qaytaradi: (qatorlar, sahifa, sahifalar soni)."""
+    prio = _inbox_priority_active(owner_id)
+    total, rows = db.get_pending_chats(owner_id, PRIORITY_VIEW_ROWS, now, priority_first=prio, offset=page * PRIORITY_VIEW_ROWS)
+    pages = max(1, -(-total // PRIORITY_VIEW_ROWS))
+    if page >= pages:
+        page = pages - 1
+        _, rows = db.get_pending_chats(owner_id, PRIORITY_VIEW_ROWS, now, priority_first=prio, offset=page * PRIORITY_VIEW_ROWS)
+    return rows, page, pages
+
+
+def _page_nav(prefix: str, page: int, pages: int) -> list:
+    """◀ N/M ▶ qatori (faqat bir nechta sahifa bo'lsa). Tugma ma'lumoti: `<prefix>:<sahifa>`."""
+    if pages <= 1:
+        return []
+    row = []
+    if page > 0:
+        row.append(InlineKeyboardButton("◀", callback_data=f"{prefix}:{page - 1}"))
+    row.append(InlineKeyboardButton(f"{page + 1}/{pages}", callback_data=f"{prefix}:{page}"))
+    if page < pages - 1:
+        row.append(InlineKeyboardButton("▶", callback_data=f"{prefix}:{page + 1}"))
+    return [row]
+
+
+def build_inbox_priority_view(owner_id: int, notice: str = "", page: int = 0):
     lang = get_lang(owner_id)
     now = time.time()
     limit = inbox_priority_limit_for(owner_id)
-    total, rows = db.get_pending_chats(owner_id, PRIORITY_VIEW_ROWS, now, priority_first=True)
+    rows, page, pages = _paged_pending(owner_id, page, now)
     used = db.count_priority_chats(owner_id, now)
     text = ((notice + "\n\n") if notice else "") + t(lang, "inbox_priority_title", n=used, limit=limit)
     kb = []
     if not rows:
         text += "\n\n" + t(lang, "inbox_priority_empty")
     for r in rows:
+        cid = int(r["chat_id"])
         if r.get("is_priority"):
-            kb.append([InlineKeyboardButton(f"⭐ {_inbox_name(r)} ✖", callback_data=f"ib_unpr:{int(r['chat_id'])}")])
+            kb.append([InlineKeyboardButton(f"⭐ {_inbox_name(r)} ✖", callback_data=f"ib_unpr:{cid}:{page}")])
         else:
-            kb.append([InlineKeyboardButton(f"{_inbox_name(r)}", callback_data=f"ib_pr:{int(r['chat_id'])}")])
+            kb.append([InlineKeyboardButton(f"{_inbox_name(r)}", callback_data=f"ib_pr:{cid}:{page}")])
+    kb += _page_nav("ib_priority", page, pages)
     kb.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")])
     return text, InlineKeyboardMarkup(kb)
 
@@ -2498,7 +2532,7 @@ def _reminder_time_text(owner_id: int, due_at: float) -> str:
     return datetime.fromtimestamp(due_at, tz).strftime("%d.%m %H:%M")
 
 
-def build_inbox_reminders_view(owner_id: int, notice: str = ""):
+def build_inbox_reminders_view(owner_id: int, notice: str = "", page: int = 0):
     lang = get_lang(owner_id)
     now = time.time()
     tz = tz_from_settings(db.get_settings(owner_id), owner_id)
@@ -2511,22 +2545,23 @@ def build_inbox_reminders_view(owner_id: int, notice: str = ""):
         text += "\n\n" + t(lang, "inbox_reminders_active")
         for r in active:
             text += f"\n• {_inbox_name(r)} — {_reminder_time_text(owner_id, r['due_at'])}"
-    _, rows = db.get_pending_chats(owner_id, PRIORITY_VIEW_ROWS, now, priority_first=_inbox_priority_active(owner_id))
-    kb = [[InlineKeyboardButton(f"⏰ {_inbox_name(r)}", callback_data=f"ib_rem:{int(r['chat_id'])}")] for r in rows]
+    rows, page, pages = _paged_pending(owner_id, page, now)
+    kb = [[InlineKeyboardButton(f"⏰ {_inbox_name(r)}", callback_data=f"ib_rem:{int(r['chat_id'])}:{page}")] for r in rows]
+    kb += _page_nav("ib_reminders", page, pages)
     kb.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")])
     return text, InlineKeyboardMarkup(kb)
 
 
-def build_inbox_reminder_choice(owner_id: int, chat_id: int):
+def build_inbox_reminder_choice(owner_id: int, chat_id: int, page: int = 0):
     """Bitta suhbat uchun vaqt tanlash. Suhbat shu egasiniki va hali javobsiz bo'lmasa — None."""
     lang = get_lang(owner_id)
     chat = db.get_inbox_chat(owner_id, chat_id)
     if chat is None or not chat["pending"]:
         return None
-    rows = [[InlineKeyboardButton(t(lang, f"btn_inbox_rt_{c}"), callback_data=f"ib_rt:{chat_id}:{c}")] for c in inbox.REMINDER_CHOICES]
+    rows = [[InlineKeyboardButton(t(lang, f"btn_inbox_rt_{c}"), callback_data=f"ib_rt:{chat_id}:{c}:{page}")] for c in inbox.REMINDER_CHOICES]
     if any(r["chat_id"] == chat_id for r in db.list_inbox_reminders(owner_id)):
-        rows.append([InlineKeyboardButton(t(lang, "btn_inbox_remind_cancel"), callback_data=f"ib_rc:{chat_id}")])
-    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_reminders")])
+        rows.append([InlineKeyboardButton(t(lang, "btn_inbox_remind_cancel"), callback_data=f"ib_rc:{chat_id}:{page}")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"ib_reminders:{page}")])
     return t(lang, "inbox_reminder_title", name=_inbox_name(chat)), InlineKeyboardMarkup(rows)
 
 
@@ -2564,13 +2599,15 @@ async def handle_inbox_callback(query, owner_id: int, data: str, lang: str) -> b
             await query.answer(t(lang, "pay_bad_button"), show_alert=True)
             return True
         db.set_inbox_settings(owner_id, digest_minutes=minutes)
-    elif data == "ib_priority":
-        return await show(build_inbox_priority_view(owner_id))
+    elif data == "ib_priority" or data.startswith("ib_priority:"):
+        return await show(build_inbox_priority_view(owner_id, "", _parse_page(data.partition(":")[2])))
     elif data.startswith(("ib_pr:", "ib_unpr:")):
         add = data.startswith("ib_pr:")
-        chat_id = _parse_chat_id(data.split(":", 1)[1])
+        parts = data.split(":")
+        chat_id = _parse_chat_id(parts[1]) if len(parts) in (2, 3) else None
+        page = _parse_page(parts[2]) if len(parts) == 3 else 0
         if chat_id is None:
-            return await show(build_inbox_priority_view(owner_id, t(lang, "pay_bad_button")))
+            return await show(build_inbox_priority_view(owner_id, t(lang, "pay_bad_button"), page))
         result = db.set_inbox_priority(owner_id, chat_id, add, inbox_priority_limit_for(owner_id))
         notice = {
             "ok": t(lang, "inbox_priority_added" if add else "inbox_priority_removed"),
@@ -2579,24 +2616,30 @@ async def handle_inbox_callback(query, owner_id: int, data: str, lang: str) -> b
             "no_chat": t(lang, "inbox_chat_gone"),
             "forbidden": t(lang, "inbox_priority_limit"),
         }.get(result, t(lang, "pay_bad_button"))
-        return await show(build_inbox_priority_view(owner_id, notice))
-    elif data == "ib_reminders":
-        return await show(build_inbox_reminders_view(owner_id))
+        return await show(build_inbox_priority_view(owner_id, notice, page))
+    elif data == "ib_reminders" or data.startswith("ib_reminders:"):
+        return await show(build_inbox_reminders_view(owner_id, "", _parse_page(data.partition(":")[2])))
     elif data.startswith("ib_rem:"):
-        chat_id = _parse_chat_id(data.split(":", 1)[1])
-        view = build_inbox_reminder_choice(owner_id, chat_id) if chat_id is not None else None
+        parts = data.split(":")
+        chat_id = _parse_chat_id(parts[1]) if len(parts) in (2, 3) else None
+        page = _parse_page(parts[2]) if len(parts) == 3 else 0
+        view = build_inbox_reminder_choice(owner_id, chat_id, page) if chat_id is not None else None
         if view is None:
-            return await show(build_inbox_reminders_view(owner_id, t(lang, "inbox_chat_gone")))
+            return await show(build_inbox_reminders_view(owner_id, t(lang, "inbox_chat_gone"), page))
         return await show(view)
     elif data.startswith("ib_rt:"):
         parts = data.split(":")
-        chat_id = _parse_chat_id(parts[1]) if len(parts) == 3 else None
-        notice = await _schedule_reminder_from_button(owner_id, chat_id, parts[2] if len(parts) == 3 else "", lang)
-        return await show(build_inbox_reminders_view(owner_id, notice))
+        ok = len(parts) in (3, 4)
+        chat_id = _parse_chat_id(parts[1]) if ok else None
+        page = _parse_page(parts[3]) if len(parts) == 4 else 0
+        notice = await _schedule_reminder_from_button(owner_id, chat_id, parts[2] if ok else "", lang)
+        return await show(build_inbox_reminders_view(owner_id, notice, page))
     elif data.startswith("ib_rc:"):
-        chat_id = _parse_chat_id(data.split(":", 1)[1])
+        parts = data.split(":")
+        chat_id = _parse_chat_id(parts[1]) if len(parts) in (2, 3) else None
+        page = _parse_page(parts[2]) if len(parts) == 3 else 0
         done = chat_id is not None and db.cancel_inbox_reminder(owner_id, chat_id)
-        return await show(build_inbox_reminders_view(owner_id, t(lang, "inbox_reminder_cancelled") if done else t(lang, "inbox_chat_gone")))
+        return await show(build_inbox_reminders_view(owner_id, t(lang, "inbox_reminder_cancelled") if done else t(lang, "inbox_chat_gone"), page))
     else:
         return False
     return await show(build_inbox_menu(owner_id))
