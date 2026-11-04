@@ -462,12 +462,12 @@ class UiTests(DbBase):
         with _Plan("pro"):
             text, markup = bot.build_inbox_reminder_choice(self.o, 5)
         data = [b.callback_data for row in markup.inline_keyboard for b in row]
-        self.assertEqual(data[:4], ["ib_rt:5:1h", "ib_rt:5:3h", "ib_rt:5:6h", "ib_rt:5:next9"])
-        self.assertNotIn("ib_rc:5", data)
+        self.assertEqual(data[:4], ["ib_rt:5:1h:0", "ib_rt:5:3h:0", "ib_rt:5:6h:0", "ib_rt:5:next9:0"])
+        self.assertNotIn("ib_rc:5:0", data)
         self.sched()
         with _Plan("pro"):
             _, markup = bot.build_inbox_reminder_choice(self.o, 5)
-        self.assertIn("ib_rc:5", [b.callback_data for row in markup.inline_keyboard for b in row])
+        self.assertIn("ib_rc:5:0", [b.callback_data for row in markup.inline_keyboard for b in row])
 
     def test_reminders_view_lists_active_and_remaining_quota(self):
         self.chat()
@@ -476,6 +476,125 @@ class UiTests(DbBase):
             text, _ = bot.build_inbox_reminders_view(self.o)
         self.assertIn("Ali", text)
         self.assertIn("2", text.split("\n")[0])  # Pro: 3 - 1 = 2 qoldi
+
+
+class RaceAndRetentionTests(DbBase):
+    def test_mark_sending_rechecks_pending_in_same_transaction(self):
+        self.chat()
+        rid = self.sched()
+        rem = db.claim_due_inbox_reminders(NOW + 4000)[0]
+        with db.get_conn() as conn, conn.cursor() as cur:  # egasi javobi (eslatma allaqachon 'preparing'da band qilingan)
+            cur.execute("UPDATE inbox_chats SET pending = FALSE WHERE owner_user_id=%s AND chat_id=5", (self.o,))
+        self.assertFalse(db.mark_inbox_reminder_sending(rid, rem["attempt_token"], NOW + 4000))
+        self.assertEqual(self.state(), "cancelled")
+
+    def test_mark_sending_requires_inbox_enabled(self):
+        self.chat()
+        rid = self.sched()
+        rem = db.claim_due_inbox_reminders(NOW + 4000)[0]
+        with db.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE inbox_settings SET enabled = FALSE WHERE owner_user_id=%s", (self.o,))
+        self.assertFalse(db.mark_inbox_reminder_sending(rid, rem["attempt_token"], NOW + 4000))
+
+    def test_reply_during_sending_cannot_be_cancelled_known_limitation(self):
+        self.chat()
+        rid = self.sched()
+        rem = db.claim_due_inbox_reminders(NOW + 4000)[0]
+        self.assertTrue(db.mark_inbox_reminder_sending(rid, rem["attempt_token"], NOW + 4000))
+        db.record_owner_reply(self.o, 5, 2, NOW + 4001)
+        self.assertEqual(self.state(), "sending")  # Telegram chaqiruvi boshlangan: qaytarib bo'lmaydi (README'da yozilgan)
+
+    def test_reminder_for_chat_older_than_retention_rejected(self):
+        self.chat(at=NOW - 15 * 86400)  # tozalash vazifasi hali o'chirmagan eski suhbat
+        self.assertEqual(self.sched(), "no_chat")
+        self.chat(6, at=NOW - 13 * 86400)
+        self.assertIsInstance(self.sched(6), int)
+
+
+class PriorityOldButtonTests(DbBase):
+    def test_old_button_cannot_mark_answered_chat(self):
+        for i in range(1, 8):
+            self.chat(i)
+        db.record_owner_reply(self.o, 1, 9, NOW)  # A javob berildi
+        self.assertEqual(db.set_inbox_priority(self.o, 1, True, 5, NOW), "no_chat")  # eski ib_pr:A
+        res = [db.set_inbox_priority(self.o, i, True, 5, NOW) for i in range(2, 7)]
+        self.assertEqual(res, ["ok"] * 5)
+        db.record_customer_message(self.o, 1, 10, "Ali", NOW + 1)  # A ga yangi xabar
+        self.assertEqual(db.count_priority_chats(self.o, NOW + 1), 5)  # 6 emas
+
+    def test_unmark_still_allowed_for_answered_chat(self):
+        self.chat()
+        db.set_inbox_priority(self.o, 5, True, 5, NOW)
+        db.record_owner_reply(self.o, 5, 9, NOW)
+        self.assertEqual(db.set_inbox_priority(self.o, 5, False, 5, NOW), "ok")
+
+    def test_old_chat_beyond_retention_cannot_be_marked(self):
+        self.chat(at=NOW - 15 * 86400)
+        self.assertEqual(db.set_inbox_priority(self.o, 5, True, 5, NOW), "no_chat")
+
+
+class PaginationTests(DbBase):
+    def _seed(self, n=25):
+        for i in range(1, n + 1):
+            self.chat(1000 + i, name=f"M{i:02d}", at=NOW - 60 * (n - i + 1))  # M01 eng eski
+
+    def _data(self, markup):
+        return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+    def test_all_chats_reachable_across_pages_in_stable_order(self):
+        self._seed()
+        seen = []
+        with _Plan("ultra"), patch("bot.time.time", return_value=NOW):
+            for page in range(3):
+                _, m = bot.build_inbox_priority_view(self.o, "", page)
+                seen += [d for d in self._data(m) if d.startswith("ib_pr:")]
+        ids = [int(d.split(":")[1]) for d in seen]
+        self.assertEqual(ids, [1000 + i for i in range(1, 26)])  # 25 ta, takrorsiz, barqaror tartibda
+        with _Plan("ultra"), patch("bot.time.time", return_value=NOW):
+            _, m = bot.build_inbox_priority_view(self.o, "", 0)
+        self.assertIn("ib_priority:1", self._data(m))
+        self.assertNotIn("ib_priority:-1", self._data(m))
+
+    def test_reminders_view_reaches_11th_chat(self):
+        self._seed(12)
+        with _Plan("pro"), patch("bot.time.time", return_value=NOW):
+            _, m0 = bot.build_inbox_reminders_view(self.o, "", 0)
+            _, m1 = bot.build_inbox_reminders_view(self.o, "", 1)
+        self.assertNotIn("ib_rem:1011:0", self._data(m0))
+        self.assertIn("ib_rem:1011:1", self._data(m1))
+        self.assertIn("ib_reminders:1", self._data(m0))
+        self.assertIn("ib_reminders:0", self._data(m1))
+
+    def test_out_of_range_page_clamps_and_garbage_page_is_zero(self):
+        self._seed(12)
+        with _Plan("pro"), patch("bot.time.time", return_value=NOW):
+            t1, m = bot.build_inbox_reminders_view(self.o, "", 99)
+            self.assertIn("ib_rem:1012:1", self._data(m))
+        q = MagicMock()
+        q.answer = AsyncMock()
+        q.edit_message_text = AsyncMock()
+        for data in ("ib_priority:abc", "ib_priority:-3", "ib_reminders:zz", "ib_pr:1001:x", "ib_rem:1001:9999"):
+            with _Plan("pro"), patch("bot.time.time", return_value=NOW):
+                self.assertTrue(run(bot.handle_inbox_callback(q, self.o, data, "uz")), data)
+
+    def test_buttons_keep_page_and_old_format_still_works(self):
+        self._seed(12)
+        q = MagicMock()
+        q.answer = AsyncMock()
+        q.edit_message_text = AsyncMock()
+        with _Plan("pro"), patch("bot.time.time", return_value=NOW):
+            run(bot.handle_inbox_callback(q, self.o, "ib_pr:1011:1", "uz"))  # 2-sahifadagi chat
+            _, m = q.edit_message_text.await_args.args[0], q.edit_message_text.await_args.kwargs["reply_markup"]
+            self.assertIn("ib_pr:1012:1", self._data(m))  # foydalanuvchi 2-sahifada qoladi (belgilangan suhbat 1-sahifa tepasiga o'tadi)
+            with patch("bot.time.time", return_value=NOW):
+                _, m0 = bot.build_inbox_priority_view(self.o, "", 0)
+            self.assertIn("ib_unpr:1011:0", self._data(m0))
+            run(bot.handle_inbox_callback(q, self.o, "ib_pr:1002", "uz"))  # eski format (sahifasiz)
+        self.assertEqual(db.count_priority_chats(self.o, NOW), 2)
+
+    def test_callback_data_with_page_fits_limit(self):
+        self.assertLessEqual(len(f"ib_rt:{-10**13}:next9:99".encode()), 64)
+        self.assertLessEqual(len(f"ib_unpr:{-10**13}:99".encode()), 64)
 
 
 class I18nTests(unittest.TestCase):
