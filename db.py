@@ -2773,7 +2773,7 @@ def record_owner_reply(owner_id: int, chat_id: int, message_id: int, now: float 
     return _run_tx(tx)
 
 
-def get_pending_chats(owner_id: int, limit: int, now: float | None = None, priority_first: bool = False) -> tuple[int, list]:
+def get_pending_chats(owner_id: int, limit: int, now: float | None = None, priority_first: bool = False, offset: int = 0) -> tuple[int, list]:
     """(javobsiz suhbatlar soni, `limit` tasi). Tartib: priority_first=True (faqat Pro/Ultra) bo'lsa muhimlar avval, so'ng eng uzoq
     kutayotgani; aks holda faqat kutish vaqti bo'yicha. 14 kundan eski suhbatlar hisobga olinmaydi."""
     now = time.time() if now is None else now
@@ -2787,8 +2787,8 @@ def get_pending_chats(owner_id: int, limit: int, now: float | None = None, prior
         total = cur.fetchone()["n"]
         cur.execute(
             "SELECT chat_id, customer_name, pending_count, waiting_since, is_priority FROM inbox_chats "
-            f"WHERE owner_user_id = %s AND pending AND last_customer_at >= %s ORDER BY {order} LIMIT %s",
-            (owner_id, cutoff, max(0, limit)),
+            f"WHERE owner_user_id = %s AND pending AND last_customer_at >= %s ORDER BY {order} LIMIT %s OFFSET %s",
+            (owner_id, cutoff, max(0, limit), max(0, offset)),
         )
         rows = [dict(r) for r in cur.fetchall()]
     return total, rows
@@ -2909,13 +2909,16 @@ def set_inbox_priority(owner_id: int, chat_id: int, priority: bool, limit: int, 
         st = cur.fetchone()
         if st is None or not st["enabled"]:
             return "disabled"
-        cur.execute("SELECT is_priority FROM inbox_chats WHERE owner_user_id = %s AND chat_id = %s FOR UPDATE", (owner_id, chat_id))
+        cur.execute("SELECT is_priority, pending, last_customer_at FROM inbox_chats WHERE owner_user_id = %s AND chat_id = %s FOR UPDATE", (owner_id, chat_id))
         chat = cur.fetchone()
         if chat is None:
             return "no_chat"
         if bool(chat["is_priority"]) == bool(priority):
             return "ok"  # idempotent: eski tugma qayta bosilsa holat teskarilanmaydi
         if priority:
+            # yangi belgi faqat hozir javobsiz (pending) va 14 kunlik muddat ichidagi suhbatga (eski tugma limitni buzmasin)
+            if not chat["pending"] or chat["last_customer_at"] is None or chat["last_customer_at"] < now - INBOX_RETENTION_DAYS * 86400:
+                return "no_chat"
             if limit <= 0:
                 return "forbidden"
             if _priority_count(cur, owner_id, now - INBOX_RETENTION_DAYS * 86400) >= limit:
@@ -2943,10 +2946,11 @@ def schedule_inbox_reminder(owner_id: int, chat_id: int, due_at: float, due_loca
             return "disabled"
         if daily_limit <= 0:
             return "forbidden"
-        cur.execute("SELECT pending FROM inbox_chats WHERE owner_user_id = %s AND chat_id = %s FOR UPDATE", (owner_id, chat_id))
+        cur.execute("SELECT pending, last_customer_at FROM inbox_chats WHERE owner_user_id = %s AND chat_id = %s FOR UPDATE", (owner_id, chat_id))
         chat = cur.fetchone()
-        if chat is None or not chat["pending"]:
-            return "no_chat"  # suhbat yo'q yoki allaqachon javob berilgan
+        if chat is None or not chat["pending"] or chat["last_customer_at"] is None \
+                or chat["last_customer_at"] < now - INBOX_RETENTION_DAYS * 86400:
+            return "no_chat"  # suhbat yo'q, javob berilgan yoki 14 kunlik saqlash muddatidan eski
         cur.execute(
             "SELECT COUNT(*) AS n FROM inbox_reminders WHERE owner_user_id = %s AND due_local_date = %s AND state = ANY(%s) "
             "AND NOT (chat_id = %s AND state IN ('scheduled', 'preparing', 'sending'))",
@@ -3026,14 +3030,30 @@ def claim_due_inbox_reminders(now: float, limit: int = 20) -> list:
 
 
 def mark_inbox_reminder_sending(reminder_id: int, token: str, now: float | None = None) -> bool:
-    """'preparing' -> 'sending' (Telegram'ga yuborishdan OLDIN). Token mos bo'lmasa yoki bekor qilingan bo'lsa — False."""
+    """'preparing' -> 'sending' (Telegram'ga yuborishdan OLDIN). Suhbatning javobsizligi va Smart Inbox yoqilganligi SHU tranzaksiyada
+    (qator qulfi bilan) tekshiriladi: egasining javobi (record_owner_reply) bilan ketma-ket bajariladi. Token mos bo'lmasa, bekor qilingan
+    bo'lsa yoki suhbatga javob berilgan bo'lsa — False (eslatma bekor qilinadi)."""
     now = time.time() if now is None else now
-    with get_conn() as conn, conn.cursor() as cur:
+
+    def tx(cur):
+        cur.execute("SELECT owner_user_id, chat_id FROM inbox_reminders WHERE id = %s AND attempt_token = %s AND state = 'preparing'", (reminder_id, token))
+        r = cur.fetchone()
+        if r is None:
+            return False
+        cur.execute("SELECT 1 FROM inbox_settings WHERE owner_user_id = %s AND enabled FOR SHARE", (r["owner_user_id"],))
+        enabled = cur.fetchone() is not None
+        cur.execute("SELECT pending FROM inbox_chats WHERE owner_user_id = %s AND chat_id = %s FOR SHARE", (r["owner_user_id"], r["chat_id"]))
+        chat = cur.fetchone()
+        if not enabled or chat is None or not chat["pending"]:
+            cur.execute("UPDATE inbox_reminders SET state = 'cancelled' WHERE id = %s AND attempt_token = %s AND state = 'preparing'", (reminder_id, token))
+            return False
         cur.execute(
             "UPDATE inbox_reminders SET state = 'sending', claimed_at = %s WHERE id = %s AND attempt_token = %s AND state = 'preparing' RETURNING 1",
             (now, reminder_id, token),
         )
         return cur.fetchone() is not None
+
+    return _run_tx(tx)
 
 
 def finish_inbox_reminder(reminder_id: int, token: str, state: str, now: float | None = None) -> bool:
