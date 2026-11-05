@@ -622,6 +622,32 @@ class DigestRecoveryTests(DbBase):
         self.assertEqual(self._run_send(b, NOW_TS), "not_due")  # qayta yuborilmaydi
         b.send_message.assert_not_awaited()
 
+    def _claimed(self):
+        db.record_customer_message(self.o, 5, 100, "Ali", NOW_TS - 3600)
+        self.assertTrue(db.claim_inbox_digest(self.o, "2026-11-01", "tok", NOW_TS))
+
+    def test_digest_disabled_after_claim_is_not_sent(self):
+        self._claimed()
+        db.set_inbox_settings(self.o, enabled=False)  # claimdan keyin Smart Inbox o'chirildi
+        self.assertFalse(db.start_inbox_digest_sending(self.o, "2026-11-01", "tok", NOW_TS + 1))
+        b = self._bot()
+        real = db.claim_inbox_digest
+        with patch.object(db, "claim_inbox_digest", side_effect=lambda *a, **k: (real(*a, **k), db.set_inbox_settings(self.o, enabled=False))[0]), \
+                patch.object(db, "get_pending_stats", return_value={"total": 1, "oldest_waiting_since": NOW_TS - 60, "priority": 0}), \
+                patch.object(db, "get_pending_chats", return_value=(1, [{"chat_id": 5, "customer_name": "Ali", "pending_count": 1, "waiting_since": NOW_TS - 60}])):
+            db.set_inbox_settings(self.o, enabled=True)
+            with db.get_conn() as conn, conn.cursor() as cur:
+                cur.execute("UPDATE inbox_settings SET last_digest_date=NULL, digest_phase='sent', digest_claim_token=NULL WHERE owner_user_id=%s", (self.o,))
+            self.assertEqual(self._run_send(b, NOW_TS + 5), "skipped")
+        b.send_message.assert_not_awaited()
+
+    def test_digest_notify_off_after_claim_is_not_sent(self):
+        self._claimed()
+        db.set_inbox_settings(self.o, notify=False)
+        self.assertFalse(db.start_inbox_digest_sending(self.o, "2026-11-01", "tok", NOW_TS + 1))
+        db.set_inbox_settings(self.o, notify=True)
+        self.assertTrue(db.start_inbox_digest_sending(self.o, "2026-11-01", "tok", NOW_TS + 2))  # yoqiq bo'lsa o'tadi
+
     def test_digest_due_pure_lease(self):
         d = datetime(2026, 11, 1, 21, 0)
         self.assertFalse(inbox.digest_due(d, 1200, "2026-11-01", "preparing", 1000.0, 1200.0))
@@ -823,6 +849,32 @@ class PriorityBotTests(unittest.TestCase):
         rows = [{"chat_id": 1, "customer_name": "A", "pending_count": 1, "waiting_since": now - 600, "is_priority": True}]
         text = bot.build_inbox_digest(9, rows, now, "en", oldest_since=now - 3 * 86400 - 5)
         self.assertIn("3 d", text.splitlines()[1])  # qatorlardagi 10 daqiqa emas, jami eng uzoq — 3 kun
+
+    def test_extremely_large_inbox_page_is_handled_safely(self):
+        self.assertEqual(bot._parse_page("9" * 30), 100000)
+        calls = []
+
+        def fake(owner_id, limit, now=None, priority_first=False, offset=0, priority_limit=None):
+            calls.append(offset)
+            return 0, []
+        q = self._query()
+        for data in ("ib_priority:" + "9" * 40, "ib_reminders:" + "9" * 40, "ib_pr:5:" + "9" * 40):
+            with _Plan("pro"), patch.object(db, "get_pending_chats", side_effect=fake), patch.object(db, "count_priority_chats", return_value=0), \
+                    patch.object(db, "set_inbox_priority", return_value="ok"), patch.object(db, "list_inbox_reminders", return_value=[]), \
+                    patch.object(db, "get_settings", return_value={}), patch.object(db, "count_inbox_reminders_for_date", return_value=0):
+                self.assertTrue(run(bot.handle_inbox_callback(q, 1, data, "uz")), data)
+        self.assertTrue(calls and all(0 <= c <= 100000 * bot.PRIORITY_VIEW_ROWS for c in calls))
+
+    def test_priority_counter_shows_active_and_inactive(self):
+        with _Plan("pro"), patch.object(db, "get_pending_chats", return_value=(0, [])), patch.object(db, "count_priority_chats", return_value=20):
+            text, _ = bot.build_inbox_priority_view(1)
+        self.assertIn("5/5", text)
+        self.assertNotIn("20/5", text)
+        self.assertIn("15", text)
+        with _Plan("pro"), patch.object(db, "get_pending_chats", return_value=(0, [])), patch.object(db, "count_priority_chats", return_value=3):
+            text, _ = bot.build_inbox_priority_view(1)
+        self.assertIn("3/5", text)
+        self.assertNotIn("☆", text)
 
     def test_menu_shows_priority_line_and_buttons(self):
         cfg = {"enabled": True, "notify": True, "digest_minutes": 1200, "last_digest_date": None}
