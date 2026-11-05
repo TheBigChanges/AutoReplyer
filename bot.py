@@ -2483,7 +2483,7 @@ PRIORITY_VIEW_ROWS = 10  # bir sahifadagi suhbatlar soni (Priority va Eslatmalar
 
 def _parse_page(part) -> int:
     try:
-        return max(0, int(part))
+        return min(max(0, int(part)), 100000)  # juda katta raqam bazaga OFFSET sifatida bormasin
     except (TypeError, ValueError):
         return 0
 
@@ -2518,8 +2518,11 @@ def build_inbox_priority_view(owner_id: int, notice: str = "", page: int = 0):
     now = time.time()
     limit = inbox_priority_limit_for(owner_id)
     rows, page, pages = _paged_pending(owner_id, page, now)
-    used = db.count_priority_chats(owner_id, now)
+    saved = db.count_priority_chats(owner_id, now)
+    used = min(saved, limit)  # faol belgilar; limitdan ortiqlari (tarif pasaygan) saqlangan, lekin faol emas
     text = ((notice + "\n\n") if notice else "") + t(lang, "inbox_priority_title", n=used, limit=limit)
+    if saved > used:
+        text += "\n" + t(lang, "inbox_priority_inactive", n=saved - used)
     kb = []
     if not rows:
         text += "\n\n" + t(lang, "inbox_priority_empty")
