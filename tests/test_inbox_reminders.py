@@ -488,6 +488,18 @@ class RaceAndRetentionTests(DbBase):
         self.assertFalse(db.mark_inbox_reminder_sending(rid, rem["attempt_token"], NOW + 4000))
         self.assertEqual(self.state(), "cancelled")
 
+    def test_reminder_expired_between_scheduling_and_sending(self):
+        self.chat(at=NOW - 14 * 86400 + 3600)  # rejalashtirishda 13 kun 23 soat
+        rid = self.sched(due=NOW + 1800)
+        self.assertIsInstance(rid, int)
+        rem = db.claim_due_inbox_reminders(NOW + 4000)[0]  # eslatma vaqtida suhbat 14 kundan oshgan, tozalash hali yurmagan
+        b = MagicMock()
+        b.send_message = AsyncMock()
+        with _Plan("pro"), patch.object(db, "get_block", return_value=None):
+            self.assertIn(run(bot.process_inbox_reminder(b, rem, NOW + 4000)), ("cancelled", "stale"))
+        b.send_message.assert_not_awaited()
+        self.assertEqual(self.state(), "cancelled")
+
     def test_mark_sending_requires_inbox_enabled(self):
         self.chat()
         rid = self.sched()
