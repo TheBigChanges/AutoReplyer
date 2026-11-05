@@ -3061,9 +3061,10 @@ def mark_inbox_reminder_sending(reminder_id: int, token: str, now: float | None 
             return False
         cur.execute("SELECT 1 FROM inbox_settings WHERE owner_user_id = %s AND enabled FOR SHARE", (r["owner_user_id"],))
         enabled = cur.fetchone() is not None
-        cur.execute("SELECT pending FROM inbox_chats WHERE owner_user_id = %s AND chat_id = %s FOR SHARE", (r["owner_user_id"], r["chat_id"]))
+        cur.execute("SELECT pending, last_customer_at FROM inbox_chats WHERE owner_user_id = %s AND chat_id = %s FOR SHARE", (r["owner_user_id"], r["chat_id"]))
         chat = cur.fetchone()
-        if not enabled or chat is None or not chat["pending"]:
+        if (not enabled or chat is None or not chat["pending"] or chat["last_customer_at"] is None
+                or chat["last_customer_at"] < now - INBOX_RETENTION_DAYS * 86400):  # 14 kunlik saqlash muddati yuborish paytida ham tekshiriladi
             cur.execute("UPDATE inbox_reminders SET state = 'cancelled' WHERE id = %s AND attempt_token = %s AND state = 'preparing'", (reminder_id, token))
             return False
         cur.execute(
