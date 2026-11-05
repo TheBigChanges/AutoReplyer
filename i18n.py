@@ -1872,6 +1872,11 @@ T: dict[str, dict] = {
         "⭐ Важные чаты: {n}/{limit}\n\nВажные чаты идут первыми в сводке и списке. Выберите чат, чтобы отметить:",
     ),
     "inbox_priority_line": _("⭐ Muhim suhbatlar: {n}/{limit}", "⭐ Important chats: {n}/{limit}", "⭐ Важные чаты: {n}/{limit}"),
+    "inbox_priority_inactive": _(
+        "☆ Saqlangan, faol emas: {n} (tarif limitidan ortiq; olib tashlash mumkin)",
+        "☆ Saved, inactive: {n} (over the plan limit; you can remove them)",
+        "☆ Сохранены, не активны: {n} (сверх лимита тарифа; можно снять)",
+    ),
     "inbox_priority_empty": _("Hozir javobsiz suhbat yo'q.", "There are no unanswered chats right now.", "Сейчас нет неотвеченных чатов."),
     "inbox_priority_added": _("⭐ Suhbat muhim deb belgilandi.", "⭐ Chat marked as important.", "⭐ Чат отмечен как важный."),
     "inbox_priority_removed": _("Muhimlik belgisi olib tashlandi.", "Importance mark removed.", "Отметка важности снята."),
