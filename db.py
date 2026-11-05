@@ -2864,12 +2864,12 @@ def claim_inbox_digest(owner_id: int, date_str: str, token: str, now: float | No
 
 
 def start_inbox_digest_sending(owner_id: int, date_str: str, token: str, now: float | None = None) -> bool:
-    """'preparing' -> 'sending' (Telegram'ga yuborishdan OLDIN). Token mos kelmasa (boshqa ishchi qayta band qilgan) — False: yuborilmaydi."""
+    """'preparing' -> 'sending' (Telegram'ga yuborishdan OLDIN; Smart Inbox va kunlik xulosa hamon yoqilgan bo'lishi shart). Token mos kelmasa (boshqa ishchi qayta band qilgan) — False: yuborilmaydi."""
     now = time.time() if now is None else now
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE inbox_settings SET digest_phase = 'sending', digest_claimed_at = %s WHERE owner_user_id = %s AND last_digest_date = %s "
-            "AND digest_claim_token = %s AND digest_phase = 'preparing' RETURNING 1",
+            "AND digest_claim_token = %s AND digest_phase = 'preparing' AND enabled AND notify RETURNING 1",
             (now, owner_id, date_str, token),
         )
         return cur.fetchone() is not None
