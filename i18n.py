@@ -473,7 +473,9 @@ T: dict[str, dict] = {
         "sun'iy intellekt suhbatdoshingizga o'zi javob yozadi. Oddiy avtojavob matnlari o'chmaydi — "
         "AI o'chirilsa, kunlik limit tugasa yoki xato bo'lsa, ular ishlatiladi.\n"
         "Uxlash rejimi (Sleep Mode) vaqtida AI ishlamaydi — har doim uxlash xabaringiz yuboriladi.\n"
-        "Chatga o'zingiz yozsangiz, AI shu chatda 2 soat jim turadi.",
+        "Chatga o'zingiz yozsangiz, AI shu chatda 2 soat jim turadi.\n"
+        "\U0001F3A4 Ovozli xabarlar (60 soniya, 2 MB gacha) ham tushuniladi: audio Gemini'ga yuboriladi va diskka saqlanmaydi, "
+        "aniqlangan matn esa AI suhbat tarixiga yoziladi.",
         "\U0001F916 AI Assistant\n\n"
         "Status: {status}\n"
         "{usage}\n"
@@ -483,7 +485,9 @@ T: dict[str, dict] = {
         "writes the reply to your contact instead of the usual text. The regular auto-reply texts are kept — "
         "they are used if AI is turned off, the daily limit runs out or an error occurs.\n"
         "During Sleep Mode the AI does not reply — your sleep message is always sent.\n"
-        "If you write in a chat yourself, the AI stays silent in that chat for 2 hours.",
+        "If you write in a chat yourself, the AI stays silent in that chat for 2 hours.\n"
+        "\U0001F3A4 Voice messages (up to 60 seconds, 2 MB) are understood too: the audio is sent to Gemini and is not stored on disk; "
+        "the recognized text is saved in the AI conversation history.",
         "\U0001F916 AI-помощник\n\n"
         "Статус: {status}\n"
         "{usage}\n"
@@ -493,7 +497,9 @@ T: dict[str, dict] = {
         "собеседнику отвечает искусственный интеллект. Обычные тексты автоответа не удаляются — "
         "они используются, если AI выключен, закончился дневной лимит или произошла ошибка.\n"
         "Во время режима сна (Sleep Mode) AI не отвечает — всегда отправляется ваше сообщение о сне.\n"
-        "Если вы сами напишете в чат, AI будет молчать в этом чате 2 часа.",
+        "Если вы сами напишете в чат, AI будет молчать в этом чате 2 часа.\n"
+        "\U0001F3A4 Голосовые сообщения (до 60 секунд, 2 МБ) тоже понимаются: аудио отправляется в Gemini и не сохраняется на диск, "
+        "распознанный текст записывается в историю AI-диалога.",
     ),
     "ai_usage_unlimited": _("Limit: cheklovsiz", "Limit: unlimited", "Лимит: без ограничений"),
     "ai_usage": _("Bugun: {used}/{limit} ta javob", "Today: {used}/{limit} replies", "Сегодня: {used}/{limit} ответов"),
