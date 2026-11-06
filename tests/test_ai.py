@@ -175,6 +175,20 @@ class VoiceTests(unittest.TestCase):
         self.assertIsNone(self._go(post=AsyncMock(return_value=self._resp("  ")))[0])
         self.assertIsNone(self._go(post=AsyncMock(return_value={}))[0])
 
+    def test_long_voice_transcript_is_not_truncated_at_reply_limit(self):
+        long = ("Bu uzun savol. " * 100).strip()  # ~1500 belgi > MAX_REPLY_CHARS
+        self.assertGreater(len(long), ai.MAX_REPLY_CHARS)
+        result, post = self._go(post=AsyncMock(return_value=self._resp(long)))
+        self.assertEqual(result, long)  # oxirgi qism yo'qolmagan
+        self.assertEqual(post.call_args.args[2]["generationConfig"]["maxOutputTokens"], 2000)
+
+    def test_absurdly_long_transcript_capped_at_sentence_boundary(self):
+        text = "Savol berdim. " * 1000
+        out = ai.extract_transcript(self._resp(text))
+        self.assertLessEqual(len(out), ai.MAX_TRANSCRIPT_CHARS)
+        self.assertTrue(out.endswith("."))
+        self.assertEqual(ai.extract_text(self._resp(text)), text.strip()[:ai.MAX_REPLY_CHARS])  # AI javobi chegarasi o'zgarmagan
+
     def test_guards_do_not_call_gemini(self):
         for audio in (b"", b"x" * (ai.MAX_VOICE_BYTES + 1)):
             result, post = self._go(audio=audio)
