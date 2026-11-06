@@ -2265,6 +2265,7 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 consumed = True
 
             if voice is not None:
+                caption = text  # ovozga yozilgan izoh (bo'lsa) — qo'shimcha kontekst
                 text = await transcribe_business_voice(bot, voice)
                 # Transkripsiya davomida egasi suhbatga aralashgan yoki AI o'chirilgan/sozlamalar o'zgargan bo'lishi mumkin
                 if db.is_ai_paused(owner_id, chat_id) or not ai_reply_still_allowed(owner_id):
@@ -2280,6 +2281,8 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                     _mark_ai_answered(owner_id, chat_id, incoming_id)  # takroriy update qayta transkripsiya (xarajat) qilmasin
                     await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",voice-failed")
                     return
+                if caption:
+                    text = f"{text}\n\n[Caption: {caption}]"
 
             history = db.get_ai_history(owner_id, chat_id, AI_HISTORY_MESSAGES)
             history.append({"role": "user", "text": text})
@@ -7538,11 +7541,15 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = f"sleeping={sleeping}" + (",schedule" if schedule_rule is not None else "")
 
         ai_usable = not sleeping and bool(settings.get("ai_enabled")) and ai.is_configured() and has_feature(owner_id, "ai")
+        # Ovozli xabar (caption bo'lsa ham) matnli qoidalar (Automation/FAQ) bilan ishlanmaydi: avval audio AI orqali eshitiladi
+        voice_msg = getattr(bm, "voice", None)
+        if not isinstance(voice_msg, Voice):
+            voice_msg = None
 
         # Automation Engine: FAQ'dan OLDIN. Faqat oddiy Oflayn rejimda (Sleep Mode ham, Jadval oynasi ham emas),
         # faqat matnli xabarga. Mos qoida topilsa FAQ va AI ishlamaydi (bir xabarga bitta javob).
         if not sleeping and schedule_rule is None and settings["offline"]:
-            auto_text = (bm.text or bm.caption or "").strip()
+            auto_text = "" if voice_msg is not None else (bm.text or bm.caption or "").strip()
             rule = find_automation_rule(owner_id, auto_text, settings) if auto_text else None
             if rule is not None:
                 if settings.get("ai_enabled") and db.is_ai_paused(owner_id, chat_id):
@@ -7555,7 +7562,7 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Smart FAQ: faqat Oflayn holatda (uxlash vaqtida emas) va faqat aniq, yagona moslik bo'lsa
         if not sleeping and effective_offline and settings.get("faq_enabled", True):
-            faq_text = (bm.text or bm.caption or "").strip()
+            faq_text = "" if voice_msg is not None else (bm.text or bm.caption or "").strip()
             faq_answer = find_faq_answer(owner_id, faq_text) if faq_text else None
             if faq_answer:
                 if settings.get("ai_enabled") and db.is_ai_paused(owner_id, chat_id):
@@ -7570,17 +7577,18 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not sleeping and settings.get("ai_enabled") and ai.is_configured() and has_feature(owner_id, "ai"):
             if db.is_ai_paused(owner_id, chat_id):
                 return  # egasi shu chatda o'zi yozmoqda
+            if voice_msg is not None:
+                # Voice AI: avval AUDIO eshitiladi (caption bo'lsa — qo'shimcha kontekst sifatida): mavjud AI oqimi (tarix,
+                # bilimlar bazasi, rol, kunlik limit, takroriy himoya)
+                caption = (bm.text or bm.caption or "").strip()
+                spawn_background(
+                    run_ai_reply(context.bot, bm, owner_id, chat_id, caption, settings, reply_text, label, voice=voice_msg)
+                )
+                return
             text = (bm.text or bm.caption or "").strip()
             if text:
                 spawn_background(
                     run_ai_reply(context.bot, bm, owner_id, chat_id, text, settings, reply_text, label)
-                )
-                return
-            voice = getattr(bm, "voice", None)
-            if isinstance(voice, Voice):
-                # Voice AI: ovozli xabar mavjud AI oqimidan o'tadi (tarix, bilimlar bazasi, rol, kunlik limit, takroriy himoya)
-                spawn_background(
-                    run_ai_reply(context.bot, bm, owner_id, chat_id, "", settings, reply_text, label, voice=voice)
                 )
                 return
             # Boshqa matnsiz xabar (rasm, sticker...) — AI o'qiy olmaydi, odatiy matn ketadi
