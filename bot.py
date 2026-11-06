@@ -31,7 +31,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, TransactionPartnerUser, Update, User
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, TransactionPartnerUser, Update, User, Voice
 from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
@@ -2200,8 +2200,47 @@ async def send_faq_reply(bot, bm, owner_id: int, chat_id: int, answer: str, cool
     logger.info("faq reply sent (owner=%s, chat=%s, %s)", owner_id, chat_id, label)
 
 
-async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings: dict, fallback_text: str, label: str):
-    """AI javobini yaratib yuboradi. Limit tugasa yoki xato bo'lsa — odatiy matnli avtojavob (zaxira)."""
+def _voice_seconds(voice) -> float | None:
+    d = getattr(voice, "duration", None)
+    if hasattr(d, "total_seconds"):  # PTB sozlamasiga qarab timedelta bo'lishi mumkin
+        d = d.total_seconds()
+    return float(d) if isinstance(d, (int, float)) else None
+
+
+def voice_acceptable(voice) -> bool:
+    """Voice AI cheklovlari (Gemini'ga yuborishdan OLDIN, kunlik limit sarflanmasdan): 60 soniyagacha, 2 MB gacha, OGG/Opus."""
+    if voice is None:
+        return False
+    seconds = _voice_seconds(voice)
+    if seconds is None or seconds > ai.MAX_VOICE_SECONDS:
+        return False
+    size = getattr(voice, "file_size", None)
+    if isinstance(size, int) and size > ai.MAX_VOICE_BYTES:
+        return False
+    return (getattr(voice, "mime_type", None) or "audio/ogg") in ai.VOICE_MIME_TYPES
+
+
+async def transcribe_business_voice(bot, voice) -> str | None:
+    """Telegram ovozli xabarini xotirada (diskka yozmasdan) yuklab, Gemini orqali matnga aylantiradi. Har qanday xatoda None."""
+    if not voice_acceptable(voice):
+        return None
+    try:
+        tg_file = await bot.get_file(voice.file_id)
+        size = getattr(tg_file, "file_size", None)
+        if isinstance(size, int) and size > ai.MAX_VOICE_BYTES:
+            return None
+        audio = await tg_file.download_as_bytearray()
+        if not 0 < len(audio) <= ai.MAX_VOICE_BYTES:
+            return None
+        return await ai.transcribe_voice(bytes(audio), getattr(voice, "mime_type", None) or "audio/ogg")
+    except (TelegramError, OSError, RuntimeError) as e:
+        logger.warning("Voice yuklab olinmadi: %s", type(e).__name__)
+        return None
+
+
+async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings: dict, fallback_text: str, label: str, voice=None):
+    """AI javobini yaratib yuboradi. Limit tugasa yoki xato bo'lsa — odatiy matnli avtojavob (zaxira).
+    voice berilsa (Voice AI): ovoz avval matnga aylantiriladi (kunlik limit band qilingach, suhbat qulfi ichida), so'ng oddiy AI oqimi."""
     incoming_id = getattr(bm, "message_id", None)
     business_connection_id = bm.business_connection_id
     day = str(today_tashkent())
@@ -2214,11 +2253,33 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 return  # navbat kutayotganda egasi chatga yozgan yoki sozlamalar o'zgargan: AI ham, zaxira matn ham ketmaydi
             if _ai_answered_message(owner_id, chat_id, incoming_id):
                 return  # shu kiruvchi xabarga AI allaqachon javob bergan (takroriy update): na yangi so'rov, na limit, na zaxira matn
+            if voice is not None and not voice_acceptable(voice):
+                # juda uzun/katta yoki qo'llab-quvvatlanmaydigan audio: Gemini'ga yuborilmaydi, limit sarflanmaydi — zaxira matn
+                _mark_ai_answered(owner_id, chat_id, incoming_id)
+                await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",voice-unsupported")
+                return
             if not unlimited:
                 if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT):
                     await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-limit")
                     return
                 consumed = True
+
+            if voice is not None:
+                text = await transcribe_business_voice(bot, voice)
+                # Transkripsiya davomida egasi suhbatga aralashgan yoki AI o'chirilgan/sozlamalar o'zgargan bo'lishi mumkin
+                if db.is_ai_paused(owner_id, chat_id) or not ai_reply_still_allowed(owner_id):
+                    if consumed:
+                        consumed = False
+                        db.refund_ai_quota(owner_id, day)
+                    return
+                if not text:
+                    # tushunarsiz audio yoki xato: AI limiti qaytariladi, avvaldan mavjud zaxira avtojavob ketadi
+                    if consumed:
+                        consumed = False
+                        db.refund_ai_quota(owner_id, day)
+                    _mark_ai_answered(owner_id, chat_id, incoming_id)  # takroriy update qayta transkripsiya (xarajat) qilmasin
+                    await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",voice-failed")
+                    return
 
             history = db.get_ai_history(owner_id, chat_id, AI_HISTORY_MESSAGES)
             history.append({"role": "user", "text": text})
@@ -7515,7 +7576,14 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     run_ai_reply(context.bot, bm, owner_id, chat_id, text, settings, reply_text, label)
                 )
                 return
-            # Matnsiz xabar (rasm, ovoz, sticker...) — AI o'qiy olmaydi, odatiy matn ketadi
+            voice = getattr(bm, "voice", None)
+            if isinstance(voice, Voice):
+                # Voice AI: ovozli xabar mavjud AI oqimidan o'tadi (tarix, bilimlar bazasi, rol, kunlik limit, takroriy himoya)
+                spawn_background(
+                    run_ai_reply(context.bot, bm, owner_id, chat_id, "", settings, reply_text, label, voice=voice)
+                )
+                return
+            # Boshqa matnsiz xabar (rasm, sticker...) — AI o'qiy olmaydi, odatiy matn ketadi
 
         await send_auto_reply(context.bot, bm, owner_id, chat_id, reply_text, settings["cooldown_hours"], label)
 
