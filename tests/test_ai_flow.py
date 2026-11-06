@@ -217,8 +217,35 @@ class VoiceAiTests(Base):
         self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
         tr.assert_not_awaited()
 
-    def test_voice_with_caption_uses_caption_text_path(self):
-        send, m, tr = self.voice_flow(update=_voice_update(caption="Narxi qancha?"))
+    def test_voice_with_caption_transcribes_audio(self):
+        send, m, tr = self.voice_flow(transcript="Ertaga soat uchga vaqt bormi?", update=_voice_update(caption="Salom"))
+        tr.assert_awaited_once()  # audio eshitiladi, faqat caption emas
+        sent_to_ai = m["gen"].call_args.args[0][-1]["text"]
+        self.assertIn("Ertaga soat uchga vaqt bormi?", sent_to_ai)
+        self.assertIn("Salom", sent_to_ai)  # caption qo'shimcha kontekst
+        self.assertEqual(len(self.texts(send)), 1)
+
+    def test_voice_caption_does_not_trigger_faq_or_automation(self):
+        rule = {"id": 1, "action": {"text": "AUTOMATION"}}
+        with patch.object(bot, "find_automation_rule", return_value=rule) as far, \
+                patch.object(bot, "find_faq_answer", return_value="FAQ JAVOB") as ffa:
+            send, m, tr = self.voice_flow(update=_voice_update(caption="narx"))
+        far.assert_not_called()
+        ffa.assert_not_called()
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])  # AI javobi, FAQ/Automation emas
+        tr.assert_awaited_once()
+
+    def test_voice_caption_with_ai_off_uses_plain_autoreply_not_faq(self):
+        with patch.object(bot, "find_faq_answer", return_value="FAQ JAVOB") as ffa:
+            send, m, tr = self.voice_flow(update=_voice_update(caption="narx", message_id=41), settings=_settings(ai_enabled=False))
+        ffa.assert_not_called()
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+
+    def test_photo_caption_still_uses_caption_as_text(self):
+        upd = _update(text="", message_id=42)
+        upd.business_message.caption = "Narxi qancha?"
+        upd.business_message.voice = None
+        send, m, tr = self.voice_flow(update=upd)
         tr.assert_not_awaited()
         self.assertEqual(m["gen"].call_args.args[0][-1]["text"], "Narxi qancha?")
 
