@@ -722,3 +722,14 @@ For user help or release notes, follow [@AutoReplyer_News](https://t.me/AutoRepl
 [**Start on Telegram**](https://t.me/autoreplyer_dbot) · [**Follow Updates**](https://t.me/AutoReplyer_News) · [**View Source**](https://github.com/TheBigChanges/AutoReplyer)
 
 </div>
+
+## Voice AI (voice messages in the AI Assistant)
+
+No new menu or button: when the **🤖 AI Assistant** is on and a customer sends a **voice message** through Telegram Business, the bot transcribes it with Gemini (the same API key and model as the text AI — the model must support audio input, `gemini-2.5-flash` does) and sends the normal AI text reply. It reuses the AI history, Knowledge Base, role, plan check, owner-takeover pause and the daily AI limit (one voice message = one AI request, although two Gemini calls are made).
+
+- Limits: voice up to **60 seconds** and **2 MB**, OGG/Opus only. Longer/other audio is not sent to Gemini and does not use the daily limit — the regular auto-reply text is sent instead.
+- Order is unchanged: Sleep Mode → Schedule → Automation → Smart FAQ → AI → plain auto-reply. Automation and FAQ rules only match text, so a voice message goes to the AI (or the plain auto-reply if AI is off / unavailable).
+- If the audio cannot be understood, or Gemini/Telegram fails, the daily AI request is refunded and the regular auto-reply text is sent. If you start writing in the chat while the voice is being transcribed, nothing is sent and the request is refunded.
+- A repeated update for the same voice message is answered (and transcribed) only once.
+- **Privacy:** the audio is downloaded into memory, sent to Gemini and never saved to disk or logged. The recognized text is stored in the AI conversation history under the usual retention rules. The AI settings screen says so.
+- Costs: each voice reply makes two Gemini requests (speech→text, text→reply); watch real API usage.
