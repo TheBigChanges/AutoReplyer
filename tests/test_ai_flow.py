@@ -12,6 +12,8 @@ os.environ.setdefault("BOT_TOKEN", "123:dummy")
 os.environ.setdefault("DATABASE_URL", "postgresql://fake/fake")
 
 import ai  # noqa: E402
+from telegram import Voice  # noqa: E402
+from telegram.error import NetworkError  # noqa: E402
 import bot  # noqa: E402
 import db  # noqa: E402
 
@@ -99,6 +101,180 @@ class Base(unittest.TestCase):
 
     def texts(self, send):
         return [c.kwargs["text"] for c in send.call_args_list]
+
+
+def _voice_update(duration=5, file_size=20000, mime="audio/ogg", message_id=10, caption=None):
+    u = _update(text="", message_id=message_id)
+    u.business_message.caption = caption
+    u.business_message.voice = Voice("fid", "uid", duration, mime_type=mime, file_size=file_size)
+    return u
+
+
+class VoiceAiTests(Base):
+    """Voice AI: ovozli xabar mavjud AI oqimidan o'tadi (limit, tarix, pauza, takroriy himoya, zaxira)."""
+
+    def voice_flow(self, transcript="Assalomu alaykum, yetkazib berish bormi?", update=None, **kw):
+        tr = AsyncMock(return_value=transcript)
+        p = patch.object(bot, "transcribe_business_voice", new=tr)
+        p.start()
+        self.addCleanup(p.stop)
+        send, m = self.flow(update=update or _voice_update(), **kw)
+        return send, m, tr
+
+    def test_voice_gets_text_ai_reply_and_history_has_transcript(self):
+        send, m, tr = self.voice_flow()
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+        tr.assert_awaited_once()
+        hist = m["gen"].call_args.args[0]
+        self.assertEqual(hist[-1], {"role": "user", "text": "Assalomu alaykum, yetkazib berish bormi?"})
+        self.assertEqual(m["add"].call_args.args[2], [("user", "Assalomu alaykum, yetkazib berish bormi?"), ("model", "Salom! Narx 100$.")])
+        m["quota"].assert_called_once()
+        m["refund"].assert_not_called()
+
+    def test_ai_disabled_uses_plain_autoreply_and_no_transcription(self):
+        send, m, tr = self.voice_flow(settings=_settings(ai_enabled=False))
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+        tr.assert_not_awaited()
+        m["gen"].assert_not_awaited()
+
+    def test_sleep_mode_beats_voice_ai(self):
+        with patch.object(bot, "reply_state", return_value=(True, None)):
+            send, m, tr = self.voice_flow(settings=_settings(sleep_mode_enabled=True))
+        tr.assert_not_awaited()
+        m["gen"].assert_not_awaited()
+
+    def test_owner_chatting_blocks_voice_ai(self):
+        send, m, tr = self.voice_flow(paused=True)
+        self.assertEqual(self.texts(send), [])
+        tr.assert_not_awaited()
+        m["quota"].assert_not_called()
+
+    def test_owner_wrote_during_transcription_cancels_and_refunds(self):
+        send, m, tr = self.voice_flow(paused_after_generate=True)
+        self.assertEqual(self.texts(send), [])
+        tr.assert_awaited_once()
+        m["gen"].assert_not_awaited()
+        m["refund"].assert_called_once()
+        m["claim"].assert_not_called()
+
+    def test_too_long_voice_is_not_transcribed_and_uses_fallback_without_quota(self):
+        send, m, tr = self.voice_flow(update=_voice_update(duration=ai.MAX_VOICE_SECONDS + 1))
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+        tr.assert_not_awaited()
+        m["quota"].assert_not_called()
+        m["gen"].assert_not_awaited()
+
+    def test_too_big_or_wrong_mime_voice_uses_fallback(self):
+        for upd in (_voice_update(file_size=ai.MAX_VOICE_BYTES + 1, message_id=21), _voice_update(mime="audio/mpeg", message_id=22)):
+            send, m, tr = self.voice_flow(update=upd)
+            self.assertEqual(self.texts(send), ["Oflaynman"])
+            tr.assert_not_awaited()
+
+    def test_daily_limit_exhausted_makes_no_gemini_call(self):
+        send, m, tr = self.voice_flow(quota=False)
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+        tr.assert_not_awaited()
+        m["gen"].assert_not_awaited()
+
+    def test_transcription_failure_falls_back_and_refunds(self):
+        send, m, tr = self.voice_flow(transcript=None)
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+        m["refund"].assert_called_once()
+        m["gen"].assert_not_awaited()
+        m["add"].assert_not_called()
+
+    def test_duplicate_voice_update_answers_once(self):
+        send1, m1, tr1 = self.voice_flow()
+        self.assertEqual(len(self.texts(send1)), 1)
+        send2, m2 = self.flow(update=_voice_update())  # xuddi shu message_id qayta keldi
+        self.assertEqual(self.texts(send2), [])
+        m2["gen"].assert_not_awaited()
+        m2["quota"].assert_not_called()
+
+    def test_duplicate_after_failed_transcription_does_not_retranscribe(self):
+        send1, m1, tr1 = self.voice_flow(transcript=None)
+        send2, m2 = self.flow(update=_voice_update())
+        tr1.assert_awaited_once()
+        self.assertEqual(self.texts(send2), [])
+
+    def test_distinct_voice_messages_both_answered(self):
+        self.voice_flow(update=_voice_update(message_id=1))
+        send, m = self.flow(update=_voice_update(message_id=2))
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+
+    def test_non_voice_media_keeps_plain_autoreply(self):
+        # rasm/sticker: `bm.voice` Voice emas (None yoki boshqa) — AI ishlamaydi, odatiy matn ketadi
+        for i, v in enumerate((None, MagicMock())):
+            upd = _update(text="", message_id=30 + i)
+            upd.business_message.voice = v
+            send, m, tr = self.voice_flow(update=upd)
+            self.assertEqual(self.texts(send), ["Oflaynman"])
+            tr.assert_not_awaited()
+            m["gen"].assert_not_awaited()
+
+    def test_text_message_never_takes_voice_path(self):
+        send, m, tr = self.voice_flow(update=_update(text="Salom"))
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+        tr.assert_not_awaited()
+
+    def test_voice_with_caption_uses_caption_text_path(self):
+        send, m, tr = self.voice_flow(update=_voice_update(caption="Narxi qancha?"))
+        tr.assert_not_awaited()
+        self.assertEqual(m["gen"].call_args.args[0][-1]["text"], "Narxi qancha?")
+
+    def test_admin_voice_unlimited_no_quota(self):
+        send, m, tr = self.voice_flow(owner=ADMIN)
+        self.assertEqual(len(self.texts(send)), 1)
+        m["quota"].assert_not_called()
+
+
+class TranscribeBusinessVoiceTests(unittest.TestCase):
+    def _bot(self, data=b"abc", size=100, get_err=None, dl_err=None):
+        tg_file = MagicMock(file_size=size)
+        tg_file.download_as_bytearray = AsyncMock(side_effect=dl_err, return_value=bytearray(data))
+        b = MagicMock()
+        b.get_file = AsyncMock(side_effect=get_err, return_value=tg_file)
+        return b
+
+    def _run(self, b, voice, result="matn"):
+        with patch.object(ai, "transcribe_voice", new=AsyncMock(return_value=result)) as tv:
+            return asyncio.run(bot.transcribe_business_voice(b, voice)), tv
+
+    def test_success_passes_bytes_and_mime(self):
+        out, tv = self._run(self._bot(), Voice("f", "u", 5, mime_type="audio/ogg"))
+        self.assertEqual(out, "matn")
+        self.assertEqual(tv.call_args.args, (b"abc", "audio/ogg"))
+
+    def test_missing_mime_defaults_to_ogg(self):
+        out, tv = self._run(self._bot(), Voice("f", "u", 5))
+        self.assertEqual(tv.call_args.args[1], "audio/ogg")
+
+    def test_limits_checked_before_download(self):
+        for v in (Voice("f", "u", 61), Voice("f", "u", 5, file_size=ai.MAX_VOICE_BYTES + 1), Voice("f", "u", 5, mime_type="video/mp4"), None):
+            b = self._bot()
+            out, tv = self._run(b, v)
+            self.assertIsNone(out)
+            b.get_file.assert_not_awaited()
+
+    def test_timedelta_duration_supported(self):
+        from datetime import timedelta
+        v = MagicMock(spec=Voice)
+        v.duration, v.file_size, v.mime_type, v.file_id = timedelta(seconds=30), 1000, "audio/ogg", "f"
+        self.assertTrue(bot.voice_acceptable(v))
+        v.duration = timedelta(seconds=90)
+        self.assertFalse(bot.voice_acceptable(v))
+
+    def test_download_errors_return_none(self):
+        for kw in ({"get_err": NetworkError("x")}, {"dl_err": NetworkError("x")}, {"dl_err": OSError("x")}):
+            out, tv = self._run(self._bot(**kw), Voice("f", "u", 5))
+            self.assertIsNone(out)
+            tv.assert_not_awaited()
+
+    def test_empty_or_oversized_download_returns_none(self):
+        for b in (self._bot(data=b""), self._bot(data=b"x" * (ai.MAX_VOICE_BYTES + 1)), self._bot(size=ai.MAX_VOICE_BYTES + 1)):
+            out, tv = self._run(b, Voice("f", "u", 5))
+            self.assertIsNone(out)
+            tv.assert_not_awaited()
 
 
 class AiPauseRecheckTests(Base):
