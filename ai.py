@@ -21,6 +21,7 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 REQUEST_TIMEOUT_SECONDS = 20.0
 MAX_REPLY_CHARS = 1000
 MAX_OUTPUT_TOKENS = 800
+MAX_TRANSCRIPT_CHARS = 4000  # transkripsiya uchun alohida chegara (AI javobi uchun MAX_REPLY_CHARS)
 MAX_VOICE_SECONDS = 60  # Voice AI: birinchi versiyada 60 soniyagacha
 MAX_VOICE_BYTES = 2 * 1024 * 1024  # va 2 MB gacha ovozli xabar
 VOICE_MIME_TYPES = ("audio/ogg", "audio/opus")
@@ -186,6 +187,23 @@ def extract_text(data: dict) -> str | None:
     return text[:MAX_REPLY_CHARS]
 
 
+def extract_transcript(data: dict) -> str | None:
+    """Transkripsiya matni: javob uchun 1000 belgilik chegara (MAX_REPLY_CHARS) bu yerda QO'LLANMAYDI — mijoz savolining oxiri kesilmasin.
+    Juda uzun bo'lsa MAX_TRANSCRIPT_CHARS da gap/so'z chegarasida kesiladi."""
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+    if len(text) > MAX_TRANSCRIPT_CHARS:
+        cut = text[:MAX_TRANSCRIPT_CHARS]
+        edge = max(cut.rfind(c) for c in ".!?\n")  # avval gap chegarasi, bo'lmasa so'z chegarasi
+        if edge <= MAX_TRANSCRIPT_CHARS // 2:
+            edge = cut.rfind(" ")
+        text = (cut[:edge + 1] if edge > MAX_TRANSCRIPT_CHARS // 2 else cut).strip()
+    return text or None
+
+
 async def _post(url: str, api_key: str, payload: dict) -> dict:
     global _client
     if _client is None:
@@ -229,7 +247,7 @@ async def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> 
     api_key = get_api_key()
     if api_key is None or not audio_bytes or len(audio_bytes) > MAX_VOICE_BYTES:
         return None
-    generation_config = {"temperature": 0, "maxOutputTokens": 650}
+    generation_config = {"temperature": 0, "maxOutputTokens": 2000}
     if "2.5" in GEMINI_MODEL and "flash" in GEMINI_MODEL:
         generation_config["thinkingConfig"] = {"thinkingBudget": 0}  # "o'ylash" tokenlari chiqish limitini yemasin
     payload = {
@@ -250,7 +268,7 @@ async def transcribe_voice(audio_bytes: bytes, mime_type: str = "audio/ogg") -> 
     except (httpx.HTTPError, ValueError) as e:
         logger.warning("Voice transkripsiyasi bajarilmadi: %s", type(e).__name__)
         return None
-    transcript = extract_text(data)
+    transcript = extract_transcript(data)
     if not transcript or NO_SPEECH_MARK in transcript:
         return None
-    return transcript.strip() or None
+    return transcript
