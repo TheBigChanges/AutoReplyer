@@ -730,6 +730,8 @@ No new menu or button: when the **🤖 AI Assistant** is on and a customer sends
 - Limits: voice up to **60 seconds** and **2 MB**, OGG/Opus only. Longer/other audio is not sent to Gemini and does not use the daily limit — the regular auto-reply text is sent instead.
 - Order is unchanged: Sleep Mode → Schedule → Automation → Smart FAQ → AI → plain auto-reply. Automation and FAQ rules only match text, so a voice message goes to the AI (or the plain auto-reply if AI is off / unavailable).
 - If the audio cannot be understood, or Gemini/Telegram fails, the daily AI request is refunded and the regular auto-reply text is sent. If you start writing in the chat while the voice is being transcribed, nothing is sent and the request is refunded.
+- A voice message with a **caption** is still transcribed first; the caption is passed to the AI as extra context. Voice messages (with or without caption) never trigger Automation or Smart FAQ rules.
+- The transcript has its own limit (4000 characters, cut at a sentence boundary) separate from the 1000-character AI reply limit, so the end of a long question is not lost.
 - A repeated update for the same voice message is answered (and transcribed) only once.
 - **Privacy:** the audio is downloaded into memory, sent to Gemini and never saved to disk or logged. The recognized text is stored in the AI conversation history under the usual retention rules. The AI settings screen says so.
 - Costs: each voice reply makes two Gemini requests (speech→text, text→reply); watch real API usage.
