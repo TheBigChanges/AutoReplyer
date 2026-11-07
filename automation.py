@@ -20,7 +20,6 @@ from logic import _NEGATIONS, ALL_DAYS_MASK, SCHEDULE_ALL_DAY, days_mask, faq_to
 ALLOWED_OPERATORS = frozenset({"all"})
 KEYWORD, KEYWORD_ANY, DAYS, TIME = "keyword_contains", "keyword_any", "days_of_week", "time_between"
 ALLOWED_CONDITIONS = frozenset({KEYWORD, KEYWORD_ANY, DAYS, TIME})
-KEYWORD_KINDS = (KEYWORD, KEYWORD_ANY)
 CANONICAL_ORDER = (KEYWORD, KEYWORD_ANY, DAYS, TIME)  # saqlashda tartib: kalit so'z(lar), kunlar, vaqt
 MAX_CONDITIONS = 3
 ALLOWED_ACTIONS = frozenset({"send_reply"})
@@ -201,17 +200,6 @@ def validate_automation(name, conditions, action, priority=DEFAULT_PRIORITY) -> 
         "action": {"type": action["type"], "text": text.strip()},
         "priority": priority,
     }
-
-
-def make_keyword_rule(keyword: str, reply: str, name: str | None = None, priority: int = DEFAULT_PRIORITY) -> dict:
-    """Eng oddiy qoida (bitta kalit so'z -> bitta javob) uchun yordamchi; validatsiyadan o'tkazib qaytaradi."""
-    keyword = (keyword or "").strip()
-    return validate_automation(
-        name if name else keyword,
-        {"operator": "all", "items": [{"type": "keyword_contains", "value": keyword}]},
-        {"type": "send_reply", "text": reply},
-        priority,
-    )
 
 
 def matches_keyword(message: str | None, keyword) -> bool:
