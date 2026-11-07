@@ -585,6 +585,19 @@ class LedgerStateFlowTests(Base):
         m["refund"].assert_not_called()
 
 
+class RecoveryJobTests(unittest.TestCase):
+    def test_job_calls_recovery_and_swallows_errors(self):
+        with patch.object(db, "recover_orphaned_ai_requests", return_value=2) as r:
+            asyncio.run(bot.ai_recovery_job(MagicMock()))
+        r.assert_called_once()
+        with patch.object(db, "recover_orphaned_ai_requests", side_effect=RuntimeError("db")):
+            asyncio.run(bot.ai_recovery_job(MagicMock()))  # xato job'ni yiqitmaydi
+
+    def test_job_is_scheduled_repeatedly_at_startup(self):
+        src = (Path(__file__).resolve().parent.parent / "bot.py").read_text(encoding="utf-8")
+        self.assertIn("run_repeating(ai_recovery_job, interval=60", src)
+
+
 class AiReplyTests(Base):
     def test_ai_replies_instead_of_static_text(self):
         send, m = self.flow()
