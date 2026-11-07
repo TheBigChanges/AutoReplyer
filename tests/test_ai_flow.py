@@ -57,7 +57,7 @@ class Base(unittest.TestCase):
     def flow(self, update=None, owner=OWNER, settings=None, answer="Salom! Narx 100$.", quota=True,
              paused=False, configured=True, history=None, send_side_effect=None, paused_after_generate=False,
              history_error=None, add_error=None, gen_error=None, during_generate=None,
-             attempt=True, seen=False, refund_effect=None):
+             attempt=True, seen=False, refund_effect=None, track=True, mark=True):
         update = update or _update()
         state = dict(settings or _settings())  # joriy sozlamalar (so'rov davomida o'zgartirilishi mumkin)
         sent = MagicMock(message_id=555)
@@ -80,6 +80,8 @@ class Base(unittest.TestCase):
             "refund": patch.object(db, "refund_ai_quota", side_effect=refund_effect),
             "seen": patch.object(db, "ai_request_seen", return_value=seen),
             "attempt": patch.object(db, "try_consume_voice_attempt", **({"side_effect": attempt} if callable(attempt) else {"return_value": attempt})),
+            "track": patch.object(db, "track_ai_request", return_value=track),
+            "mark": patch.object(db, "mark_ai_request", **({"side_effect": mark} if callable(mark) else {"return_value": mark})),
             "usage": patch.object(db, "get_ai_usage", return_value=0),
             # paused_after_generate: pauza dastlabki ikki tekshiruvda (qabul + navbat) yo'q, Gemini javobi tayyor bo'lgach (egasi yozgan) yoqilgan
             "paused": patch.object(db, "is_ai_paused", side_effect=(lambda o, c, _n=[0]: (_n.__setitem__(0, _n[0] + 1) or _n[0] >= 3))
@@ -210,26 +212,37 @@ class VoiceAiTests(Base):
             used.append(1)
             return True
 
-        tr = AsyncMock(return_value=None)  # har safar muvaffaqiyatsiz
+        tg_file = MagicMock(file_size=100)
+        tg_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"abc"))
+        fake_bot = MagicMock()
+        fake_bot.get_file = AsyncMock(return_value=tg_file)
+        real = bot.transcribe_business_voice
+
+        async def via_fake_bot(_b, voice, attempt=None):
+            return await real(fake_bot, voice, attempt=attempt)
+
+        gemini = AsyncMock(return_value=None)  # Gemini har safar muvaffaqiyatsiz
         sent = []
-        with patch.object(bot, "VOICE_ATTEMPTS_DAILY_LIMIT", 3), patch.object(bot, "transcribe_business_voice", new=tr):
+        with patch.object(bot, "VOICE_ATTEMPTS_DAILY_LIMIT", 3), patch.object(bot, "transcribe_business_voice", new=via_fake_bot), \
+                patch.object(ai, "transcribe_voice", new=gemini):
             for i in range(6):
                 send, m = self.flow(update=_voice_update(message_id=100 + i), attempt=attempt)
                 sent.append(self.texts(send))
-        self.assertEqual(tr.await_count, 3)                      # 4-6-urinishlar Gemini'ga yetmadi
+        self.assertEqual(gemini.await_count, 3)                  # 4-6-urinishlar Gemini'ga yetmadi
         self.assertTrue(all(t == ["Oflaynman"] for t in sent))   # lekin mijozga zaxira matn ketdi
         self.assertEqual(m["refund"].call_count, 1)              # AI javob limiti qaytarildi (foydalanuvchi aybdor emas)
 
     def test_exhausted_voice_attempts_make_no_gemini_call_and_keep_ai_quota(self):
-        send, m, tr = self.voice_flow(update=_voice_update(message_id=32), attempt=False)
-        tr.assert_not_awaited()
+        tr = AsyncMock(side_effect=bot.VoiceAttemptsExhausted())
+        with patch.object(bot, "transcribe_business_voice", new=tr):
+            send, m = self.flow(update=_voice_update(message_id=32))
         m["gen"].assert_not_awaited()
         m["refund"].assert_called_once()
         self.assertEqual(self.texts(send), ["Oflaynman"])
 
     def test_admin_voice_is_not_attempt_limited(self):
         send, m, tr = self.voice_flow(owner=ADMIN, update=_voice_update(message_id=33))
-        m["attempt"].assert_not_called()
+        self.assertIsNone(tr.call_args.kwargs["attempt"])  # admin uchun urinish hisoblagichi yo'q
         tr.assert_awaited_once()
 
     def test_distinct_voice_messages_both_answered(self):
@@ -317,6 +330,26 @@ class TranscribeBusinessVoiceTests(unittest.TestCase):
             out, tv = self._run(b, v)
             self.assertIsNone(out)
             b.get_file.assert_not_awaited()
+
+    def test_telegram_download_failure_does_not_consume_voice_attempt(self):
+        calls = []
+        for kw in ({"get_err": NetworkError("x")}, {"dl_err": NetworkError("x")}, {"dl_err": OSError("x")}, {"data": b""},
+                   {"size": ai.MAX_VOICE_BYTES + 1}):
+            with patch.object(ai, "transcribe_voice", new=AsyncMock(return_value="m")) as tv:
+                out = asyncio.run(bot.transcribe_business_voice(self._bot(**kw), Voice("f", "u", 5), attempt=lambda: calls.append(1) or True))
+            self.assertIsNone(out)
+            tv.assert_not_awaited()
+        self.assertEqual(calls, [])  # urinish faqat Gemini'ga yuborishdan oldin sanaladi
+
+    def test_attempt_is_consumed_right_before_gemini_and_exhaustion_blocks_it(self):
+        order = []
+        with patch.object(ai, "transcribe_voice", new=AsyncMock(side_effect=lambda *a: order.append("gemini") or "matn")) as tv:
+            out = asyncio.run(bot.transcribe_business_voice(self._bot(), Voice("f", "u", 5), attempt=lambda: order.append("attempt") or True))
+            self.assertEqual((out, order), ("matn", ["attempt", "gemini"]))
+            tv.reset_mock()
+            with self.assertRaises(bot.VoiceAttemptsExhausted):
+                asyncio.run(bot.transcribe_business_voice(self._bot(), Voice("f", "u", 5), attempt=lambda: False))
+            tv.assert_not_awaited()
 
     def test_timedelta_duration_supported(self):
         from datetime import timedelta
@@ -503,6 +536,53 @@ class RefundReliabilityTests(Base):
         self.assertEqual(self.texts(send), [])
         m["quota"].assert_not_called()
         m["gen"].assert_not_awaited()
+
+
+class LedgerStateFlowTests(Base):
+    def states(self, m):
+        return [c.args[2] for c in m["mark"].call_args_list]
+
+    def test_sending_is_marked_before_telegram_and_sent_after(self):
+        order = []
+        send, m = self.flow(mark=lambda o, r, st: order.append(("mark", st)) or True,
+                            send_side_effect=lambda **k: order.append(("send",)) or MagicMock(message_id=1))
+        self.assertEqual(order, [("mark", "sending"), ("send",), ("mark", "sent")])
+
+    def test_unknown_send_outcome_is_marked_unknown_and_not_refunded(self):
+        send, m = self.flow(send_side_effect=NetworkError("timeout"))
+        self.assertEqual(self.states(m), ["sending", "unknown"])
+        m["refund"].assert_not_called()
+
+    def test_definite_telegram_error_refunds_instead_of_unknown(self):
+        from telegram.error import BadRequest
+        send, m = self.flow(send_side_effect=BadRequest("chat not found"))
+        self.assertEqual(self.states(m), ["sending"])
+        m["refund"].assert_called_once()
+
+    def test_row_no_longer_ours_means_no_send(self):
+        send, m = self.flow(mark=False)
+        self.assertEqual(self.texts(send), [])
+        m["refund"].assert_not_called()
+
+    def test_admin_request_is_tracked_in_ledger_without_quota(self):
+        send, m = self.flow(owner=ADMIN)
+        m["track"].assert_called_once()
+        m["quota"].assert_not_called()
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
+
+    def test_admin_duplicate_after_restart_is_not_reprocessed(self):
+        bot._ai_answered.clear()  # restart: RAM bo'sh
+        send, m = self.flow(owner=ADMIN, seen=True)
+        self.assertEqual(self.texts(send), [])
+        m["gen"].assert_not_awaited()
+        send, m = self.flow(owner=ADMIN, track=False)  # daftar "takroriy" deydi
+        self.assertEqual(self.texts(send), [])
+        m["gen"].assert_not_awaited()
+
+    def test_admin_failure_releases_ledger_without_touching_quota(self):
+        send, m = self.flow(owner=ADMIN, history_error=RuntimeError("x"))
+        self.assertIn("refunded", self.states(m))
+        m["refund"].assert_not_called()
 
 
 class AiReplyTests(Base):
