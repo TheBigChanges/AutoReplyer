@@ -20,9 +20,9 @@ _HUMAN_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"\b(?:egasi|operator|menejer|xodim)\s+(?:o'zi\s+)?(?:yoz\w*|javob\s+ber\w*|aloqaga\s+chiq\w*)",
     r"\b(?:tirik|haqiqiy)\s+odam\b.{0,40}\b(?:javob\s+ber\w*|gaplash\w*|kerak)\b",
     # English
-    r"\b(?:speak|talk|chat)\s+(?:to|with)\s+(?:an?\s+)?(?:real\s+)?(?:human|person|operator|agent|owner|manager)\b",
-    r"\b(?:connect|transfer|put)\s+me\s+(?:through\s+)?(?:to|with)\s+(?:an?\s+)?(?:real\s+)?(?:human|person|operator|agent|owner|manager)\b",
-    r"\b(?:i\s+(?:want|need)\s+(?:to\s+reach\s+)?|get\s+me\s+)(?:an?\s+)?(?:real\s+)?(?:human|person|operator|agent|owner|manager)\b",
+    r"\b(?:speak|talk|chat)\s+(?:to|with)\s+(?:(?:an?|the)\s+)?(?:real\s+)?(?:human|person|operator|agent|owner|manager)\b",
+    r"\b(?:connect|transfer|put)\s+me\s+(?:through\s+)?(?:to|with)\s+(?:(?:an?|the)\s+)?(?:real\s+)?(?:human|person|operator|agent|owner|manager)\b",
+    r"\b(?:i\s+(?:want|need)\s+(?:to\s+reach\s+)?|get\s+me\s+)(?:(?:an?|the)\s+)?(?:real\s+)?(?:human|person|operator|agent|owner|manager)\b",
     # Russian
     r"\b(?:поговорить|связаться|пообщаться)\s+с\s+(?:живым\s+)?(?:человеком|оператором|сотрудником|менеджером|владельцем)\b",
     r"\b(?:соедините|свяжите|переключите)\s+(?:меня\s+)?с\s+(?:оператором|человеком|менеджером|владельцем)\b",
