@@ -32,6 +32,24 @@ add_months = lambda ts, n: ts + n * 30 * DAY  # noqa: E731  (toza testlar uchun 
 
 
 # --------------------------------------------------------------------------- toza hisob-kitob
+
+def create_payment_order(user_id, token, quote, state, ttl_seconds, now):
+    """Test yordamchisi: buyurtmani to'g'ridan-to'g'ri yaratadi (ishlab chiqarishda buyurtma invoice oqimi orqali yaratiladi)."""
+    snap_expires = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
+
+    def work(cur):
+        cur.execute("UPDATE payments SET status = 'cancelled' WHERE user_id = %s AND status = 'pending'", (user_id,))
+        cur.execute(
+            "INSERT INTO payments (token, user_id, kind, plan, months, stars, credit, status, snap_plan, snap_expires, created_at, expires_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s) RETURNING id",
+            (token, user_id, quote.kind, quote.target, quote.months, quote.pay, quote.credit, state.plan, snap_expires, now, now + ttl_seconds),
+        )
+        pid = cur.fetchone()["id"]
+        db._audit(cur, user_id, pid, "order_created", f"{quote.kind} {quote.target} {quote.months}m", now)
+        return pid
+
+    return db._run_tx(work)
+
 class PriceTests(unittest.TestCase):
     def test_price_table_matches_approved(self):
         table = {"plus": (15, 41, 77, 144), "pro": (35, 95, 179, 336), "ultra": (70, 189, 357, 672)}
@@ -218,7 +236,7 @@ class DbBase(unittest.TestCase):
         state = state or db.get_user_plan_state(user)
         q = pay.quote(state, plan, months, now, add_months)
         token = "T" + str(random.randint(10**9, 10**10))
-        db.create_payment_order(user, token, q, state, 1800, now)
+        create_payment_order(user, token, q, state, 1800, now)
         return token, q
 
     def pay(self, token, q, charge=None, user=None, amount=None, now=None, currency="XTR"):
@@ -1131,7 +1149,7 @@ class AuditRound2Tests(BotBase):
         st = db.get_user_plan_state(self.u)
         q2 = pay.quote(st, "pro", 1, at, add_months)
         self.assertEqual(q2.kind, "upgrade")
-        db.create_payment_order(self.u, "UP2", q2, st, 900, at)
+        create_payment_order(self.u, "UP2", q2, st, 900, at)
         self.assertEqual(db.activate_payment("UP2", "chMV2", self.u, q2.pay, add_months, at)["status"], "activated")
         old = db.get_payment("UP2")  # yangi xarid davri
         row = db.get_payment(t1)
