@@ -2305,7 +2305,10 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                         return
                     consumed = True  # "daftarda band" — javob yuborilmasa bo'shatiladi (limitga tegmaydi)
             else:
-                if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT, request=request):
+                outcome = db.reserve_ai_quota(owner_id, day, AI_DAILY_LIMIT, request=request)
+                if outcome == "duplicate":
+                    return  # xabarni boshqa jarayon/oqim allaqachon olgan: na AI, na zaxira matn (u javob beradi)
+                if outcome == "limit_exhausted":
                     await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-limit")
                     return
                 consumed = True
