@@ -174,15 +174,15 @@ class DbTests(unittest.TestCase):
         self.assertEqual(rule["id"], rid)
         self.assertFalse(rule["is_enabled"])
         self.assertEqual(rule["action"]["text"], "Salom! O‘zbekiston — narxlar")
-        self.assertEqual(db.get_enabled_automation_rules(self.a), [])
+        self.assertEqual([r for r in db.list_automation_rules(self.a) if r['is_enabled']], [])
 
     def test_enable_is_idempotent_and_listed(self):
         rid = self.add(self.a)
         self.assertTrue(db.set_automation_rule_enabled(self.a, rid, True))
         self.assertTrue(db.set_automation_rule_enabled(self.a, rid, True))
-        self.assertEqual([r["id"] for r in db.get_enabled_automation_rules(self.a)], [rid])
+        self.assertEqual([r["id"] for r in [r for r in db.list_automation_rules(self.a) if r['is_enabled']]], [rid])
         self.assertTrue(db.set_automation_rule_enabled(self.a, rid, False))
-        self.assertEqual(db.get_enabled_automation_rules(self.a), [])
+        self.assertEqual([r for r in db.list_automation_rules(self.a) if r['is_enabled']], [])
 
     def test_other_owner_cannot_touch_or_read(self):
         rid = self.add(self.a)
@@ -241,7 +241,7 @@ class DbTests(unittest.TestCase):
     def test_smart_rule_roundtrips_through_jsonb(self):
         cond = au.build_conditions("narx*", [4, 0, 1], (22 * 60, 6 * 60))
         rid = db.add_automation_rule(self.a, "n", cond, {"type": "send_reply", "text": "x"}, 100, 20, enabled=True)
-        rule = db.get_enabled_automation_rules(self.a)[0]
+        rule = [r for r in db.list_automation_rules(self.a) if r['is_enabled']][0]
         self.assertEqual(rule["id"], rid)
         self.assertEqual(au.split_conditions(rule), ("narx*", [0, 1, 4], (1320, 360)))
         self.assertTrue(au.rule_matches("narxi qancha", rule, when(0, "23:00")))
