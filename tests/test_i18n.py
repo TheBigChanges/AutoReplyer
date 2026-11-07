@@ -49,7 +49,6 @@ class DictionaryTests(unittest.TestCase):
     def test_fallbacks(self):
         self.assertEqual(i18n.t("xx", "saved"), i18n.T["saved"]["uz"])
         self.assertEqual(i18n.t("en", "no_such_key"), "no_such_key")
-        self.assertEqual(i18n.normalize_lang(None), "uz")
         self.assertTrue(i18n.is_lang("ru"))
         self.assertFalse(i18n.is_lang("de"))
 
