@@ -168,6 +168,31 @@ def init_db():
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_enabled BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_info TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_role TEXT")
+        # Har bir AI so'rovi uchun band qilingan limit daftari: limitni band qilish/qaytarish xabar bo'yicha idempotent,
+        # takroriy xabar himoyasi esa qayta ishga tushishdan keyin ham saqlanadi.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_requests (
+                owner_user_id BIGINT NOT NULL,
+                chat_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'reserved',
+                created_at DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY (owner_user_id, chat_id, message_id)
+            )
+            """
+        )
+        # Voice AI: Gemini'ga yuborilgan transkripsiya urinishlari (muvaffaqiyatsizlari ham) — qaytarilmaydi
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_attempts (
+                owner_user_id BIGINT NOT NULL,
+                day TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (owner_user_id, day)
+            )
+            """
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS ai_usage (
@@ -2209,10 +2234,22 @@ def add_ai_messages(owner_user_id: int, chat_id: int, messages: list, keep: int 
         )
 
 
-def try_consume_ai_quota(owner_user_id: int, day: str, limit: int) -> bool:
-    """Bugungi AI javoblar limitidan bittasini ATOMIK band qiladi (bitta SQL).
-    True — ruxsat berildi; False — limit tugagan."""
+def try_consume_ai_quota(owner_user_id: int, day: str, limit: int, request: tuple | None = None) -> bool:
+    """Bugungi AI javoblar limitidan bittasini ATOMIK band qiladi (bitta tranzaksiya).
+    request=(chat_id, message_id) berilsa, band qilish shu xabar bo'yicha idempotent: bir xabar uchun limit ikki marta
+    sarflanmaydi (xabar allaqachon band qilingan bo'lsa — False, limit tegilmaydi).
+    True — ruxsat berildi; False — limit tugagan (yoki bu xabar allaqachon qayta ishlangan)."""
     with get_conn() as conn, conn.cursor() as cur:
+        if request is not None:
+            cur.execute(
+                """
+                INSERT INTO ai_requests (owner_user_id, chat_id, message_id, state, created_at)
+                VALUES (%s, %s, %s, 'reserved', %s) ON CONFLICT DO NOTHING RETURNING 1
+                """,
+                (owner_user_id, request[0], request[1], time.time()),
+            )
+            if cur.fetchone() is None:
+                return False
         cur.execute(
             """
             INSERT INTO ai_usage (owner_user_id, day, count) VALUES (%s, %s, 1)
@@ -2222,16 +2259,61 @@ def try_consume_ai_quota(owner_user_id: int, day: str, limit: int) -> bool:
             """,
             (owner_user_id, day, limit),
         )
-        return cur.fetchone() is not None
+        if cur.fetchone() is None:
+            if request is not None:  # limit tugagan: daftardagi yozuv ham qolmasin (keyinroq qayta urinish mumkin)
+                cur.execute(
+                    "DELETE FROM ai_requests WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s",
+                    (owner_user_id, request[0], request[1]),
+                )
+            return False
+        return True
 
 
-def refund_ai_quota(owner_user_id: int, day: str):
-    """Javob yuborilmagan bo'lsa, band qilingan limitni qaytaradi."""
+def refund_ai_quota(owner_user_id: int, day: str, request: tuple | None = None):
+    """Javob yuborilmagan bo'lsa, band qilingan limitni qaytaradi.
+    request=(chat_id, message_id) berilsa, qaytarish IDEMPOTENT: xabar uchun faqat bir marta (va faqat band qilingan bo'lsa)
+    qaytariladi — natija noma'lum bo'lgan (javob yo'qolgan) qayta urinish ham limitni ikki marta qaytarmaydi."""
     with get_conn() as conn, conn.cursor() as cur:
+        if request is not None:
+            cur.execute(
+                """
+                UPDATE ai_requests SET state = 'refunded'
+                WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s AND state = 'reserved' RETURNING 1
+                """,
+                (owner_user_id, request[0], request[1]),
+            )
+            if cur.fetchone() is None:
+                return
         cur.execute(
             "UPDATE ai_usage SET count = count - 1 WHERE owner_user_id = %s AND day = %s AND count > 0",
             (owner_user_id, day),
         )
+
+
+def ai_request_seen(owner_user_id: int, chat_id: int, message_id: int) -> bool:
+    """Shu kiruvchi xabar uchun AI so'rovi allaqachon boshlanganmi (qayta ishga tushishdan keyin ham takroriy himoya)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM ai_requests WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s",
+            (owner_user_id, chat_id, message_id),
+        )
+        return cur.fetchone() is not None
+
+
+def try_consume_voice_attempt(owner_user_id: int, day: str, limit: int) -> bool:
+    """Kunlik transkripsiya urinishlaridan bittasini ATOMIK band qiladi. QAYTARILMAYDI: Gemini'ga yuborilgan
+    muvaffaqiyatsiz so'rov ham xarajat. True — ruxsat; False — urinishlar tugagan."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO voice_attempts (owner_user_id, day, count) VALUES (%s, %s, 1)
+            ON CONFLICT (owner_user_id, day) DO UPDATE SET count = voice_attempts.count + 1
+            WHERE voice_attempts.count < %s
+            RETURNING count
+            """,
+            (owner_user_id, day, limit),
+        )
+        return cur.fetchone() is not None
 
 
 def get_ai_usage(owner_user_id: int, day: str) -> int:
@@ -2294,6 +2376,8 @@ def purge_old_ai_data(max_age_seconds: float = AI_HISTORY_MAX_AGE_SECONDS):
         cur.execute("DELETE FROM ai_chat_history WHERE created_at < %s", (cutoff,))
         cur.execute("DELETE FROM ai_chat_pause WHERE paused_until < %s", (time.time(),))
         cur.execute("DELETE FROM ai_usage WHERE day < %s", (time.strftime("%Y-%m-%d", time.gmtime(cutoff)),))
+        cur.execute("DELETE FROM voice_attempts WHERE day < %s", (time.strftime("%Y-%m-%d", time.gmtime(cutoff)),))
+        cur.execute("DELETE FROM ai_requests WHERE created_at < %s", (cutoff,))
 
 
 # --------------------------------------------------------------------------
