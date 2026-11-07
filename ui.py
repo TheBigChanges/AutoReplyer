@@ -30,7 +30,7 @@ _SUCCESS_KEYS = {
     "btn_kb_entry_on",
 }
 _DANGER_KEYS |= {"panel_go_offline"}
-_SUCCESS_KEYS |= {"panel_go_online", "gate_btn_check"}
+_SUCCESS_KEYS |= {"panel_go_online", "gate_btn_check", "ref_btn_share", "btn_pay_months", "btn_pay_months_off", "btn_pay_resend"}
 # Holat almashtirgichlar (yoqish/o'chirish...) va "Orqaga": har doim to'liq kenglikdagi alohida qatorda
 _WIDE_KEYS = {
     "btn_back", "btn_enable", "btn_disable", "btn_faq_entry_on", "btn_faq_entry_off", "btn_au_on", "btn_au_off", "btn_sc_pause",
@@ -51,10 +51,11 @@ _PRIMARY_KEYS = {
 
 # Matnsiz/dinamik tugmalar uchun callback_data bo'yicha (birinchi mos kelgan)
 _CALLBACK_RULES: list[tuple[re.Pattern, str | None]] = [
-    (re.compile(r"^(rmbots:yes|ib_unpr:|ib_rc:|pay_cx:|.*_cancel(:|$)|.*_ecancel:|.*_del_yes:|.*_del:|ob_fail$)"), DANGER),
-    (re.compile(r"^(bc_confirm:|unblock:|pay_buy:|.*_save:|.*_edone:|ob_ok$|ob_check$|ob_enable$|ob_resume$)"), SUCCESS),
+    (re.compile(r"^(back$|rmbots:no|bc_cancel|rmbots:yes|ib_unpr:|ib_rc:|pay_cx:|.*_cancel(:|$)|.*_ecancel:|.*_del_yes:|.*_del:|ob_fail$)"), DANGER),
+    (re.compile(r"^(bc_confirm:|unblock:|pay_buy:|pay_q:|ref_share|.*_save:|.*_edone:|ob_ok$|ob_check$|ob_enable$|ob_resume$)"), SUCCESS),
     (re.compile(r"^(ib_pr:)"), SUCCESS),
 ]
+_SELECTED_PREFIXES = ("✅", "\u2705")  # tanlangan variant (kun, soat, rol, shrift...): yashil, tanlanmaganlari ko'k
 
 _text_key: dict[str, str] | None = None
 
@@ -64,14 +65,15 @@ def _key_for_text(text: str) -> str | None:
     if _text_key is None:
         _text_key = {}
         for key, variants in i18n.T.items():
-            if key.startswith(("btn_", "panel_go_", "gate_btn_")):
+            if key.startswith(("btn_", "panel_go_", "gate_btn_", "ref_btn_", "support_btn_")):
                 for value in variants.values():
                     _text_key.setdefault(value, key)
     return _text_key.get(text)
 
 
 def style_for(text: str, callback_data: str | None) -> str | None:
-    """Tugma rangi: 'danger' | 'success' | 'primary' | None (oddiy)."""
+    """Tugma rangi: 'danger' (qizil) | 'success' (yashil) | 'primary' (ko'k). Har bir tugma rangli: boshqa qoidaga tushmagan
+    tugma (tahrirlash, ro'yxat, sozlama, sahifalash, til...) ko'k bo'ladi; tanlangan variant (✅) yashil."""
     key = _key_for_text(text)
     if key in _DANGER_KEYS:
         return DANGER
@@ -83,7 +85,9 @@ def style_for(text: str, callback_data: str | None) -> str | None:
         for pattern, style in _CALLBACK_RULES:
             if pattern.match(callback_data):
                 return style
-    return None
+    if text.startswith(_SELECTED_PREFIXES):
+        return SUCCESS
+    return PRIMARY
 
 
 MAX_PAIR_TEXT = 24  # bu uzunlikdan uzun yozuvlar yarim kenglikda sig'maydi: alohida qatorda qoladi
@@ -135,8 +139,6 @@ def _styled(btn: InlineKeyboardButton) -> InlineKeyboardButton:
     if btn.style is not None or btn.pay:
         return btn
     style = style_for(btn.text, btn.callback_data)
-    if style is None:
-        return btn
     return InlineKeyboardButton(
         btn.text, url=btn.url, callback_data=btn.callback_data, switch_inline_query=btn.switch_inline_query,
         switch_inline_query_current_chat=btn.switch_inline_query_current_chat, web_app=btn.web_app, copy_text=btn.copy_text,
