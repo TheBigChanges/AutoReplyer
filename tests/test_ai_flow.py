@@ -56,7 +56,8 @@ class Base(unittest.TestCase):
 
     def flow(self, update=None, owner=OWNER, settings=None, answer="Salom! Narx 100$.", quota=True,
              paused=False, configured=True, history=None, send_side_effect=None, paused_after_generate=False,
-             history_error=None, add_error=None, gen_error=None, during_generate=None):
+             history_error=None, add_error=None, gen_error=None, during_generate=None,
+             attempt=True, seen=False, refund_effect=None):
         update = update or _update()
         state = dict(settings or _settings())  # joriy sozlamalar (so'rov davomida o'zgartirilishi mumkin)
         sent = MagicMock(message_id=555)
@@ -76,7 +77,9 @@ class Base(unittest.TestCase):
             "claim": patch.object(db, "try_claim_reply", return_value=123.0),
             "release": patch.object(db, "release_reply_claim"),
             "quota": patch.object(db, "try_consume_ai_quota", return_value=quota),
-            "refund": patch.object(db, "refund_ai_quota"),
+            "refund": patch.object(db, "refund_ai_quota", side_effect=refund_effect),
+            "seen": patch.object(db, "ai_request_seen", return_value=seen),
+            "attempt": patch.object(db, "try_consume_voice_attempt", **({"side_effect": attempt} if callable(attempt) else {"return_value": attempt})),
             "usage": patch.object(db, "get_ai_usage", return_value=0),
             # paused_after_generate: pauza dastlabki ikki tekshiruvda (qabul + navbat) yo'q, Gemini javobi tayyor bo'lgach (egasi yozgan) yoqilgan
             "paused": patch.object(db, "is_ai_paused", side_effect=(lambda o, c, _n=[0]: (_n.__setitem__(0, _n[0] + 1) or _n[0] >= 3))
@@ -196,6 +199,38 @@ class VoiceAiTests(Base):
         send2, m2 = self.flow(update=_voice_update())
         tr1.assert_awaited_once()
         self.assertEqual(self.texts(send2), [])
+
+    def test_failed_voice_transcriptions_respect_attempt_limit(self):
+        """Muvaffaqiyatsiz transkripsiyalar AI limitini qaytarsa ham, Gemini'ga yuboriladigan urinishlar kunlik chegaradan oshmaydi."""
+        used = []
+
+        def attempt(owner, day, limit):
+            if len(used) >= limit:
+                return False
+            used.append(1)
+            return True
+
+        tr = AsyncMock(return_value=None)  # har safar muvaffaqiyatsiz
+        sent = []
+        with patch.object(bot, "VOICE_ATTEMPTS_DAILY_LIMIT", 3), patch.object(bot, "transcribe_business_voice", new=tr):
+            for i in range(6):
+                send, m = self.flow(update=_voice_update(message_id=100 + i), attempt=attempt)
+                sent.append(self.texts(send))
+        self.assertEqual(tr.await_count, 3)                      # 4-6-urinishlar Gemini'ga yetmadi
+        self.assertTrue(all(t == ["Oflaynman"] for t in sent))   # lekin mijozga zaxira matn ketdi
+        self.assertEqual(m["refund"].call_count, 1)              # AI javob limiti qaytarildi (foydalanuvchi aybdor emas)
+
+    def test_exhausted_voice_attempts_make_no_gemini_call_and_keep_ai_quota(self):
+        send, m, tr = self.voice_flow(update=_voice_update(message_id=32), attempt=False)
+        tr.assert_not_awaited()
+        m["gen"].assert_not_awaited()
+        m["refund"].assert_called_once()
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+
+    def test_admin_voice_is_not_attempt_limited(self):
+        send, m, tr = self.voice_flow(owner=ADMIN, update=_voice_update(message_id=33))
+        m["attempt"].assert_not_called()
+        tr.assert_awaited_once()
 
     def test_distinct_voice_messages_both_answered(self):
         self.voice_flow(update=_voice_update(message_id=1))
@@ -436,6 +471,38 @@ class AiQuotaSafetyNetTests(Base):
         with patch.object(db, "refund_ai_quota", side_effect=RuntimeError("db")):
             send, _ = self.flow(history_error=RuntimeError("x"))
         self.assertEqual(self.texts(send), [])
+
+
+class RefundReliabilityTests(Base):
+    def test_refund_db_error_is_retried_with_same_request_key(self):
+        """Refund DB xatosi bo'lsa — xuddi shu xabar kaliti bilan qayta uriniladi (idempotent), limit yo'qolib qolmaydi."""
+        calls = []
+
+        def refund(owner, day, request=None):
+            calls.append(request)
+            if len(calls) == 1:
+                raise RuntimeError("db")
+
+        self.flow(paused_after_generate=True, refund_effect=refund)
+        self.assertEqual(calls, [(CHAT, 10), (CHAT, 10)])
+
+    def test_refund_is_attempted_via_finally_when_every_try_fails_once(self):
+        send, m = self.flow(history_error=RuntimeError("x"), refund_effect=RuntimeError("db"))
+        self.assertEqual(self.texts(send), [])
+        self.assertGreaterEqual(m["refund"].call_count, 3)
+
+    def test_quota_and_refund_get_request_key(self):
+        _, m = self.flow(paused_after_generate=True)
+        self.assertEqual(m["quota"].call_args.kwargs["request"], (CHAT, 10))
+        self.assertEqual(m["refund"].call_args.kwargs["request"], (CHAT, 10))
+
+    def test_message_already_in_ledger_is_skipped_after_restart(self):
+        """RAM bo'sh (qayta ishga tushish), lekin DB daftarida bu xabar bor: na AI, na limit, na zaxira matn."""
+        bot._ai_answered.clear()
+        send, m = self.flow(seen=True)
+        self.assertEqual(self.texts(send), [])
+        m["quota"].assert_not_called()
+        m["gen"].assert_not_awaited()
 
 
 class AiReplyTests(Base):
