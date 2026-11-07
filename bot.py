@@ -2218,8 +2218,14 @@ def voice_acceptable(voice) -> bool:
     return (getattr(voice, "mime_type", None) or "audio/ogg") in ai.VOICE_MIME_TYPES
 
 
-async def transcribe_business_voice(bot, voice) -> str | None:
-    """Telegram ovozli xabarini xotirada (diskka yozmasdan) yuklab, Gemini orqali matnga aylantiradi. Har qanday xatoda None."""
+class VoiceAttemptsExhausted(Exception):
+    """Kunlik transkripsiya urinishlari tugagan: audio Gemini'ga yuborilmaydi."""
+
+
+async def transcribe_business_voice(bot, voice, attempt=None) -> str | None:
+    """Telegram ovozli xabarini xotirada (diskka yozmasdan) yuklab, Gemini orqali matnga aylantiradi. Har qanday xatoda None.
+    attempt — Gemini'ga yuborishdan BEVOSITA oldin chaqiriladigan atomik urinish hisoblagichi (yuklab olish va tekshiruvlardan
+    keyin: Telegram xatosi urinishni sarflamaydi); False qaytarsa VoiceAttemptsExhausted ko'tariladi."""
     if not voice_acceptable(voice):
         return None
     try:
@@ -2230,10 +2236,26 @@ async def transcribe_business_voice(bot, voice) -> str | None:
         audio = await tg_file.download_as_bytearray()
         if not 0 < len(audio) <= ai.MAX_VOICE_BYTES:
             return None
-        return await ai.transcribe_voice(bytes(audio), getattr(voice, "mime_type", None) or "audio/ogg")
     except (TelegramError, OSError, RuntimeError) as e:
         logger.warning("Voice yuklab olinmadi: %s", type(e).__name__)
         return None
+    if attempt is not None and not attempt():
+        raise VoiceAttemptsExhausted()
+    try:
+        return await ai.transcribe_voice(bytes(audio), getattr(voice, "mime_type", None) or "audio/ogg")
+    except (TelegramError, OSError, RuntimeError) as e:
+        logger.warning("Voice transkripsiyasi xato: %s", type(e).__name__)
+        return None
+
+
+def _mark_ledger(owner_id: int, request, state: str) -> None:
+    """AI so'rovi daftarida holatni belgilaydi (xato bo'lsa faqat log: javob allaqachon yuborilgan/noma'lum)."""
+    if request is None:
+        return
+    try:
+        db.mark_ai_request(owner_id, request, state)
+    except Exception:
+        logger.exception("AI so'rovi holatini yozib bo'lmadi (%s)", state)
 
 
 async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings: dict, fallback_text: str, label: str, voice=None):
@@ -2251,7 +2273,11 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
         (natija noma'lum bo'lib qolsa ham ikki marta qaytarilmaydi). Xabar ID'si yo'q bo'lsa — qayta urinmaymiz."""
         for _ in range(3 if request else 1):
             try:
-                db.refund_ai_quota(owner_id, day, request=request)
+                if unlimited:
+                    if request is not None:
+                        db.mark_ai_request(owner_id, request, "refunded")  # admin: limit yo'q, faqat daftar bo'shatiladi
+                else:
+                    db.refund_ai_quota(owner_id, day, request=request)
                 return True
             except Exception:
                 logger.exception("AI limitini qaytarib bo'lmadi (owner=%s)", owner_id)
@@ -2272,22 +2298,30 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 return
             if request is not None and db.ai_request_seen(owner_id, *request):
                 return  # bu xabar bilan AI so'rovi oldin boshlangan (jarayon qayta ishga tushgan bo'lsa ham): takroriy xarajat yo'q
-            if not unlimited:
+            if unlimited:
+                # admin: limit band qilinmaydi, lekin so'rov daftarga yoziladi (restartdan keyin ham takroriy himoya)
+                if request is not None:
+                    if not db.track_ai_request(owner_id, request, day):
+                        return
+                    consumed = True  # "daftarda band" — javob yuborilmasa bo'shatiladi (limitga tegmaydi)
+            else:
                 if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT, request=request):
                     await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-limit")
                     return
                 consumed = True
 
-            if voice is not None and not unlimited and not db.try_consume_voice_attempt(owner_id, day, VOICE_ATTEMPTS_DAILY_LIMIT):
-                # kunlik transkripsiya urinishlari tugagan (muvaffaqiyatsizlari ham sanaladi): Gemini'ga yuborilmaydi
-                if consumed:
-                    consumed = not refund()
-                _mark_ai_answered(owner_id, chat_id, incoming_id)
-                await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",voice-attempts")
-                return
             if voice is not None:
                 caption = text  # ovozga yozilgan izoh (bo'lsa) — qo'shimcha kontekst
-                text = await transcribe_business_voice(bot, voice)
+                try:
+                    text = await transcribe_business_voice(
+                        bot, voice, attempt=None if unlimited else (lambda: db.try_consume_voice_attempt(owner_id, day, VOICE_ATTEMPTS_DAILY_LIMIT)))
+                except VoiceAttemptsExhausted:
+                    # kunlik transkripsiya urinishlari tugagan (muvaffaqiyatsizlari ham sanaladi): Gemini'ga yuborilmadi
+                    if consumed:
+                        consumed = not refund()
+                    _mark_ai_answered(owner_id, chat_id, incoming_id)
+                    await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",voice-attempts")
+                    return
                 # Transkripsiya davomida egasi suhbatga aralashgan yoki AI o'chirilgan/sozlamalar o'zgargan bo'lishi mumkin
                 if db.is_ai_paused(owner_id, chat_id) or not ai_reply_still_allowed(owner_id):
                     if consumed:
@@ -2329,12 +2363,16 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                     return  # AI shu aniq xabarga allaqachon javob bergan: zaxira matn ikkinchi javob bo'lib ketmasin
                 await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-failed")
                 return
+            if request is not None and not db.mark_ai_request(owner_id, request, "sending"):
+                consumed = False  # daftar yozuvi boshqa jarayonga o'tgan/yopilgan: bu yerda yuborilmaydi (ikki marta javob bo'lmasin)
+                return
             try:
                 sent = await bot.send_message(
                     chat_id=chat_id, text=answer, business_connection_id=business_connection_id
                 )
             except TelegramError as e:
                 if _send_outcome_unknown(e):
+                    _mark_ledger(owner_id, request, "unknown")
                     # Tarmoq xatosi/timeout: Telegram javobni qabul qilgan bo'lishi mumkin — natija noma'lum.
                     # Limit QAYTARILMAYDI, xabar "javob berilgan" deb belgilanadi (zaxira matn ikkinchi javob bo'lmasin),
                     # tarixga FAQAT mijozning xabari yoziladi (AI javobi emas: u yetib bormagan bo'lishi mumkin, mijoz ko'rmagan
@@ -2349,6 +2387,7 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 logger.warning("AI javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
                 return
             delivered = True  # javob ketdi: bundan keyingi xatolar limitni qaytarmaydi
+            _mark_ledger(owner_id, request, "sent")
             _mark_ai_answered(owner_id, chat_id, incoming_id)
             _remember_sent(chat_id, sent)
             track_analytics(owner_id, "ai")
