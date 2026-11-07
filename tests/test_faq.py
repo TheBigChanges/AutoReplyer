@@ -133,21 +133,22 @@ class FaqDbTests(unittest.TestCase):
         self.assertEqual(db.get_enabled_faq_entries(self.b), [])
         self.assertIsNone(db.get_faq_entry(self.b, i))
         self.assertFalse(db.delete_faq_entry(self.b, i))
-        self.assertIsNone(db.toggle_faq_entry(self.b, i))
+        self.assertFalse(db.set_faq_entry_enabled(self.b, i, False))
         self.assertEqual(db.count_faq_entries(self.a), 1)  # egasi o'zgarmadi
 
-    def test_toggle_and_delete(self):
+    def test_set_enabled_and_delete(self):
         i = db.add_faq_entry(self.a, "Savol?", ["k"], "A", 20)
-        self.assertFalse(db.toggle_faq_entry(self.a, i))
+        self.assertTrue(db.set_faq_entry_enabled(self.a, i, False))
         self.assertEqual(db.get_enabled_faq_entries(self.a), [])
-        self.assertTrue(db.toggle_faq_entry(self.a, i))
+        self.assertTrue(db.set_faq_entry_enabled(self.a, i, True))
+        self.assertTrue(db.set_faq_entry_enabled(self.a, i, True))  # idempotent
         self.assertEqual(len(db.get_enabled_faq_entries(self.a)), 1)
         self.assertTrue(db.delete_faq_entry(self.a, i))
         self.assertFalse(db.delete_faq_entry(self.a, i))
 
     def test_update_each_field_keeps_id_owner_and_state(self):
         i = db.add_faq_entry(self.a, "Eski savol", ["eski"], "Eski javob", 20)
-        db.toggle_faq_entry(self.a, i)  # o'chirilgan holat saqlanishi kerak
+        db.set_faq_entry_enabled(self.a, i, False)  # o'chirilgan holat saqlanishi kerak
         self.assertTrue(db.update_faq_entry(self.a, i, question="Yangi savol"))
         self.assertTrue(db.update_faq_entry(self.a, i, keywords=["yangi", "ikki uch"]))
         self.assertTrue(db.update_faq_entry(self.a, i, answer="Yangi javob"))
@@ -250,12 +251,6 @@ class FakeFaqDb:
             self.rows.remove(r)
         return bool(r)
 
-    def toggle(self, owner, i):
-        r = self.get(owner, i)
-        if r:
-            r["is_enabled"] = not r["is_enabled"]
-        return r["is_enabled"] if r else None
-
     def set_enabled(self, owner, i, enabled):
         r = self.get(owner, i)
         if r:
@@ -272,7 +267,7 @@ class FakeFaqDb:
         for name, fn in (
             ("update_faq_entry", self.update),
             ("add_faq_entry", self.add), ("list_faq_entries", self.mine), ("get_faq_entry", self.get),
-            ("delete_faq_entry", self.delete), ("toggle_faq_entry", self.toggle), ("set_faq_entry_enabled", self.set_enabled),
+            ("delete_faq_entry", self.delete), ("set_faq_entry_enabled", self.set_enabled),
             ("count_faq_entries", lambda o: len(self.mine(o))),
             ("get_enabled_faq_entries", lambda o: [r for r in self.mine(o) if r["is_enabled"]]),
         ):
