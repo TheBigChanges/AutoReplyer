@@ -2427,10 +2427,53 @@ def is_ai_paused(owner_user_id: int, chat_id: int) -> bool:
 
 
 def delete_ai_data(owner_user_id: int):
-    """Akkaunt uzilganda: shu egasining suhbat tarixi va pauzalari o'chiriladi."""
+    """Akkaunt uzilganda: shu egasining suhbat tarixi, pauzalari va AI so'rovlar daftari (mijozning chat/xabar ID'lari) o'chiriladi.
+    Hali bajarilayotgan (`reserved`) so'rovlarning band qilingan limiti qaytariladi; ularning daftar yozuvi yo'qolgani uchun
+    ular `sending` bosqichiga o'ta olmaydi — ya'ni uzilgan hisobdan javob yuborilmaydi. `sending`/`sent`/`unknown` so'rovlarning
+    limiti qaytarilmaydi (javob ketgan bo'lishi mumkin). Kunlik limit va transkripsiya urinishlari hisoblagichlari (chat
+    ma'lumotisiz) QOLADI: uzib-ulash bilan xarajat chegarasini nolga tushirib bo'lmasin."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM ai_chat_history WHERE owner_user_id = %s", (owner_user_id,))
         cur.execute("DELETE FROM ai_chat_pause WHERE owner_user_id = %s", (owner_user_id,))
+        # bitta DELETE ... RETURNING: o'chirilgan `reserved` yozuvlarning limiti aynan bir marta qaytariladi
+        cur.execute("DELETE FROM ai_requests WHERE owner_user_id = %s RETURNING state, counted, day", (owner_user_id,))
+        refunds: dict = {}
+        for state, counted, day in cur.fetchall():
+            if state == "reserved" and counted and day:
+                refunds[day] = refunds.get(day, 0) + 1
+        for day, n in refunds.items():
+            cur.execute(
+                "UPDATE ai_usage SET count = GREATEST(count - %s, 0) WHERE owner_user_id = %s AND day = %s", (n, owner_user_id, day)
+            )
+
+
+def recover_orphaned_ai_requests(stale_seconds: float = AI_REQUEST_STALE_SECONDS, limit: int = 200) -> int:
+    """Jarayon to'xtagani sababli yarim qolgan (`reserved`, eskirgan) AI so'rovlarini yopadi: band qilingan limit qaytariladi,
+    yozuv `abandoned` bo'ladi. Xabar matni/audiosi saqlanmaydi, shuning uchun javob qayta yaratilmaydi. `sending`, `sent` va
+    `unknown` so'rovlarga TEGILMAYDI (Telegram qabul qilgan bo'lishi mumkin: qayta yuborilmaydi, limit qaytarilmaydi).
+    Bir tranzaksiyada (SKIP LOCKED): parallel job'lar ham limitni ikki marta qaytarmaydi. Yopilganlar sonini qaytaradi."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH stale AS (
+                SELECT owner_user_id, chat_id, message_id FROM ai_requests
+                WHERE state = 'reserved' AND updated_at < %s
+                ORDER BY updated_at LIMIT %s FOR UPDATE SKIP LOCKED
+            )
+            UPDATE ai_requests r SET state = 'abandoned', updated_at = %s
+            FROM stale WHERE r.owner_user_id = stale.owner_user_id AND r.chat_id = stale.chat_id AND r.message_id = stale.message_id
+            RETURNING r.owner_user_id, r.day, r.counted
+            """,
+            (time.time() - stale_seconds, limit, time.time()),
+        )
+        rows = cur.fetchall()
+        refunds: dict = {}
+        for owner, day, counted in rows:
+            if counted and day:
+                refunds[(owner, day)] = refunds.get((owner, day), 0) + 1
+        for (owner, day), n in refunds.items():
+            cur.execute("UPDATE ai_usage SET count = GREATEST(count - %s, 0) WHERE owner_user_id = %s AND day = %s", (n, owner, day))
+        return len(rows)
 
 
 def purge_old_ai_data(max_age_seconds: float = AI_HISTORY_MAX_AGE_SECONDS):
