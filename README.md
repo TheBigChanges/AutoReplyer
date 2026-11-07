@@ -741,5 +741,5 @@ No new menu or button: when the **🤖 AI Assistant** is on and a customer sends
 ## Tugmalar: joylashuv va ranglar
 
 Barcha inline tugmalar `ui.Markup` orqali o'tadi: qisqa tugmalar yonma-yon (2 tadan) joylanadi, keng/toggle tugmalar to'liq qatorda qoladi.
-Ranglar (Bot API 9.4 `style`): 🔴 qaytish/bekor qilish/o'chirish/o'chirib qo'yish, 🟢 yoqish/saqlash/qo'shish/to'lov, 🔵 bo'lim tugmalari.
+Ranglar (Bot API 9.4 `style`) — HAR BIR tugma rangli: 🔴 qaytish/bekor qilish/o'chirish/o'chirib qo'yish, 🟢 yoqish/saqlash/qo'shish/to'lov/tanlangan variant (✅), 🔵 qolgan hammasi (bo'limlar, tahrirlash, ro'yxatlar, sozlamalar, sahifalash, til).
 Eski Telegram klientlarida tugmalar oddiy ko'rinadi (funksiya buzilmaydi).
