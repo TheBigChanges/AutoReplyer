@@ -31,7 +31,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, TransactionPartnerUser, Update, User, Voice
+from telegram import InlineKeyboardButton, LabeledPrice, TransactionPartnerUser, Update, User, Voice
 from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
@@ -52,6 +52,7 @@ import analytics
 import automation
 import db
 import inbox
+from ui import Markup
 import payments
 from i18n import DEFAULT_LANG, LANG_NAMES, LANGS, all_defaults, is_lang, t
 from logic import (
@@ -257,7 +258,7 @@ def build_lang_markup(inviter_id: int | None = None):
     """Til tanlash tugmalari. Taklif qilgan odam ID'si tugma ichida olib yuriladi (referal yo'qolmasin)."""
     suffix = f":{inviter_id}" if inviter_id else ""
     rows = [[InlineKeyboardButton(LANG_NAMES[code], callback_data=f"lang:{code}{suffix}")] for code in LANGS]
-    return InlineKeyboardMarkup(rows)
+    return Markup(rows)
 
 
 def auto_reply_text_for(settings: dict, lang: str) -> str:
@@ -289,7 +290,6 @@ def how_connect_text(lang: str = DEFAULT_LANG) -> str:
     return t(lang, "how_connect", bot=BOT_USERNAME)
 
 
-HOW_CONNECT_TEXT = how_connect_text("uz")  # eski nom (o'zbekcha)
 
 
 async def apply_bio_update(bot, owner_id: int) -> tuple[bool, str]:
@@ -487,7 +487,7 @@ def build_subscribe_gate_markup(inviter_id: int | None = None, lang: str = DEFAU
         [InlineKeyboardButton(t(lang, "gate_btn_channel"), url=REQUIRED_CHANNEL_LINK)],
         [InlineKeyboardButton(t(lang, "gate_btn_check"), callback_data=check_data)],
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return Markup(keyboard)
 
 
 def parse_referral_arg(args) -> int | None:
@@ -521,7 +521,6 @@ async def process_referral(bot, owner_id: int, inviter_id: int | None):
         logger.info("Referral bildirishnomasi yuborilmadi (inviter=%s): %s", inviter_id, e)
 
 
-SUBSCRIBE_GATE_TEXT = t("uz", "gate_text")  # eski nom (o'zbekcha)
 
 
 # ---------------------------------------------------------------------------
@@ -587,7 +586,7 @@ def build_onboarding_view(owner_id: int, step: str, welcome: bool = False):
             ],
             _ob_skip_row(lang),
         ]
-    return text, InlineKeyboardMarkup(rows)
+    return text, Markup(rows)
 
 
 def onboarding_start_view(owner_id: int):
@@ -753,7 +752,7 @@ def main_menu_markup(owner_id: int):
     rows.append([InlineKeyboardButton(t(lang, "btn_language"), callback_data="lang_menu")])
     if owner_id == ADMIN_ID:
         rows.append([InlineKeyboardButton("\U0001F4CA Referral statistikasi (admin)", callback_data="admin_referrals")])
-    return InlineKeyboardMarkup(rows)
+    return Markup(rows)
 
 
 # Tariflar: (kalit, emoji, narx so'mda). "free" — hamma shundan boshlaydi.
@@ -1023,13 +1022,13 @@ def build_au_days(owner_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}")],
     ]
     text = t(lang, "au_days_prompt")
-    return (f"{text}\n\n{notice}" if notice else text), InlineKeyboardMarkup(keyboard)
+    return (f"{text}\n\n{notice}" if notice else text), Markup(keyboard)
 
 
 def build_au_time(owner_id: int):
     lang = get_lang(owner_id)
     d = _au_draft(owner_id) or {"id": "-"}
-    markup = InlineKeyboardMarkup([
+    markup = Markup([
         [InlineKeyboardButton(t(lang, "btn_au_skip"), callback_data=f"au_tskip:{d['id']}")],
         [InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}")],
     ])
@@ -1038,7 +1037,7 @@ def build_au_time(owner_id: int):
 
 def _au_ans_cancel_markup(owner_id: int, lang: str):
     d = _au_draft(owner_id) or {"id": "-"}
-    return InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}")]])
+    return Markup([[InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}")]])
 
 
 def _au_rule_reply(rule: dict) -> str:
@@ -1059,7 +1058,7 @@ def build_au_menu(owner_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_au_stats"), callback_data="au_stats")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_au_list(owner_id: int, notice: str | None = None):
@@ -1076,7 +1075,7 @@ def build_au_list(owner_id: int, notice: str | None = None):
         for r in rules
     ]
     keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_menu")])
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_au_rule(owner_id: int, rule_id: int, notice: str | None = None):
@@ -1100,7 +1099,7 @@ def build_au_rule(owner_id: int, rule_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_au_delete"), callback_data=f"au_del:{rule_id}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_list")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_au_edit_menu(owner_id: int, rule_id: int):
@@ -1116,7 +1115,7 @@ def build_au_edit_menu(owner_id: int, rule_id: int):
          InlineKeyboardButton(t(lang, "btn_au_e_prio"), callback_data=f"au_ef:prio:{rule_id}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"au_view:{rule_id}")],
     ]
-    return t(lang, "au_edit_menu"), InlineKeyboardMarkup(rows)
+    return t(lang, "au_edit_menu"), Markup(rows)
 
 
 def build_au_edit_days(owner_id: int):
@@ -1134,7 +1133,7 @@ def build_au_edit_days(owner_id: int):
         [InlineKeyboardButton(t(lang, "btn_au_e_clear"), callback_data=f"au_eclear:{tok}")],
         [InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_ecancel:{tok}")],
     ]
-    return t(lang, "au_e_days_title"), InlineKeyboardMarkup(keyboard)
+    return t(lang, "au_e_days_title"), Markup(keyboard)
 
 
 def _au_stats_period(owner_id: int) -> int:
@@ -1163,7 +1162,7 @@ def build_au_stats(owner_id: int):
     top_text = "\n".join(f"{i}. {_faq_short(_au_rule_name(r))} — {sent_of(r)}" for i, r in enumerate(top, 1)) or t(lang, "au_stats_top_none")
     text = t(lang, "au_stats", total=len(rules), active=sum(1 for r in rules if r["is_enabled"]), period=_an_period_name(lang, days),
              period_sent=period_sent, all_sent=sum(sent_of(r) for r in rules) + deleted_sent, since=since_text, top=top_text)
-    return text, InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_menu")]])
+    return text, Markup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="au_menu")]])
 
 
 def find_automation_rule(owner_id: int, text: str, settings: dict | None = None, now: datetime | None = None) -> dict | None:
@@ -1212,7 +1211,7 @@ def build_locked_view(owner_id: int, feature: str, back_data: str = "open_panel"
     if FEATURE_PLANS.get(feature):
         rows.append([InlineKeyboardButton(t(lang, "btn_plans"), callback_data="plans")])
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data=back_data)])
-    return locked_text(lang, feature), InlineKeyboardMarkup(rows)
+    return locked_text(lang, feature), Markup(rows)
 
 
 _AU_SMART_BUTTONS = frozenset({"au_d", "au_dp", "au_dnext", "au_dskip", "au_tskip"})  # kun/vaqt bosqichi tugmalari
@@ -1282,7 +1281,7 @@ def build_plans_menu(owner_id: int):
             label = f"{emoji} {name}"
         rows.append([InlineKeyboardButton(label, callback_data=f"plan:{key}")])
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="back")])
-    return t(lang, "plans_menu"), InlineKeyboardMarkup(rows)
+    return t(lang, "plans_menu"), Markup(rows)
 
 
 def plan_features_text(lang: str, plan: str) -> str:
@@ -1352,7 +1351,7 @@ def build_plan_view(owner_id: int, key: str):
         text = esc(t(lang, "plan_free_info")) + "\n\n" + features
         if current == "free":
             text += "\n\n" + esc(t(lang, "plan_current"))
-        return text, InlineKeyboardMarkup([back])
+        return text, Markup([back])
 
     title = esc(t(lang, "plan_title", emoji=emoji, name=name, price=plan_price_label(lang, price)))
     stars_row = []
@@ -1366,7 +1365,7 @@ def build_plan_view(owner_id: int, key: str):
             expires_at = None
         if expires_at:
             text += "\n" + esc(t(lang, "plan_until", date=format_plan_date(expires_at)))
-        return text, InlineKeyboardMarkup(stars_row + [back])
+        return text, Markup(stars_row + [back])
     parts = [title, features]
     rows = list(stars_row)
     if PAYMENTS_STARS_ENABLED:
@@ -1383,7 +1382,7 @@ def build_plan_view(owner_id: int, key: str):
         parts.append((esc(t(lang, "pay_card_title")) + "\n" if PAYMENTS_STARS_ENABLED else "") + pay)
         rows.append([InlineKeyboardButton(t(lang, "support_btn_admin"), url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")])
     rows.append(back)
-    return "\n\n".join(parts), InlineKeyboardMarkup(rows)
+    return "\n\n".join(parts), Markup(rows)
 
 
 SUPPORT_CHANNEL_LINK = "https://t.me/+P_Uv4zsFGE03NmI6"
@@ -1391,11 +1390,10 @@ SUPPORT_ADMIN_USERNAME = "MyAndro1d"
 FEEDBACK_MAX_LENGTH = 1500
 FEEDBACK_MAX_PER_HOUR = 5
 
-SUPPORT_TEXT = t("uz", "support_text")  # eski nom (o'zbekcha)
 
 
 def build_support_view(lang: str = DEFAULT_LANG):
-    markup = InlineKeyboardMarkup(
+    markup = Markup(
         [
             [InlineKeyboardButton(t(lang, "support_btn_channel"), url=SUPPORT_CHANNEL_LINK)],
             [InlineKeyboardButton(t(lang, "support_btn_admin"), url=f"https://t.me/{SUPPORT_ADMIN_USERNAME}")],
@@ -1429,7 +1427,7 @@ async def submit_feedback(bot, user, text: str) -> str:
         return t(lang, "feedback_rate")
     label = format_user_label(user.id, user.username, user.full_name)
     admin_text = f"\U0001F4AC Yangi fikr/taklif\n\nKimdan: {label}\n\n{text}"
-    reply_markup = InlineKeyboardMarkup(
+    reply_markup = Markup(
         [[InlineKeyboardButton("\u21A9\uFE0F Javob berish", callback_data=f"fbreply:{user.id}")]]
     )
     if not (ADMIN_ID and await _try_send(bot, ADMIN_ID, admin_text, reply_markup)):
@@ -1449,7 +1447,7 @@ def build_referral_view(owner_id: int):
         [InlineKeyboardButton(t(lang, "ref_btn_share"), url=share_url)],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="back")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 ADMIN_REFERRALS_LIMIT = 30
@@ -1471,7 +1469,7 @@ async def build_admin_referrals_view(bot):
 
     text = f"\U0001F4CA Referral statistikasi\n\n{body}"
     keyboard = [[InlineKeyboardButton("\u2B05\uFE0F Orqaga", callback_data="back")]]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 async def _display_name_for(bot, user_id: int) -> str:
@@ -1524,7 +1522,6 @@ NAME_CLOCK_PUBLIC = os.environ.get("NAME_CLOCK_PUBLIC", "").strip() != "0"
 # shunda yangi vaqt aynan daqiqa almashganda ko'rinadi (ism keyingi daqiqa vaqti bilan yoziladi).
 NAME_CLOCK_LEAD_SECONDS = 0.8
 NAME_CLOCK_CONCURRENCY = 25
-NAME_CLOCK_SYNC_LEAD_SECONDS = 4.0  # ism o'zgarganini tekshirish: yangilashdan shuncha oldin
 NAME_CLOCK_MAX_FAILURES = 3  # ketma-ket shuncha xatodan keyin funksiya o'zi o'chadi
 FLOOD_NOTICE_COOLDOWN_SECONDS = 600
 # Telegram'ga soniyasiga eng ko'pi bilan shuncha ism-soat chaqiruvi (umumiy bot limiti ~30/s) — flood'dan saqlanish.
@@ -1902,7 +1899,7 @@ def build_name_clock_menu(owner_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_nc_edit"), callback_data="nc_edit_name")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_name_clock_zones_menu(owner_id: int):
@@ -1918,7 +1915,7 @@ def build_name_clock_zones_menu(owner_id: int):
         for key, label, tz in NAME_CLOCK_ZONES
     ]
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="nc_menu")])
-    return t(lang, "nc_tz_title"), InlineKeyboardMarkup(rows)
+    return t(lang, "nc_tz_title"), Markup(rows)
 
 
 def build_name_clock_styles_menu(owner_id: int):
@@ -1939,7 +1936,7 @@ def build_name_clock_styles_menu(owner_id: int):
     if pair:
         rows.append(pair)
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="nc_menu")])
-    return t(lang, "nc_style_title"), InlineKeyboardMarkup(rows)
+    return t(lang, "nc_style_title"), Markup(rows)
 
 
 def _apply_now_if_enabled(bot, owner_id: int):
@@ -2071,7 +2068,7 @@ def build_ai_menu(owner_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_ai_info"), callback_data="ai_edit_info")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_ai_roles_menu(owner_id: int):
@@ -2082,7 +2079,7 @@ def build_ai_roles_menu(owner_id: int):
         for key in ai.ROLES
     ]
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="ai_menu")])
-    return t(lang, "ai_roles_menu"), InlineKeyboardMarkup(rows)
+    return t(lang, "ai_roles_menu"), Markup(rows)
 
 
 def _send_outcome_unknown(e: Exception) -> bool:
@@ -2390,7 +2387,7 @@ def build_autoreply_menu(owner_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_sleep"), callback_data="sleep_menu")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 # ---------------------------------------------------------------------------
@@ -2513,7 +2510,7 @@ def build_inbox_menu(owner_id: int):
                                           callback_data="ib_nt_off" if cfg["notify"] else "ib_nt_on")])
         rows.append([InlineKeyboardButton(lock_label(t(lang, "btn_inbox_time"), has_feature(owner_id, "inbox_time")), callback_data="ib_time")])
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")])
-    return text, InlineKeyboardMarkup(rows)
+    return text, Markup(rows)
 
 
 def build_inbox_time_view(owner_id: int):
@@ -2522,7 +2519,7 @@ def build_inbox_time_view(owner_id: int):
     buttons = [InlineKeyboardButton(("✅ " if h * 60 == current else "") + f"{h:02d}:00", callback_data=f"ib_t:{h * 60}") for h in inbox.DIGEST_HOUR_CHOICES]
     rows = [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")])
-    return t(lang, "inbox_time_title"), InlineKeyboardMarkup(rows)
+    return t(lang, "inbox_time_title"), Markup(rows)
 
 
 def build_inbox_view(owner_id: int):
@@ -2530,7 +2527,7 @@ def build_inbox_view(owner_id: int):
     now = time.time()
     prio = _inbox_priority_active(owner_id)
     total, rows = db.get_pending_chats(owner_id, inbox_limit_for(owner_id), now, **_prio_kw(owner_id))
-    back = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")]])
+    back = Markup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")]])
     if total == 0:
         return t(lang, "inbox_view_empty"), back
     lines = [t(lang, "inbox_view_title", total=total)]
@@ -2555,7 +2552,6 @@ def _parse_page(part) -> int:
 def _paged_pending(owner_id: int, page: int, now: float):
     """Javobsiz suhbatlarning bitta sahifasi (barqaror tartib: muhim(Pro/Ultra) -> eng uzoq kutgan -> chat_id). Sahifa chegaradan oshsa —
     oxirgisiga tushadi (eskirgan tugma xato bermaydi). Qaytaradi: (qatorlar, sahifa, sahifalar soni)."""
-    prio = _inbox_priority_active(owner_id)
     total, rows = db.get_pending_chats(owner_id, PRIORITY_VIEW_ROWS, now, offset=page * PRIORITY_VIEW_ROWS, **_prio_kw(owner_id))
     pages = max(1, -(-total // PRIORITY_VIEW_ROWS))
     if page >= pages:
@@ -2600,7 +2596,7 @@ def build_inbox_priority_view(owner_id: int, notice: str = "", page: int = 0):
             kb.append([InlineKeyboardButton(f"{_inbox_name(r)}", callback_data=f"ib_pr:{cid}:{page}")])
     kb += _page_nav("ib_priority", page, pages)
     kb.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")])
-    return text, InlineKeyboardMarkup(kb)
+    return text, Markup(kb)
 
 
 def _reminder_time_text(owner_id: int, due_at: float) -> str:
@@ -2625,7 +2621,7 @@ def build_inbox_reminders_view(owner_id: int, notice: str = "", page: int = 0):
     kb = [[InlineKeyboardButton(f"⏰ {_inbox_name(r)}", callback_data=f"ib_rem:{int(r['chat_id'])}:{page}")] for r in rows]
     kb += _page_nav("ib_reminders", page, pages)
     kb.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="ib_menu")])
-    return text, InlineKeyboardMarkup(kb)
+    return text, Markup(kb)
 
 
 def build_inbox_reminder_choice(owner_id: int, chat_id: int, page: int = 0):
@@ -2644,7 +2640,7 @@ def build_inbox_reminder_choice(owner_id: int, chat_id: int, page: int = 0):
     left_today = max(0, limit - db.count_inbox_reminders_for_date(owner_id, today.isoformat()))
     left_tomorrow = max(0, limit - db.count_inbox_reminders_for_date(owner_id, (today + timedelta(days=1)).isoformat()))
     text = t(lang, "inbox_reminder_title", name=_inbox_name(chat)) + "\n" + t(lang, "inbox_reminder_left", today=left_today, tomorrow=left_tomorrow)
-    return text, InlineKeyboardMarkup(rows)
+    return text, Markup(rows)
 
 
 def _parse_chat_id(part: str) -> int | None:
@@ -2939,7 +2935,7 @@ def build_panel(owner_id: int):
     if name_clock_allowed(owner_id):
         keyboard.append([InlineKeyboardButton(t(lang, "btn_name_clock"), callback_data="nc_menu")])
     keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="back")])
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 # ---------------------------------------------------------------------------
@@ -3045,14 +3041,14 @@ def build_analytics_menu(owner_id: int, days: int = 1):
         [InlineKeyboardButton(lock_label(t(lang, "btn_an_detail"), ok("analytics_full")), callback_data=f"an_detail:{days}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_analytics_detail(owner_id: int, days: int = 1):
     lang = get_lang(owner_id)
     days = days if days in (1, 7, 30) and days <= analytics_allowed_days(owner_id) else 1
     summary = analytics_summary(owner_id, days)
-    back = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"an:{days}")]])
+    back = Markup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"an:{days}")]])
     if analytics.is_empty(summary):
         return t(lang, "an_empty"), back
     blocks = [sum(summary["hourly"][h:h + 4]) for h in range(0, 24, 4)]
@@ -3226,8 +3222,8 @@ def _sc_cb(prefix: str, d: dict) -> str:
     return f"{prefix}:{d['id']}"
 
 
-def _sc_time_markup(lang: str, d: dict) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def _sc_time_markup(lang: str, d: dict) -> Markup:
+    return Markup([
         [InlineKeyboardButton(t(lang, "btn_sc_allday"), callback_data=_sc_cb("sc_allday", d))],
         [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data=_sc_cb("sc_cancel", d))],
     ])
@@ -3350,7 +3346,7 @@ def build_sched_menu(owner_id: int, notice: str | None = None, page: int = 0):
         [InlineKeyboardButton(t(lang, "btn_sc_settings"), callback_data="sc_settings")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_sched_settings(owner_id: int):
@@ -3365,7 +3361,7 @@ def build_sched_settings(owner_id: int):
         [InlineKeyboardButton(t(lang, "btn_sc_toggle_on" if on else "btn_sc_toggle_off"), callback_data="sc_disable" if on else "sc_enable")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_sched_list(owner_id: int, mode: str):
@@ -3373,7 +3369,7 @@ def build_sched_list(owner_id: int, mode: str):
     lang = get_lang(owner_id)
     rules = db.list_schedule_rules(owner_id)
     if not rules:
-        return t(lang, "sc_no_rules"), InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]])
+        return t(lang, "sc_no_rules"), Markup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]])
     rows = []
     for n, r in enumerate(rules, 1):
         icon, time_text = _sc_time_text(lang, r["start_min"], r["end_min"])
@@ -3381,7 +3377,7 @@ def build_sched_list(owner_id: int, mode: str):
         label = f"{n}. {days} {time_text}" + ("" if r["is_enabled"] else " ⏸")
         rows.append([InlineKeyboardButton(label, callback_data=(f"sc_e:{r['id']}" if mode == "edit" else f"sc_del:{r['id']}"))])
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")])
-    return t(lang, "sc_pick_edit" if mode == "edit" else "sc_pick_delete"), InlineKeyboardMarkup(rows)
+    return t(lang, "sc_pick_edit" if mode == "edit" else "sc_pick_delete"), Markup(rows)
 
 
 def _sc_entry_text(owner_id: int, rule_id: int):
@@ -3416,7 +3412,7 @@ def build_sched_entry(owner_id: int, rule_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_sc_delete"), callback_data=f"sc_del:{rule_id}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_list:edit")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_sched_days(owner_id: int):
@@ -3438,7 +3434,7 @@ def build_sched_days(owner_id: int):
         [InlineKeyboardButton(t(lang, "btn_sc_continue"), callback_data=_sc_cb("sc_dnext", d))],
         [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data=_sc_cb("sc_cancel", d))],
     ]
-    return t(lang, "sc_days_prompt"), InlineKeyboardMarkup(keyboard)
+    return t(lang, "sc_days_prompt"), Markup(keyboard)
 
 
 def _sc_conflict_notice(lang: str, n: int) -> str:
@@ -3452,7 +3448,7 @@ def _sc_confirm_view(owner_id: int, d: dict):
         lang, "sc_confirm", days=format_day_set(days_mask(d["days"]), _sc_day_names(lang), t(lang, "sched_everyday")),
         time_icon=icon, time=time_text, text=_sc_text_preview(lang, d.get("text"), 300),
     )
-    markup = InlineKeyboardMarkup([[
+    markup = Markup([[
         InlineKeyboardButton(t(lang, "btn_sc_save"), callback_data=_sc_cb("sc_save", d)),
         InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data=_sc_cb("sc_cancel", d)),
     ]])
@@ -3464,7 +3460,7 @@ def _sc_text_step(owner_id: int, d: dict):
     lang = get_lang(owner_id)
     if not has_feature(owner_id, "custom_text"):
         return None
-    markup = InlineKeyboardMarkup([
+    markup = Markup([
         [InlineKeyboardButton(t(lang, "btn_sc_deftext"), callback_data=_sc_cb("sc_deftext", d))],
         [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data=_sc_cb("sc_cancel", d))],
     ])
@@ -3560,7 +3556,7 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
         rule_id = found[2]["id"]
         token = secrets.token_hex(3)
         _sc_del_confirms[owner_id] = {"rule_id": rule_id, "token": token, "ts": time.time()}
-        markup = InlineKeyboardMarkup([
+        markup = Markup([
             [InlineKeyboardButton(t(lang, "btn_sc_del_yes"), callback_data=f"sc_del_yes:{rule_id}:{token}")],
             [InlineKeyboardButton(t(lang, "btn_sc_cancel"), callback_data="sc_menu")],
         ])
@@ -3585,7 +3581,7 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
         if sc_button_is_stale(owner_id, data):  # eski xabardagi «Bekor qilish» — joriy qoralamaga tegmaydi
             await query.edit_message_text(
                 t(lang, "sc_stale_button"),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]]),
+                reply_markup=Markup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]]),
             )
             return True
         if _sc_drafts.pop(owner_id, None) is not None:
@@ -3634,7 +3630,7 @@ async def handle_schedule_callback(query, owner_id: int, data: str, lang: str) -
                 text, markup = build_sched_menu(owner_id, t(lang, "sc_draft_lost"))
             else:  # boshqa (joriy) qoralama bor — unga tegmaymiz, faqat eski xabarni ogohlantirishga almashtiramiz
                 text = t(lang, "sc_stale_button")
-                markup = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]])
+                markup = Markup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data="sc_menu")]])
             await query.edit_message_text(text, reply_markup=markup)
             return True
         data = base  # pastdagi qadamlar tugma turi bo'yicha ishlaydi
@@ -3843,7 +3839,7 @@ def build_faq_menu(owner_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_faq_settings"), callback_data="faq_settings")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_faq_settings(owner_id: int):
@@ -3854,7 +3850,7 @@ def build_faq_settings(owner_id: int):
         [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="faq_off" if enabled else "faq_on")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="faq_menu")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_faq_list(owner_id: int):
@@ -3869,7 +3865,7 @@ def build_faq_list(owner_id: int):
         for e in entries
     ]
     keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="faq_menu")])
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_faq_entry(owner_id: int, entry_id: int, notice: str | None = None):
@@ -3893,7 +3889,7 @@ def build_faq_entry(owner_id: int, entry_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_faq_delete"), callback_data=f"faq_del:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="faq_list")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def find_faq_answer(owner_id: int, text: str) -> str | None:
@@ -3946,7 +3942,7 @@ def build_kb_menu(owner_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_kb_settings"), callback_data="kb_settings")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_kb_settings(owner_id: int):
@@ -3957,7 +3953,7 @@ def build_kb_settings(owner_id: int):
         [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="kb_off" if enabled else "kb_on")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="kb_menu")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_kb_list(owner_id: int):
@@ -3972,7 +3968,7 @@ def build_kb_list(owner_id: int):
         for e in entries
     ]
     keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="kb_menu")])
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_kb_entry(owner_id: int, entry_id: int, notice: str | None = None):
@@ -3996,7 +3992,7 @@ def build_kb_entry(owner_id: int, entry_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_kb_delete"), callback_data=f"kb_del:{e['id']}")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="kb_list")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def find_kb_context(owner_id: int, messages) -> list[dict]:
@@ -4032,7 +4028,7 @@ def build_sleep_menu(owner_id: int):
         [InlineKeyboardButton(lock_label(t(lang, "btn_edit_text"), has_feature(owner_id, "custom_text")), callback_data="sleep_edit_text")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="ar_menu")],
     ]
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 def build_bio_menu(owner_id: int):
@@ -4043,7 +4039,7 @@ def build_bio_menu(owner_id: int):
 
     if not connection or not connection.get("can_edit_bio"):
         keyboard = [[InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")]]
-        return t(lang, "bio_no_perm"), InlineKeyboardMarkup(keyboard)
+        return t(lang, "bio_no_perm"), Markup(keyboard)
 
     if target:
         preview = compute_bio_text(
@@ -4062,7 +4058,7 @@ def build_bio_menu(owner_id: int):
     if target:
         keyboard.append([InlineKeyboardButton(t(lang, "btn_disable"), callback_data="bio_disable")])
     keyboard.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")])
-    return text, InlineKeyboardMarkup(keyboard)
+    return text, Markup(keyboard)
 
 
 # ---------------------------------------------------------------------------
@@ -4110,7 +4106,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await run_start_flow(context.bot, owner_id, inviter_id, send)
 
 
-HELP_TEXT = t("uz", "help")  # eski nom (o'zbekcha)
 
 ADMIN_HELP_TEXT = (
     "\n\n\U0001F510 Admin buyruqlari:\n"
@@ -4288,7 +4283,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         back = {"faq": "faq_menu", "kb": "kb_menu", "au": "au_menu"}[data.split("_")[0]]
         await query.edit_message_text(
             t(lang, "sc_stale_button"),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data=back)]]),
+            reply_markup=Markup([[InlineKeyboardButton(t(lang, "btn_back"), callback_data=back)]]),
         )
         return
 
@@ -4582,7 +4577,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             token = secrets.token_hex(3)
             _kb_del_confirms[owner_id] = {"entry_id": entry_id, "token": token, "ts": time.time()}
-            markup = InlineKeyboardMarkup([[
+            markup = Markup([[
                 InlineKeyboardButton(t(lang, "btn_kb_del_yes"), callback_data=f"kb_del_yes:{entry_id}:{token}"),
                 InlineKeyboardButton(t(lang, "btn_kb_cancel"), callback_data=f"kb_view:{entry_id}"),
             ]])
@@ -4786,7 +4781,7 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
             buttons.append([InlineKeyboardButton(t(lang, "btn_au_e_clear"), callback_data=f"au_eclear:{e['id']}")])
         buttons.append([InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_ecancel:{e['id']}")])
         set_pending_action(owner_id, "au_e_text")
-        await query.message.reply_text(prompt, reply_markup=InlineKeyboardMarkup(buttons))
+        await query.message.reply_text(prompt, reply_markup=Markup(buttons))
         return True
 
     if base in _AU_EDIT_BUTTONS:
@@ -4854,7 +4849,7 @@ async def handle_automation_callback(query, owner_id: int, data: str, lang: str)
             _au_del_confirms[owner_id] = {"rule_id": rule_id, "token": token, "ts": time.time()}
             await show((
                 t(lang, "au_del_confirm", kw=_au_rule_keyword(rule)),
-                InlineKeyboardMarkup([
+                Markup([
                     [InlineKeyboardButton(t(lang, "btn_au_del_yes"), callback_data=f"au_del_yes:{rule_id}:{token}")],
                     [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"au_view:{rule_id}")],
                 ]),
@@ -5084,7 +5079,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d["ans"] = value
         d["ts"] = time.time()
         set_pending_action(owner_id, "faq_confirm")
-        markup = InlineKeyboardMarkup([[
+        markup = Markup([[
             InlineKeyboardButton(t(lang, "btn_faq_save"), callback_data=f"faq_save:{d['id']}"),
             InlineKeyboardButton(t(lang, "btn_faq_cancel"), callback_data=f"faq_cancel:{d['id']}"),
         ]])
@@ -5211,7 +5206,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d["ts"] = time.time()
         d["stage"] = "confirm"
         set_pending_action(owner_id, "au_confirm")
-        markup = InlineKeyboardMarkup([[
+        markup = Markup([[
             InlineKeyboardButton(t(lang, "btn_au_save"), callback_data=f"au_save:{d['id']}"),
             InlineKeyboardButton(t(lang, "btn_au_cancel"), callback_data=f"au_cancel:{d['id']}"),
         ]])
@@ -5287,7 +5282,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d["kw"] = keywords
         d["ts"] = time.time()
         set_pending_action(owner_id, "kb_confirm")
-        markup = InlineKeyboardMarkup([[
+        markup = Markup([[
             InlineKeyboardButton(t(lang, "btn_kb_save"), callback_data=f"kb_save:{d['id']}"),
             InlineKeyboardButton(t(lang, "btn_kb_cancel"), callback_data=f"kb_cancel:{d['id']}"),
         ]])
@@ -5544,7 +5539,7 @@ async def on_admin_broadcast_content(update: Update, context: ContextTypes.DEFAU
 
     message = update.effective_message
     total = db.get_user_count(exclude_blocked=True)
-    markup = InlineKeyboardMarkup(
+    markup = Markup(
         [[
             InlineKeyboardButton("\u2705 Yuborish", callback_data=f"bc_confirm:{message.message_id}"),
             InlineKeyboardButton("\u274C Bekor qilish", callback_data="bc_cancel"),
@@ -5918,7 +5913,7 @@ async def resolve_target_user(bot, raw: str) -> tuple[int | None, str | None]:
 def build_block_notice(reason: str, lang: str = DEFAULT_LANG):
     reason_line = t(lang, "block_reason_line", reason=reason) if reason else ""
     text = t(lang, "block_notice", reason_line=reason_line)
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "btn_appeal"), callback_data="appeal_start")]])
+    markup = Markup([[InlineKeyboardButton(t(lang, "btn_appeal"), callback_data="appeal_start")]])
     return text, markup
 
 
@@ -6066,7 +6061,7 @@ def build_pay_duration_view(owner_id: int, plan: str):
         label = t(lang, "btn_pay_months_off" if pct else "btn_pay_months", n=months, price=price, pct=pct)
         rows.append([InlineKeyboardButton(label, callback_data=f"pay_q:{plan}:{months}")])
     rows.append([InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"plan:{plan}")])
-    return t(lang, "pay_choose", name=t(lang, "plan_name_" + plan)), InlineKeyboardMarkup(rows)
+    return t(lang, "pay_choose", name=t(lang, "plan_name_" + plan)), Markup(rows)
 
 
 def _format_span(lang: str, seconds: float) -> str:
@@ -6091,14 +6086,14 @@ def build_pay_quote_view(owner_id: int, plan: str, months: int):
         text = t(lang, "pay_quote_dg", name=t(lang, "plan_name_" + plan), value=int(payments.remaining_value(state, now)),
                  span=_format_span(lang, q.new_state.expires_at - now), date=format_plan_date(q.new_state.expires_at), note=note)
         go = InlineKeyboardButton(t(lang, "btn_pay_switch"), callback_data=f"pay_swy:{plan}:{months}:{state.plan}:{_snap_exp(state)}")
-        return text, InlineKeyboardMarkup([[go], [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"plan:{plan}")]])
+        return text, Markup([[go], [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"plan:{plan}")]])
     text = t(lang, "pay_quote", name=t(lang, "plan_name_" + plan), months=months, lines=_quote_lines(lang, q),
              date=format_plan_date(q.new_state.expires_at), note=note)
     if q.pay > 0:
         go = InlineKeyboardButton(t(lang, "btn_pay_go", pay=f"{q.pay} ⭐"), callback_data=f"pay_buy:{plan}:{months}:{q.pay}")
     else:
         go = InlineKeyboardButton(t(lang, "btn_pay_switch"), callback_data=f"pay_swy:{plan}:{months}:{state.plan}:{_snap_exp(state)}")
-    return text, InlineKeyboardMarkup([[go], [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"pay_p:{plan}")]])
+    return text, Markup([[go], [InlineKeyboardButton(t(lang, "btn_back"), callback_data=f"pay_p:{plan}")]])
 
 
 async def handle_pay_callback(query, context, owner_id: int, data: str):
@@ -6161,7 +6156,7 @@ async def _send_order_invoice(bot, owner_id: int, lang: str, token: str, plan: s
         currency="XTR",
         prices=[LabeledPrice(title, stars)],
         provider_token="",
-        reply_markup=InlineKeyboardMarkup([
+        reply_markup=Markup([
             [InlineKeyboardButton(t(lang, "btn_pay_go", pay=f"{stars} ⭐"), pay=True)],  # invoice'dagi birinchi tugma majburan "to'lash" bo'lishi kerak
             [InlineKeyboardButton(t(lang, "btn_pay_cancel"), callback_data=f"pay_cx:{token}")],
         ]),
@@ -6183,7 +6178,7 @@ async def _offer_existing_order(query, context, owner_id: int, order: dict):
     _prune_times(_offer_at, 3600.0)
     await context.bot.send_message(
         owner_id, t(lang, "pay_invoice_active"),
-        reply_markup=InlineKeyboardMarkup([[
+        reply_markup=Markup([[
             InlineKeyboardButton(t(lang, "btn_pay_resend"), callback_data=f"pay_rs:{order['token']}"),
             InlineKeyboardButton(t(lang, "btn_pay_cancel"), callback_data=f"pay_cx:{order['token']}"),
         ]]),
@@ -6994,7 +6989,7 @@ def build_users_view(page: int, total: int, blocked_total: int, rows: list, pend
         nav.append(InlineKeyboardButton("⬅️ Oldingi", callback_data=f"users:{page - 1}"))
     if page < pages - 1:
         nav.append(InlineKeyboardButton("Keyingi ➡️", callback_data=f"users:{page + 1}"))
-    markup = InlineKeyboardMarkup([nav]) if nav else None
+    markup = Markup([nav]) if nav else None
     return "\n".join(lines), markup
 
 
@@ -7055,7 +7050,7 @@ async def cmd_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + "\n".join(lines)
         + "\n\nBular bazadan o'chirilsinmi? (Odam ham username'ini shunday qo'ygan bo'lishi mumkin — ro'yxatni tekshiring.)"
     )
-    markup = InlineKeyboardMarkup(
+    markup = Markup(
         [[InlineKeyboardButton("\U0001F5D1 Hammasini o'chirish", callback_data="rmbots:yes"),
           InlineKeyboardButton("Bekor qilish", callback_data="rmbots:no")]]
     )
@@ -7244,7 +7239,7 @@ async def _submit_appeal(bot, user, block: dict, text: str):
         f"Bloklash sababi: {block.get('reason') or '—'}\n\n"
         f"Izoh:\n{text}"
     )
-    markup = InlineKeyboardMarkup(
+    markup = Markup(
         [[InlineKeyboardButton("\u2705 Blokdan chiqarish", callback_data=f"unblock:{user.id}")]]
     )
     delivered = bool(ADMIN_ID) and await _try_send(bot, ADMIN_ID, admin_text, markup)
