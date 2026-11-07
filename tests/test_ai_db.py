@@ -20,6 +20,11 @@ if TEST_DB_URL:
     import psycopg2
 
 
+def consume(*args, **kwargs) -> bool:
+    """reserve_ai_quota natijasi bo'yicha: limit band qilindimi (yangi yoki tiklangan)."""
+    return db.reserve_ai_quota(*args, **kwargs) in ("reserved", "recovered")
+
+
 def _conn():
     c = psycopg2.connect(TEST_DB_URL)
     c.autocommit = True
@@ -55,24 +60,24 @@ class AiDbTests(unittest.TestCase):
                 cur.execute(f"DELETE FROM {t} WHERE owner_user_id = %s", (self.owner,))
 
     def test_quota_stops_at_limit_and_refund_gives_back(self):
-        results = [db.try_consume_ai_quota(self.owner, "2026-10-11", 3) for _ in range(5)]
+        results = [consume(self.owner, "2026-10-11", 3) for _ in range(5)]
         self.assertEqual(results, [True, True, True, False, False])
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 3)
         db.refund_ai_quota(self.owner, "2026-10-11")
-        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 3))
-        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 3))
+        self.assertTrue(consume(self.owner, "2026-10-11", 3))
+        self.assertFalse(consume(self.owner, "2026-10-11", 3))
 
     def test_quota_is_per_day(self):
         for _ in range(2):
-            db.try_consume_ai_quota(self.owner, "2026-10-11", 2)
-        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 2))
-        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-12", 2))
+            consume(self.owner, "2026-10-11", 2)
+        self.assertFalse(consume(self.owner, "2026-10-11", 2))
+        self.assertTrue(consume(self.owner, "2026-10-12", 2))
 
     def test_quota_never_exceeded_under_concurrency(self):
         wins = []
 
         def worker():
-            wins.append(db.try_consume_ai_quota(self.owner, "2026-10-11", 10))
+            wins.append(consume(self.owner, "2026-10-11", 10))
 
         threads = [threading.Thread(target=worker) for _ in range(30)]
         [t.start() for t in threads]
@@ -85,16 +90,16 @@ class AiDbTests(unittest.TestCase):
 
     def test_reserve_is_idempotent_per_message(self):
         req = (self.chat, 1)
-        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req))
-        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req))  # takror: limit ikki marta sarflanmaydi
+        self.assertTrue(consume(self.owner, "2026-10-11", 5, request=req))
+        self.assertFalse(consume(self.owner, "2026-10-11", 5, request=req))  # takror: limit ikki marta sarflanmaydi
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)
         self.assertTrue(db.ai_request_seen(self.owner, self.chat, 1))
         self.assertFalse(db.ai_request_seen(self.owner, self.chat, 2))
 
     def test_refund_is_idempotent_per_message(self):
         a, b = (self.chat, 1), (self.chat, 2)
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=a)
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=b)
+        consume(self.owner, "2026-10-11", 5, request=a)
+        consume(self.owner, "2026-10-11", 5, request=b)
         db.refund_ai_quota(self.owner, "2026-10-11", request=a)
         db.refund_ai_quota(self.owner, "2026-10-11", request=a)  # javob yo'qolgan qayta urinish
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)  # b ning limiti buzilmadi
@@ -102,12 +107,12 @@ class AiDbTests(unittest.TestCase):
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)
 
     def test_limit_hit_leaves_no_ledger_row(self):
-        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 1)))
-        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 2)))
+        self.assertTrue(consume(self.owner, "2026-10-11", 1, request=(self.chat, 1)))
+        self.assertFalse(consume(self.owner, "2026-10-11", 1, request=(self.chat, 2)))
         self.assertFalse(db.ai_request_seen(self.owner, self.chat, 2))
 
     def test_ledger_survives_like_a_restart_and_is_purged_when_old(self):
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 1))
+        consume(self.owner, "2026-10-11", 5, request=(self.chat, 1))
         self.assertTrue(db.ai_request_seen(self.owner, self.chat, 1))  # RAM'ga bog'liq emas
         with _conn() as c, c.cursor() as cur:
             cur.execute("UPDATE ai_requests SET created_at = %s WHERE owner_user_id = %s", (time.time() - 10 * 86400, self.owner))
@@ -125,23 +130,23 @@ class AiDbTests(unittest.TestCase):
 
     def test_stale_preparing_ai_request_can_recover(self):
         req = (self.chat, 1)
-        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req))
+        self.assertTrue(consume(self.owner, "2026-10-11", 5, request=req))
         self.assertTrue(db.ai_request_seen(self.owner, self.chat, 1))      # yangi `reserved`: boshqa jarayon ishlayapti, tegilmaydi
-        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req))
+        self.assertFalse(consume(self.owner, "2026-10-11", 5, request=req))
         self._age()                                                         # jarayon to'xtagan
         self.assertFalse(db.ai_request_seen(self.owner, self.chat, 1))     # tiklash mumkin
-        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req))
+        self.assertTrue(consume(self.owner, "2026-10-11", 5, request=req))
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)     # limit ikki marta sarflanmadi
         self.assertTrue(db.ai_request_seen(self.owner, self.chat, 1))      # tiklangan so'rov endi yangi (parallel qayta tiklash yo'q)
-        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req))
+        self.assertFalse(consume(self.owner, "2026-10-11", 5, request=req))
 
     def test_stale_sending_ai_request_is_not_resent(self):
         req = (self.chat, 1)
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req)
+        consume(self.owner, "2026-10-11", 5, request=req)
         self.assertTrue(db.mark_ai_request(self.owner, req, "sending"))
         self._age(10 * 86400)
         self.assertTrue(db.ai_request_seen(self.owner, self.chat, 1))      # Telegram qabul qilgan bo'lishi mumkin: qayta yuborilmaydi
-        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req))
+        self.assertFalse(consume(self.owner, "2026-10-11", 5, request=req))
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)     # limit ham qaytarilmaydi
         self.assertEqual(self._state(1), "sending")
         self.assertFalse(db.mark_ai_request(self.owner, req, "sending"))   # ikkinchi marta "sending" bo'lmaydi
@@ -149,7 +154,7 @@ class AiDbTests(unittest.TestCase):
     def test_unknown_and_sent_are_final(self):
         for msg, state in ((1, "sent"), (2, "unknown")):
             req = (self.chat, msg)
-            db.try_consume_ai_quota(self.owner, "2026-10-11", 9, request=req)
+            consume(self.owner, "2026-10-11", 9, request=req)
             db.mark_ai_request(self.owner, req, "sending")
             db.mark_ai_request(self.owner, req, state)
         self._age(10 * 86400)
@@ -159,22 +164,22 @@ class AiDbTests(unittest.TestCase):
     def test_crash_before_ai_send_does_not_permanently_consume_quota(self):
         """Gemini tayyor bo'lmasdan jarayon to'xtadi: limit band, lekin yozuv eskirgach xabar qayta ishlanadi va limit yo'qolmaydi."""
         req = (self.chat, 1)
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=req)   # limit = 1 va u band
-        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 2)))  # boshqa xabar sig'maydi
+        consume(self.owner, "2026-10-11", 1, request=req)   # limit = 1 va u band
+        self.assertFalse(consume(self.owner, "2026-10-11", 1, request=(self.chat, 2)))  # boshqa xabar sig'maydi
         self._age()
-        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=req))  # tiklandi, limitga qaramay
+        self.assertTrue(consume(self.owner, "2026-10-11", 1, request=req))  # tiklandi, limitga qaramay
         db.refund_ai_quota(self.owner, "2026-10-11", request=req)           # tiklangan so'rov ham muvaffaqiyatsiz bo'lsa — qaytadi
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 0)
 
     def test_refund_goes_to_the_reserved_day_not_today(self):
         req = (self.chat, 1)
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req)
+        consume(self.owner, "2026-10-11", 5, request=req)
         db.refund_ai_quota(self.owner, "2026-10-12", request=req)           # yarim tundan keyin qaytarilsa ham
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 0)
 
     def test_sending_request_cannot_be_refunded_after_sent(self):
         req = (self.chat, 1)
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req)
+        consume(self.owner, "2026-10-11", 5, request=req)
         db.mark_ai_request(self.owner, req, "sending")
         db.mark_ai_request(self.owner, req, "sent")
         db.refund_ai_quota(self.owner, "2026-10-11", request=req)
@@ -194,8 +199,8 @@ class AiDbTests(unittest.TestCase):
 
     def test_crashed_background_ai_request_is_recovered(self):
         """Jarayon to'xtadi, Telegram xabarni qayta yubormaydi: job eskirgan `reserved` so'rovni o'zi yopadi."""
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 1))
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 2))
+        consume(self.owner, "2026-10-11", 5, request=(self.chat, 1))
+        consume(self.owner, "2026-10-11", 5, request=(self.chat, 2))
         self.assertEqual(db.recover_orphaned_ai_requests(), 0)       # hali yangi: tegilmaydi
         with _conn() as c, c.cursor() as cur:                       # faqat 1-xabar eskirgan
             cur.execute("UPDATE ai_requests SET updated_at = 0 WHERE owner_user_id = %s AND message_id = 1", (self.owner,))
@@ -206,25 +211,25 @@ class AiDbTests(unittest.TestCase):
         self.assertTrue(db.ai_request_seen(self.owner, self.chat, 1))  # yopilgan so'rov qayta ishlanmaydi (javob yaratilmaydi)
 
     def test_orphaned_reservation_releases_quota(self):
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 1))
-        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 2)))  # limit to'la
+        consume(self.owner, "2026-10-11", 1, request=(self.chat, 1))
+        self.assertFalse(consume(self.owner, "2026-10-11", 1, request=(self.chat, 2)))  # limit to'la
         self._age()
         db.recover_orphaned_ai_requests()
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 0)   # band qilingan limit qaytdi (band qilingan kunga)
-        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 3)))
+        self.assertTrue(consume(self.owner, "2026-10-11", 1, request=(self.chat, 3)))
 
     def test_orphaned_admin_reservation_closes_without_touching_quota(self):
         db.track_ai_request(self.owner, (self.chat, 1), "2026-10-11")
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 2))
+        consume(self.owner, "2026-10-11", 5, request=(self.chat, 2))
         self._age()
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 3))   # yangi, hali ishlayapti
+        consume(self.owner, "2026-10-11", 5, request=(self.chat, 3))   # yangi, hali ishlayapti
         self.assertEqual(db.recover_orphaned_ai_requests(), 2)
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)   # faqat eskirgan oddiy so'rov limiti qaytdi; admin yozuvi va yangi so'rov tegilmadi
 
     def test_recovery_does_not_resend_unknown_telegram_message(self):
         for msg, final in ((1, "sending"), (2, "unknown"), (3, "sent")):
             req = (self.chat, msg)
-            db.try_consume_ai_quota(self.owner, "2026-10-11", 9, request=req)
+            consume(self.owner, "2026-10-11", 9, request=req)
             db.mark_ai_request(self.owner, req, "sending")
             if final != "sending":
                 db.mark_ai_request(self.owner, req, final)
@@ -236,7 +241,7 @@ class AiDbTests(unittest.TestCase):
 
     def test_running_request_closed_by_recovery_cannot_send_later(self):
         req = (self.chat, 1)
-        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req)
+        consume(self.owner, "2026-10-11", 5, request=req)
         self._age()
         db.recover_orphaned_ai_requests()
         self.assertFalse(db.mark_ai_request(self.owner, req, "sending"))  # kechikib tugagan eski so'rov yubora olmaydi
@@ -246,7 +251,7 @@ class AiDbTests(unittest.TestCase):
     def test_delete_ai_data_removes_ledger_and_releases_reserved_quota(self):
         a, b, c3 = (self.chat, 1), (self.chat, 2), (self.chat, 3)
         for r in (a, b, c3):
-            db.try_consume_ai_quota(self.owner, "2026-10-11", 9, request=r)
+            consume(self.owner, "2026-10-11", 9, request=r)
         db.mark_ai_request(self.owner, b, "sending")           # yuborilmoqda: limit qaytarilmaydi
         db.mark_ai_request(self.owner, c3, "sending"); db.mark_ai_request(self.owner, c3, "sent")
         db.try_consume_voice_attempt(self.owner, "2026-10-11", 9)
@@ -258,6 +263,39 @@ class AiDbTests(unittest.TestCase):
         with _conn() as c, c.cursor() as cur:
             cur.execute("SELECT count FROM voice_attempts WHERE owner_user_id = %s", (self.owner,))
             self.assertEqual(cur.fetchone()[0], 1)                            # xarajat hisoblagichi uzib-ulash bilan nollanmaydi
+
+    def test_reserve_distinguishes_duplicate_from_limit_exhausted(self):
+        req = (self.chat, 1)
+        self.assertEqual(db.reserve_ai_quota(self.owner, "2026-10-11", 1, request=req), "reserved")
+        self.assertEqual(db.reserve_ai_quota(self.owner, "2026-10-11", 1, request=req), "duplicate")        # xuddi shu xabar
+        self.assertEqual(db.reserve_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 2)), "limit_exhausted")  # boshqa xabar
+        self._age()
+        self.assertEqual(db.reserve_ai_quota(self.owner, "2026-10-11", 1, request=req), "recovered")
+
+    def test_concurrent_reserve_of_same_message_yields_one_reserved_and_rest_duplicate(self):
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(db.reserve_ai_quota(self.owner, "2026-10-11", 10, request=(self.chat, 1))))
+                   for _ in range(12)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertEqual(sorted(results), ["duplicate"] * 11 + ["reserved"])
+        self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)
+
+    def test_recovery_partial_index_exists_and_is_used(self):
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("DROP INDEX IF EXISTS idx_ai_requests_recovery")
+        db.init_db()  # init_db indeksni o'zi yaratishi kerak (mavjud bazalarda ham)
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_ai_requests_recovery'")
+            row = cur.fetchone()
+            self.assertIsNotNone(row)
+            self.assertIn("updated_at", row[0])
+            self.assertIn("reserved", row[0])
+            cur.execute("SET enable_seqscan = off")  # kichik jadvalda ham rejalashtiruvchi indeksni tanlashi uchun
+            cur.execute(
+                "EXPLAIN SELECT 1 FROM ai_requests WHERE state = 'reserved' AND updated_at < 1 ORDER BY updated_at LIMIT 5 FOR UPDATE SKIP LOCKED"
+            )
+            self.assertIn("idx_ai_requests_recovery", "\n".join(r[0] for r in cur.fetchall()))
 
     def test_voice_attempts_stop_at_limit_and_are_never_refunded(self):
         res = [db.try_consume_voice_attempt(self.owner, "2026-10-11", 3) for _ in range(5)]
