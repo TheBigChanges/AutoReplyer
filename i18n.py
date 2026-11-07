@@ -211,22 +211,40 @@ T: dict[str, dict] = {
         "\U0001F39B Sizning panelingiz\n\n"
         "Holat: {status}\n"
         "Cooldown: {cooldown}\n"
-        "Xabar: {message}\n"
-        "Uxlayapman rejimi: {sleep}\n"
-        "AI-Yordamchi: {ai}",
+        "Xabar: {message}\n\n"
+        "{features}",
         "\U0001F39B Your panel\n\n"
         "Status: {status}\n"
         "Cooldown: {cooldown}\n"
-        "Message: {message}\n"
-        "Sleep mode: {sleep}\n"
-        "AI Assistant: {ai}",
+        "Message: {message}\n\n"
+        "{features}",
         "\U0001F39B Ваша панель\n\n"
         "Статус: {status}\n"
         "Кулдаун: {cooldown}\n"
-        "Сообщение: {message}\n"
-        "Режим сна: {sleep}\n"
-        "AI-помощник: {ai}",
+        "Сообщение: {message}\n\n"
+        "{features}",
     ),
+    # Panel: barcha funksiyalar holati (yoqilgan/o'chirilgan, tarifda yo'q, qisqa tafsilot)
+    "pnl_title": _("\u2699\ufe0f Funksiyalar holati", "\u2699\ufe0f Feature status", "\u2699\ufe0f Состояние функций"),
+    "pnl_on": _("\U0001F7E2 yoqilgan", "\U0001F7E2 on", "\U0001F7E2 включено"),
+    "pnl_off": _("\U0001F534 o'chirilgan", "\U0001F534 off", "\U0001F534 выключено"),
+    "pnl_empty": _("\U0001F534 hali qo'shilmagan", "\U0001F534 nothing added yet", "\U0001F534 пока не добавлено"),
+    "pnl_locked": _("\U0001F512 tarifda yo'q", "\U0001F512 not in your plan", "\U0001F512 нет в тарифе"),
+    "pnl_sleep": _("\U0001F634 Uxlayapman rejimi", "\U0001F634 Sleep mode", "\U0001F634 Режим сна"),
+    "pnl_ai": _("\U0001F916 AI-Yordamchi", "\U0001F916 AI Assistant", "\U0001F916 AI-помощник"),
+    "pnl_bio": _("\U0001F382 BIO hisoblagich", "\U0001F382 BIO countdown", "\U0001F382 BIO-счётчик"),
+    "pnl_faq": _("\U0001F4DA Smart FAQ", "\U0001F4DA Smart FAQ", "\U0001F4DA Smart FAQ"),
+    "pnl_kb": _("\U0001F9E0 AI Shaxsiy Bilimlar", "\U0001F9E0 AI Knowledge Base", "\U0001F9E0 База знаний AI"),
+    "pnl_automation": _("\U0001F9E9 Avtomatlashtirish", "\U0001F9E9 Automation", "\U0001F9E9 Автоматизация"),
+    "pnl_sched": _("\U0001F4C5 Smart Jadval", "\U0001F4C5 Smart Schedule", "\U0001F4C5 Умное расписание"),
+    "pnl_inbox": _("\U0001F4E5 Smart Inbox", "\U0001F4E5 Smart Inbox", "\U0001F4E5 Smart Inbox"),
+    "pnl_clock": _("\U0001F552 Ism soati", "\U0001F552 Name clock", "\U0001F552 Часы в имени"),
+    "pnl_d_sleep": _("{start}–{end}", "{start}–{end}", "{start}–{end}"),
+    "pnl_d_faq": _("{n} ta savol", "{n} questions", "вопросов: {n}"),
+    "pnl_d_kb": _("{n} ta yozuv", "{n} entries", "записей: {n}"),
+    "pnl_d_automation": _("{a}/{n} qoida faol", "{a}/{n} rules active", "активно правил: {a}/{n}"),
+    "pnl_d_sched": _("{a}/{n} qoida faol", "{a}/{n} rules active", "активно правил: {a}/{n}"),
+    "pnl_d_inbox": _("{n} ta javobsiz", "{n} unanswered", "без ответа: {n}"),
     "btn_autoreply": _("\U0001F680 Auto-Reply", "\U0001F680 Auto-Reply", "\U0001F680 Auto-Reply"),
     "ar_menu": _(
         "\U0001F680 Auto-Reply\n\n"
@@ -254,8 +272,6 @@ T: dict[str, dict] = {
     "panel_go_offline": _("\U0001F534 Oflaynga o'tish", "\U0001F534 Go offline", "\U0001F534 Перейти в офлайн"),
     "panel_sleep_on": _("yoqilgan \U0001F634", "on \U0001F634", "включён \U0001F634"),
     "panel_sleep_off": _("o'chirilgan", "off", "выключен"),
-    "panel_ai_on": _("yoqilgan \U0001F916", "on \U0001F916", "включён \U0001F916"),
-    "panel_ai_off": _("o'chirilgan", "off", "выключен"),
     "panel_ai_message": _(
         "AI-Yordamchi yoqilgan (matn o'rniga AI javob beradi)",
         "AI Assistant is on (AI replies instead of the text)",
