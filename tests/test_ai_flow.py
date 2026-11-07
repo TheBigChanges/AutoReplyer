@@ -76,7 +76,7 @@ class Base(unittest.TestCase):
             "settings": patch.object(db, "get_settings", side_effect=lambda o: dict(state)),
             "claim": patch.object(db, "try_claim_reply", return_value=123.0),
             "release": patch.object(db, "release_reply_claim"),
-            "quota": patch.object(db, "try_consume_ai_quota", return_value=quota),
+            "quota": patch.object(db, "reserve_ai_quota", return_value=(quota if isinstance(quota, str) else ("reserved" if quota else "limit_exhausted"))),
             "refund": patch.object(db, "refund_ai_quota", side_effect=refund_effect),
             "seen": patch.object(db, "ai_request_seen", return_value=seen),
             "attempt": patch.object(db, "try_consume_voice_attempt", **({"side_effect": attempt} if callable(attempt) else {"return_value": attempt})),
@@ -583,6 +583,32 @@ class LedgerStateFlowTests(Base):
         send, m = self.flow(owner=ADMIN, history_error=RuntimeError("x"))
         self.assertIn("refunded", self.states(m))
         m["refund"].assert_not_called()
+
+
+class DuplicateReserveTests(Base):
+    def test_concurrent_duplicate_ai_request_does_not_send_fallback(self):
+        """Xabarni boshqa jarayon allaqachon band qilgan: bu jarayon na AI, na zaxira matn yuboradi, limit/Gemini tegilmaydi."""
+        send, m = self.flow(quota="duplicate")
+        self.assertEqual(self.texts(send), [])
+        m["gen"].assert_not_awaited()
+        m["claim"].assert_not_called()
+        m["refund"].assert_not_called()
+
+    def test_duplicate_voice_request_does_not_transcribe_or_fallback(self):
+        tr = AsyncMock(return_value="x")
+        with patch.object(bot, "transcribe_business_voice", new=tr):
+            send, m = self.flow(update=_voice_update(message_id=77), quota="duplicate")
+        tr.assert_not_awaited()
+        self.assertEqual(self.texts(send), [])
+
+    def test_limit_exhausted_still_sends_fallback(self):
+        send, m = self.flow(quota="limit_exhausted")
+        self.assertEqual(self.texts(send), ["Oflaynman"])
+        m["gen"].assert_not_awaited()
+
+    def test_recovered_request_continues_like_new_and_is_not_charged_again(self):
+        send, m = self.flow(quota="recovered")
+        self.assertEqual(self.texts(send), ["Salom! Narx 100$."])
 
 
 class RecoveryJobTests(unittest.TestCase):
