@@ -530,7 +530,7 @@ class AiLimitTests(Base):
         bm = MagicMock(business_connection_id="bc")
         ctx = MagicMock()
         ctx.bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-        with patch.object(db, "try_consume_ai_quota", return_value=quota_ok) as quota, patch.object(db, "refund_ai_quota"), patch.object(db, "ai_request_seen", return_value=False), patch.object(db, "mark_ai_request", return_value=True), patch.object(db, "track_ai_request", return_value=True), \
+        with patch.object(db, "reserve_ai_quota", return_value=("reserved" if quota_ok else "limit_exhausted")) as quota, patch.object(db, "refund_ai_quota"), patch.object(db, "ai_request_seen", return_value=False), patch.object(db, "mark_ai_request", return_value=True), patch.object(db, "track_ai_request", return_value=True), \
              patch.object(bot, "ai_reply_still_allowed", return_value=True), \
              patch.object(db, "get_ai_history", return_value=[]), patch.object(db, "get_user", return_value={"full_name": "Ali"}), \
              patch.object(db, "add_ai_messages"), patch.object(bot.ai, "generate_reply", AsyncMock(return_value="Hi")):
