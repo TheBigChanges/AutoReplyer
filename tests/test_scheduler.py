@@ -263,7 +263,7 @@ class ReplyFlowTests(unittest.TestCase):
             "sleepwin": patch.object(bot, "is_within_sleep_window", sleep_fn or MagicMock(return_value=sleeping)),
             "faq": patch.object(bot, "find_faq_answer", lambda owner, text: faq),
             "paused": patch.object(db, "is_ai_paused", return_value=False),
-            "quota": patch.object(db, "try_consume_ai_quota", return_value=True),
+            "quota": patch.object(db, "reserve_ai_quota", return_value="reserved"),
             "ledger_seen": patch.object(db, "ai_request_seen", return_value=False),
             "ledger_mark": patch.object(db, "mark_ai_request", return_value=True),
             "ledger_track": patch.object(db, "track_ai_request", return_value=True),
