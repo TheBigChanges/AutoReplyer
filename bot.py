@@ -2402,6 +2402,17 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
             refund()
 
 
+async def ai_recovery_job(context: ContextTypes.DEFAULT_TYPE):
+    """Jarayon AI so'rovi o'rtasida to'xtagan bo'lsa (Render restart/crash): eskirgan `reserved` so'rovlar yopiladi va band
+    qilingan limit qaytariladi. Telegram xabarni qayta yubormasa ham ishlaydi. `sending`/`unknown` so'rovlarga tegmaydi."""
+    try:
+        closed = db.recover_orphaned_ai_requests()
+        if closed:
+            logger.warning("Yarim qolgan %s ta AI so'rovi yopildi, limit qaytarildi", closed)
+    except Exception:
+        logger.exception("Yarim qolgan AI so'rovlarini tiklashda xato")
+
+
 async def ai_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         db.purge_old_ai_data()
@@ -7716,6 +7727,8 @@ def build_app() -> Application:
         )
         # AI suhbat tarixi/limit jadvallarini tozalash (har kuni 00:10, Toshkent vaqti)
         app.job_queue.run_daily(ai_cleanup_job, time=dtime(hour=0, minute=10, tzinfo=TASHKENT_TZ))
+        # Yarim qolgan (jarayon to'xtagan) AI so'rovlarini yopish va limitni qaytarish: ishga tushganda va har 60 soniyada
+        app.job_queue.run_repeating(ai_recovery_job, interval=60, first=15)
         # Server qayta ishga tushganda yarim qolgan reklamalarni davom ettirish
         app.job_queue.run_once(_resume_broadcasts_job_callback, when=5)
         # Server 00:05 da o'chiq bo'lgan bo'lsa, o'tkazib yuborilgan BIO yangilanishini yetkazish
