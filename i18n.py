@@ -13,10 +13,6 @@ DEFAULT_LANG = "uz"
 LANG_NAMES = {"uz": "\U0001F1FA\U0001F1FF O'zbekcha", "en": "\U0001F1EC\U0001F1E7 English", "ru": "\U0001F1F7\U0001F1FA Русский"}
 
 
-def normalize_lang(lang) -> str:
-    return lang if lang in LANGS else DEFAULT_LANG
-
-
 def is_lang(lang) -> bool:
     return lang in LANGS
 
@@ -47,52 +43,6 @@ T: dict[str, dict] = {
     "no_permission": _("Ruxsat yo'q.", "No permission.", "Нет доступа."),
     "bad_button": _("Noto'g'ri tugma.", "Invalid button.", "Неверная кнопка."),
     "main_menu": _("Bosh menyu:", "Main menu:", "Главное меню:"),
-    "cancel_hint": _("Bekor qilish: /cancel", "To cancel: /cancel", "Отмена: /cancel"),
-    # ---------------- ulash / start ----------------
-    "how_connect": _(
-        "\U0001F517 Akkountni ulash — qadamma-qadam\n\n"
-        "1️⃣ Telegram ilovasida Sozlamalar (Settings) bo'limini oching.\n\n"
-        "2️⃣ Profilingiz — \"My Profile\" (Mening profilim) bo'limiga kiring.\n\n"
-        "3️⃣ \"Chat Automations\" (Chat avtomatlashtirish) ni tanlang.\n\n"
-        "4️⃣ Bot username'ini kiriting: @{bot}\n"
-        "   Ro'yxatda chiqqach, ustiga bosib tanlang.\n\n"
-        "5️⃣ Chatlarga ruxsat so'ralganda:\n"
-        "   • \"All 1-to-1 Chats\" — barcha shaxsiy yozishmalarga javob beradi (tavsiya etiladi)\n"
-        "   • \"Only Selected Chats\" — faqat o'zingiz tanlagan suhbatlarga\n\n"
-        "6️⃣ \"Reply to messages\" (xabarlarga javob berish) ruxsatini albatta yoqing.\n"
-        "   Busiz bot xabarlarni ko'radi, lekin javob yubora olmaydi.\n\n"
-        "7️⃣ Tasdiqlang (Add / Save).\n\n"
-        "✅ Ulangach, bot sizga xabar yuboradi. Shu yerga qaytib /start yozing — keyingi qadam ochiladi.\n\n"
-        "ℹ️ Menyu nomlari Telegram versiyasiga qarab biroz farq qilishi mumkin.",
-        "\U0001F517 Connecting your account — step by step\n\n"
-        "1️⃣ Open Settings in the Telegram app.\n\n"
-        "2️⃣ Go to your profile — \"My Profile\".\n\n"
-        "3️⃣ Choose \"Chat Automations\".\n\n"
-        "4️⃣ Enter the bot's username: @{bot}\n"
-        "   When it appears in the list, tap it to select.\n\n"
-        "5️⃣ When asked which chats to allow:\n"
-        "   • \"All 1-to-1 Chats\" — replies in all private chats (recommended)\n"
-        "   • \"Only Selected Chats\" — only the chats you pick\n\n"
-        "6️⃣ Be sure to enable the \"Reply to messages\" permission.\n"
-        "   Without it the bot can see messages but cannot reply.\n\n"
-        "7️⃣ Confirm (Add / Save).\n\n"
-        "✅ Once connected, the bot will message you. Come back here and send /start — the next step will open.\n\n"
-        "ℹ️ Menu names may differ slightly depending on your Telegram version.",
-        "\U0001F517 Подключение аккаунта — шаг за шагом\n\n"
-        "1️⃣ Откройте Настройки (Settings) в приложении Telegram.\n\n"
-        "2️⃣ Зайдите в свой профиль — \"My Profile\" (Мой профиль).\n\n"
-        "3️⃣ Выберите \"Chat Automations\" (Автоматизация чатов).\n\n"
-        "4️⃣ Введите username бота: @{bot}\n"
-        "   Когда он появится в списке, нажмите на него.\n\n"
-        "5️⃣ Когда спросят, каким чатам разрешить доступ:\n"
-        "   • \"All 1-to-1 Chats\" — отвечает во всех личных чатах (рекомендуется)\n"
-        "   • \"Only Selected Chats\" — только в выбранных вами чатах\n\n"
-        "6️⃣ Обязательно включите разрешение \"Reply to messages\" (отвечать на сообщения).\n"
-        "   Без него бот видит сообщения, но не может отвечать.\n\n"
-        "7️⃣ Подтвердите (Add / Save).\n\n"
-        "✅ После подключения бот напишет вам. Вернитесь сюда и отправьте /start — откроется следующий шаг.\n\n"
-        "ℹ️ Названия пунктов меню могут немного отличаться в зависимости от версии Telegram.",
-    ),
     "gate_text": _(
         "\U0001F512 Botdan foydalanish uchun avval kanalimizga obuna bo'ling.\n\n"
         "Obuna bo'lgach, pastdagi \"✅ Tekshirish\" tugmasini bosing.",
@@ -1848,7 +1798,6 @@ T: dict[str, dict] = {
     "btn_inbox_reminders": _("🔔 Eslatmalar", "🔔 Reminders", "🔔 Напоминания"),
     "btn_inbox_prio_add": _("⭐ Muhim qilish", "⭐ Mark important", "⭐ Отметить важным"),
     "btn_inbox_prio_remove": _("✖ Muhimlikni olib tashlash", "✖ Remove importance", "✖ Снять отметку"),
-    "btn_inbox_remind": _("⏰ Eslatma", "⏰ Remind", "⏰ Напомнить"),
     "btn_inbox_remind_cancel": _("🚫 Eslatmani bekor qilish", "🚫 Cancel reminder", "🚫 Отменить напоминание"),
     "btn_inbox_rt_1h": _("1 soatdan keyin", "In 1 hour", "Через 1 час"),
     "btn_inbox_rt_3h": _("3 soatdan keyin", "In 3 hours", "Через 3 часа"),
