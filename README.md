@@ -745,3 +745,8 @@ No new menu or button: when the **🤖 AI Assistant** is on and a customer sends
 Barcha inline tugmalar `ui.Markup` orqali o'tadi: qisqa tugmalar yonma-yon (2 tadan) joylanadi, keng/toggle tugmalar to'liq qatorda qoladi.
 Ranglar (Bot API 9.4 `style`) — HAR BIR tugma rangli: 🔴 qaytish/bekor qilish/o'chirish/o'chirib qo'yish, 🟢 yoqish/saqlash/qo'shish/to'lov/tanlangan variant (✅), 🔵 qolgan hammasi (bo'limlar, tahrirlash, ro'yxatlar, sozlamalar, sahifalash, til).
 Eski Telegram klientlarida tugmalar oddiy ko'rinadi (funksiya buzilmaydi).
+
+## Boshqaruv paneli: funksiyalar holati
+
+Panel (`/start` → Panelni ochish) endi barcha funksiyalarning holatini bir blokda ko'rsatadi: Uxlayapman rejimi (vaqt oralig'i bilan), AI-Yordamchi, BIO hisoblagich (tanlangan voqea), Smart FAQ, AI Shaxsiy Bilimlar, Avtomatlashtirish (faol/jami qoida), Smart Jadval (faol/jami qoida), Smart Inbox (javobsiz suhbatlar soni) va Ism soati.
+🟢 yoqilgan · 🔴 o'chirilgan · 🔴 hali qo'shilmagan (ro'yxat bo'sh) · 🔒 tarifda yo'q. Sanoqlar bitta SQL so'rovda olinadi (`db.get_panel_overview`); xato bo'lsa panel tafsilotsiz, lekin tugmalari bilan ishlayveradi.
