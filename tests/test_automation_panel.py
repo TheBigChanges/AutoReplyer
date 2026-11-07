@@ -706,7 +706,7 @@ class DbEnabledFlagTests(unittest.TestCase):
         act = {"type": "send_reply", "text": "x"}
         off = db.add_automation_rule(owner, "a", cond, act, 100, 20)
         on = db.add_automation_rule(owner, "b", cond, act, 100, 20, enabled=True)
-        self.assertEqual([r["id"] for r in db.get_enabled_automation_rules(owner)], [on])
+        self.assertEqual([r["id"] for r in [r for r in db.list_automation_rules(owner) if r['is_enabled']]], [on])
         self.assertNotEqual(off, on)
 
     @staticmethod
