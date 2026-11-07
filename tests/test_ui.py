@@ -31,11 +31,12 @@ class StyleTests(unittest.TestCase):
             for lang in ("uz", "en", "ru"):
                 self.assertEqual(ui.style_for(i18n.T[key][lang], "x"), ui.SUCCESS, (key, lang))
 
-    def test_sections_are_blue_and_unknown_is_plain(self):
+    def test_sections_are_blue_and_every_other_button_is_blue_too(self):
         for key in ("btn_ai", "btn_autoreply", "btn_plans", "btn_inbox"):
             self.assertEqual(ui.style_for(i18n.T[key]["en"], "x"), ui.PRIMARY, key)
-        self.assertIsNone(ui.style_for("Ali", "ib_rem:5:0"))
-        self.assertIsNone(ui.style_for(i18n.T["btn_ai_roles"]["uz"], "ai_roles"))
+        self.assertEqual(ui.style_for("Ali", "ib_rem:5:0"), ui.PRIMARY)
+        self.assertEqual(ui.style_for(i18n.T["btn_ai_roles"]["uz"], "ai_roles"), ui.PRIMARY)
+        self.assertEqual(ui.style_for(i18n.T["btn_an_detail"]["uz"], "x"), ui.PRIMARY)
 
     def test_callback_rules_for_dynamic_buttons(self):
         self.assertEqual(ui.style_for("⭐ Ali ✖", "ib_unpr:5:0"), ui.DANGER)
@@ -43,8 +44,14 @@ class StyleTests(unittest.TestCase):
         self.assertEqual(ui.style_for("x", "au_cancel:1"), ui.DANGER)
         self.assertEqual(ui.style_for("x", "bc_confirm:9"), ui.SUCCESS)
         self.assertEqual(ui.style_for("x", "pay_buy:pro:1:5"), ui.SUCCESS)
-        self.assertIsNone(ui.style_for("x", "lang:uz"))
-        self.assertIsNone(ui.style_for("x", None))
+        self.assertEqual(ui.style_for("x", "lang:uz"), ui.PRIMARY)
+        self.assertEqual(ui.style_for("x", None), ui.PRIMARY)
+        self.assertEqual(ui.style_for("✅ 09:00", "ib_t:540"), ui.SUCCESS)   # tanlangan variant yashil
+        self.assertEqual(ui.style_for("09:00", "ib_t:540"), ui.PRIMARY)      # tanlanmagani ko'k
+        self.assertEqual(ui.style_for("Bekor qilish", "rmbots:no"), ui.DANGER)
+        self.assertEqual(ui.style_for("x", "bc_cancel"), ui.DANGER)
+        self.assertEqual(ui.style_for(i18n.T["btn_pay_months"]["uz"], "pay_q:pro:1"), ui.SUCCESS)
+        self.assertEqual(ui.style_for(i18n.T["ref_btn_share"]["uz"], None), ui.SUCCESS)
 
     def test_all_configured_keys_exist_in_i18n(self):
         for group in (ui._DANGER_KEYS, ui._SUCCESS_KEYS, ui._PRIMARY_KEYS, ui._WIDE_KEYS, ui._CONFIRM_KEYS):
@@ -99,9 +106,11 @@ class MarkupTests(unittest.TestCase):
         self.assertEqual(d["inline_keyboard"][0][0]["style"], "danger")
         self.assertEqual(d["inline_keyboard"][0][0]["callback_data"], "back")
 
-    def test_plain_button_has_no_style_key(self):
-        d = ui.Markup([[b("Ali", "ib_rem:5")]]).to_dict()
-        self.assertNotIn("style", d["inline_keyboard"][0][0])
+    def test_every_button_gets_a_style(self):
+        d = ui.Markup([[b("Ali", "ib_rem:5")], [B("Kanal", url="https://t.me/x")], [b("◀", "p:1"), b("1/3", "p:2")]]).to_dict()
+        for row in d["inline_keyboard"]:
+            for btn in row:
+                self.assertIn(btn.get("style"), ("primary", "success", "danger"), btn)
 
     def test_existing_style_not_overridden(self):
         btn = B(i18n.T["btn_back"]["uz"], callback_data="back", style="primary")
@@ -134,3 +143,20 @@ class RealMenusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EveryButtonColoredTests(unittest.TestCase):
+    """Foydalanuvchi talabi: botdagi HECH BIR tugma rangsiz qolmasin (bosh menyu, panel, ichki bo'limlar)."""
+
+    def test_every_i18n_button_text_has_a_style_in_all_languages(self):
+        for key, variants in i18n.T.items():
+            if key.startswith(("btn_", "panel_go_", "gate_btn_", "ref_btn_", "support_btn_")):
+                for lang, text in variants.items():
+                    self.assertIn(ui.style_for(text, None), ("primary", "success", "danger"), (key, lang))
+
+    def test_all_inline_buttons_built_by_bot_source_use_markup(self):
+        import re
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent / "bot.py").read_text(encoding="utf-8")
+        self.assertNotIn("InlineKeyboardMarkup(", src.replace("from telegram import", ""))
+        self.assertTrue(re.search(r"from ui import Markup", src))
