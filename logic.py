@@ -51,7 +51,7 @@ def parse_cooldown_input(text: str) -> float | None:
         return None
     # 1 daqiqadan kam (jumladan 0 va manfiy) qabul qilinmaydi. Kichik tolerantlik
     # float yaxlitlash xatosi ("0:01" kabi aniq 1 daqiqa) rad etilmasligi uchun.
-    if value * 60 < 1 - 1e-9:
+    if value < MIN_COOLDOWN_HOURS - 1e-9 / 60:
         return None
     return value
 
@@ -182,8 +182,6 @@ def parse_birthday_input(text: str) -> tuple[int, int] | None:
 # ---------------------------------------------------------------------------
 # Uxlash rejimi
 # ---------------------------------------------------------------------------
-DEFAULT_SLEEP_START_MINUTES = 23 * 60  # 23:00
-DEFAULT_SLEEP_END_MINUTES = 7 * 60     # 07:00
 DEFAULT_SLEEP_MESSAGE = "\U0001F634 Men hozir uxlayapman, ertalab uyg'onishim bilan albatta javob beraman!"
 
 
