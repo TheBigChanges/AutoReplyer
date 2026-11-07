@@ -51,7 +51,7 @@ class AiDbTests(unittest.TestCase):
 
     def tearDown(self):
         with _conn() as c, c.cursor() as cur:
-            for t in ("ai_usage", "ai_chat_history", "ai_chat_pause", "settings"):
+            for t in ("ai_usage", "ai_requests", "voice_attempts", "ai_chat_history", "ai_chat_pause", "settings"):
                 cur.execute(f"DELETE FROM {t} WHERE owner_user_id = %s", (self.owner,))
 
     def test_quota_stops_at_limit_and_refund_gives_back(self):
@@ -82,6 +82,49 @@ class AiDbTests(unittest.TestCase):
     def test_refund_never_goes_negative(self):
         db.refund_ai_quota(self.owner, "2026-10-11")
         self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 0)
+
+    def test_reserve_is_idempotent_per_message(self):
+        req = (self.chat, 1)
+        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req))
+        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req))  # takror: limit ikki marta sarflanmaydi
+        self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)
+        self.assertTrue(db.ai_request_seen(self.owner, self.chat, 1))
+        self.assertFalse(db.ai_request_seen(self.owner, self.chat, 2))
+
+    def test_refund_is_idempotent_per_message(self):
+        a, b = (self.chat, 1), (self.chat, 2)
+        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=a)
+        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=b)
+        db.refund_ai_quota(self.owner, "2026-10-11", request=a)
+        db.refund_ai_quota(self.owner, "2026-10-11", request=a)  # javob yo'qolgan qayta urinish
+        self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)  # b ning limiti buzilmadi
+        db.refund_ai_quota(self.owner, "2026-10-11", request=(self.chat, 3))  # band qilinmagan xabar: hech narsa qaytmaydi
+        self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)
+
+    def test_limit_hit_leaves_no_ledger_row(self):
+        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 1)))
+        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 2)))
+        self.assertFalse(db.ai_request_seen(self.owner, self.chat, 2))
+
+    def test_ledger_survives_like_a_restart_and_is_purged_when_old(self):
+        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 1))
+        self.assertTrue(db.ai_request_seen(self.owner, self.chat, 1))  # RAM'ga bog'liq emas
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("UPDATE ai_requests SET created_at = %s WHERE owner_user_id = %s", (time.time() - 10 * 86400, self.owner))
+        db.purge_old_ai_data()
+        self.assertFalse(db.ai_request_seen(self.owner, self.chat, 1))
+
+    def test_voice_attempts_stop_at_limit_and_are_never_refunded(self):
+        res = [db.try_consume_voice_attempt(self.owner, "2026-10-11", 3) for _ in range(5)]
+        self.assertEqual(res, [True, True, True, False, False])
+        self.assertTrue(db.try_consume_voice_attempt(self.owner, "2026-10-12", 3))  # keyingi kun yangi
+
+    def test_voice_attempts_never_exceeded_under_concurrency(self):
+        wins = []
+        threads = [threading.Thread(target=lambda: wins.append(db.try_consume_voice_attempt(self.owner, "2026-10-11", 7))) for _ in range(25)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertEqual(sum(wins), 7)
 
     def test_history_keeps_only_last_10_in_order(self):
         for i in range(8):
