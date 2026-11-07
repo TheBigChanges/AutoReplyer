@@ -701,33 +701,6 @@ def update_settings(owner_user_id: int, **kwargs):
 # --------------------------------------------------------------------------
 # Reply cooldown cache
 # --------------------------------------------------------------------------
-def already_replied_recently(owner_user_id: int, chat_id: int) -> bool:
-    """ESKI, atomik EMAS (tekshir-keyin-yoz). Yangi kodda try_claim_reply() ishlating."""
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT last_reply_at FROM replied_cache WHERE owner_user_id = %s AND chat_id = %s",
-            (owner_user_id, chat_id),
-        )
-        row = cur.fetchone()
-    if row is None:
-        return False
-    cooldown_hours = get_settings(owner_user_id)["cooldown_hours"]
-    return (time.time() - row[0]) < cooldown_hours * 3600
-
-
-def mark_replied(owner_user_id: int, chat_id: int):
-    """ESKI (atomik EMAS). Yangi kodda try_claim_reply() ishlating."""
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO replied_cache (owner_user_id, chat_id, last_reply_at)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (owner_user_id, chat_id) DO UPDATE SET last_reply_at = EXCLUDED.last_reply_at
-            """,
-            (owner_user_id, chat_id, time.time()),
-        )
-
-
 def try_claim_reply(owner_user_id: int, chat_id: int, cooldown_hours: float) -> float | None:
     """Javob berish huquqini ATOMIK ravishda "band qiladi" (check-then-act
     poyga holatisiz).
@@ -964,7 +937,6 @@ def expire_plans(now: float | None = None):
 # --------------------------------------------------------------------------
 # Payments v1.0 (Telegram Stars)
 # --------------------------------------------------------------------------
-PAYMENT_STATUSES = ("pending", "paid", "refunding", "refunded", "expired", "cancelled", "switched", "unmatched")
 _PAYMENT_COLS = ("id, token, user_id, kind, plan, months, stars, credit, status, charge_id, snap_plan, snap_expires, "
                  "created_at, expires_at, paid_at, refunded_at, grant_start, grant_end, grant_value, invoice_msg_id")
 
@@ -1041,30 +1013,6 @@ def get_user_plan_state(user_id: int) -> "payments.PlanState":
     if state.plan != "free" and state.expires_at is not None and state.expires_at <= time.time():
         return payments.PlanState()
     return state
-
-
-def create_payment_order(user_id: int, token: str, quote: "payments.Quote", state: "payments.PlanState",
-                         ttl_seconds: float, now: float | None = None) -> int:
-    """Yangi buyurtma yaratadi; foydalanuvchining oldingi to'lanmagan buyurtmalari bekor qilinadi (yangi invoice ularning o'rnini bosadi).
-    Buyurtma shu paytdagi tarif holati (snapshot) bilan bog'lanadi: holat o'zgarsa, to'lov rad etiladi."""
-    now = time.time() if now is None else now
-    snap_expires = int(state.expires_at) if state.expires_at is not None and state.plan != "free" else None
-
-    def work(cur):
-        cur.execute("SELECT pg_advisory_xact_lock(hashtext('payments_user'), (%s %% 2147483647)::int)", (user_id,))
-        cur.execute("UPDATE payments SET status = 'cancelled' WHERE user_id = %s AND status = 'pending'", (user_id,))
-        cur.execute(
-            """
-            INSERT INTO payments (token, user_id, kind, plan, months, stars, credit, status, snap_plan, snap_expires, created_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s) RETURNING id
-            """,
-            (token, user_id, quote.kind, quote.target, quote.months, quote.pay, quote.credit, state.plan, snap_expires, now, now + ttl_seconds),
-        )
-        pid = cur.fetchone()["id"]
-        _audit(cur, user_id, pid, "order_created", f"{quote.kind} {quote.target} {quote.months}m stars={quote.pay} credit={quote.credit}", now)
-        return pid
-
-    return _run_tx(work)
 
 
 def create_or_reuse_order(user_id: int, token: str, quote: "payments.Quote", state: "payments.PlanState", ttl_seconds: float,
@@ -1148,13 +1096,6 @@ def set_invoice_message(token: str, message_id: int) -> None:
         cur.execute("UPDATE payments SET invoice_msg_id = %s WHERE token = %s", (message_id, token))
 
 
-def list_pending_invoice_msgs(user_id: int):
-    """Foydalanuvchining to'lanmagan buyurtmalari invoice xabarlari (yangi invoice yuborilganda eskilarini o'chirish uchun)."""
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT invoice_msg_id FROM payments WHERE user_id = %s AND status = 'pending' AND invoice_msg_id IS NOT NULL", (user_id,))
-        return [r[0] for r in cur.fetchall()]
-
-
 def get_reusable_order(user_id: int, plan: str, months: int, stars: int, snap_plan: str, snap_expires: int | None, now: float | None = None):
     """Shu foydalanuvchining aynan shu (tarif, muddat, summa)dagi, hali amal qilayotgan, invoice'i yuborilgan va tarif holati o'zgarmagan
     buyurtmasi — yangi buyurtma yaratmasdan qayta ishlatiladi."""
@@ -1205,7 +1146,7 @@ def cancel_order(token: str, user_id: int):
         return dict(row) if row else None
 
 
-def list_refunding(older_than_seconds: float = 0.0):
+def list_refunding():
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(f"SELECT {_PAYMENT_COLS} FROM payments WHERE status = 'refunding' ORDER BY id")
         return [dict(r) for r in cur.fetchall()]
@@ -1608,15 +1549,6 @@ def get_user_ids_after(last_user_id: int, limit: int = 200):
         return [row[0] for row in cur.fetchall()]
 
 
-def get_all_user_ids():
-    """Eslatma: faqat /stats kabi kichik hajmli ehtiyojlar uchun — katta
-    ro'yxatlarni (masalan reklama yuborishda) get_user_ids_after() bilan
-    bo'lib-bo'lib o'qing."""
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT user_id FROM users ORDER BY user_id")
-        return [row[0] for row in cur.fetchall()]
-
-
 def get_failed_user_ids_after(source_job_id: int, last_user_id: int, limit: int = 200):
     """Retry job uchun: `source_job_id`da muvaffaqiyatsiz bo'lgan
     foydalanuvchilardan `last_user_id`dan kattalarini qaytaradi. Bu bazadan
@@ -1930,15 +1862,6 @@ def list_automation_rules(owner_user_id: int) -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
-def get_enabled_automation_rules(owner_user_id: int) -> list[dict]:
-    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
-            f"SELECT {_AUTOMATION_COLS} FROM automation_rules WHERE owner_user_id = %s AND is_enabled = TRUE ORDER BY priority, id",
-            (owner_user_id,),
-        )
-        return [dict(r) for r in cur.fetchall()]
-
-
 def count_automation_rules(owner_user_id: int) -> int:
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM automation_rules WHERE owner_user_id = %s", (owner_user_id,))
@@ -2051,17 +1974,6 @@ def set_faq_entry_enabled(owner_user_id: int, entry_id: int, enabled: bool) -> b
         return cur.rowcount > 0
 
 
-def toggle_faq_entry(owner_user_id: int, entry_id: int) -> bool | None:
-    """Yozuvni yoqadi/o'chiradi; yangi holatni qaytaradi (yozuv topilmasa — None)."""
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE faq_entries SET is_enabled = NOT is_enabled WHERE owner_user_id = %s AND id = %s RETURNING is_enabled",
-            (owner_user_id, entry_id),
-        )
-        row = cur.fetchone()
-        return row[0] if row else None
-
-
 # --------------------------------------------------------------------------
 # AI Knowledge Base (har bir egasining ma'lumotlari alohida; hamma so'rov owner_user_id bilan cheklangan)
 # --------------------------------------------------------------------------
@@ -2156,17 +2068,6 @@ def set_kb_entry_enabled(owner_user_id: int, entry_id: int, enabled: bool) -> bo
             (bool(enabled), owner_user_id, entry_id),
         )
         return cur.rowcount > 0
-
-
-def toggle_kb_entry(owner_user_id: int, entry_id: int) -> bool | None:
-    """Yozuvni yoqadi/o'chiradi; yangi holatni qaytaradi (yozuv topilmasa — None)."""
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE knowledge_entries SET is_enabled = NOT is_enabled WHERE owner_user_id = %s AND id = %s RETURNING is_enabled",
-            (owner_user_id, entry_id),
-        )
-        row = cur.fetchone()
-        return row[0] if row else None
 
 
 def get_bio_ad_candidates():
@@ -2620,11 +2521,6 @@ def set_bio_gate_flag(owner_user_id: int, value: bool) -> bool:
             (bool(value), owner_user_id, bool(value)),
         )
         return cur.rowcount > 0
-
-
-def mark_name_clock_applied(owner_user_id: int, key: str):
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("UPDATE settings SET name_clock_applied = %s WHERE owner_user_id = %s", (key, owner_user_id))
 
 
 def mark_name_clock_applied_bulk(pairs):
@@ -3136,9 +3032,9 @@ def retry_on_disconnect(fn):
 
 
 for _name in (
-    "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base", "mark_name_clock_applied",
+    "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
-    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "get_enabled_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_user_plan_state", "get_payment", "get_payment_by_charge", "list_user_payments", "list_recent_payments", "list_unprocessed_payment_events", "get_payment_recon_mark", "get_faq_entry", "count_faq_entries",
+    "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_user_plan_state", "get_payment", "get_payment_by_charge", "list_user_payments", "list_recent_payments", "list_unprocessed_payment_events", "get_payment_recon_mark", "get_faq_entry", "count_faq_entries",
     "get_analytics_rows", "release_inbox_digest", "finish_inbox_digest", "get_inbox_settings", "inbox_enabled", "get_pending_chats", "get_pending_stats", "count_priority_chats", "list_inbox_reminders", "get_inbox_chat", "count_inbox_reminders_for_date", "list_inbox_owners", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
