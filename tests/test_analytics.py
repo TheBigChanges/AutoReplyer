@@ -247,7 +247,7 @@ class CountingFlowTests(unittest.TestCase):
             patch.object(db, "release_reply_claim"),
             patch.object(db, "is_ai_paused", return_value=False),
             patch.object(db, "pause_ai_chat"),
-            patch.object(db, "try_consume_ai_quota", return_value=ai_quota),
+            patch.object(db, "reserve_ai_quota", return_value=("reserved" if ai_quota else "limit_exhausted")),
             patch.object(db, "ai_request_seen", return_value=False),
             patch.object(db, "mark_ai_request", return_value=True),
             patch.object(db, "track_ai_request", return_value=True),
