@@ -732,7 +732,9 @@ No new menu or button: when the **🤖 AI Assistant** is on and a customer sends
 - If the audio cannot be understood, or Gemini/Telegram fails, the daily AI request is refunded and the regular auto-reply text is sent. If you start writing in the chat while the voice is being transcribed, nothing is sent and the request is refunded.
 - A voice message with a **caption** is still transcribed first; the caption is passed to the AI as extra context. Voice messages (with or without caption) never trigger Automation or Smart FAQ rules.
 - The transcript has its own limit (4000 characters, cut at a sentence boundary) separate from the 1000-character AI reply limit, so the end of a long question is not lost.
-- A repeated update for the same voice message is answered (and transcribed) only once.
+- A repeated update for the same voice message is answered (and transcribed) only once — also after a restart: the `(owner, chat, message)` of every AI request is kept in PostgreSQL (`ai_requests`, purged after 2 days).
+- **Transcription attempt cap:** Gemini calls for speech→text are limited to **100 per owner per day** (`VOICE_ATTEMPTS_DAILY_LIMIT`, atomic in PostgreSQL, table `voice_attempts`). Failed attempts count and are never refunded, so a flood of unintelligible audio cannot run up API costs while the normal AI limit is refunded. After the cap the regular auto-reply text is sent without calling Gemini. The admin is exempt.
+- Reserving and refunding the daily AI limit is idempotent per message (ledger), so a retried refund after a database error can never refund twice or lose the refund.
 - **Privacy:** the audio is downloaded into memory, sent to Gemini and never saved to disk or logged. The recognized text is stored in the AI conversation history under the usual retention rules. The AI settings screen says so.
 - Costs: each voice reply makes two Gemini requests (speech→text, text→reply); watch real API usage.
 
