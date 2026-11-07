@@ -1485,6 +1485,7 @@ async def _display_name_for(bot, user_id: int) -> str:
     return f"ID {user_id}"
 
 
+VOICE_ATTEMPTS_DAILY_LIMIT = 100  # kuniga Gemini'ga yuboriladigan ovoz transkripsiyasi urinishlari (muvaffaqiyatsizlari ham; limit qaytarilsa ham sanaladi)
 AI_DAILY_LIMIT = 50  # Ultra tarifida kuniga AI javoblar soni (admin uchun limit yo'q)
 AI_HISTORY_MESSAGES = 10
 AI_INFO_MAX_LENGTH = 1000
@@ -2242,6 +2243,20 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
     business_connection_id = bm.business_connection_id
     day = str(today_tashkent())
     unlimited = bool(ADMIN_ID) and owner_id == ADMIN_ID
+    # Limit band qilish/qaytarish shu xabar bo'yicha idempotent (DB daftari): ID bo'lmasa — oddiy hisoblagich
+    request = (chat_id, incoming_id) if isinstance(incoming_id, int) else None
+
+    def refund() -> bool:
+        """Limitni qaytaradi; True — qaytarildi. Daftar bo'yicha idempotent bo'lgani uchun DB xatosida qayta urinish xavfsiz
+        (natija noma'lum bo'lib qolsa ham ikki marta qaytarilmaydi). Xabar ID'si yo'q bo'lsa — qayta urinmaymiz."""
+        for _ in range(3 if request else 1):
+            try:
+                db.refund_ai_quota(owner_id, day, request=request)
+                return True
+            except Exception:
+                logger.exception("AI limitini qaytarib bo'lmadi (owner=%s)", owner_id)
+        return False
+
     consumed = False   # kunlik limitdan bitta foydalanish band qilinganmi (hali qaytarilmagan)
     delivered = False  # AI javobi mijozga muvaffaqiyatli yuborildimi
     try:
@@ -2255,26 +2270,33 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 _mark_ai_answered(owner_id, chat_id, incoming_id)
                 await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",voice-unsupported")
                 return
+            if request is not None and db.ai_request_seen(owner_id, *request):
+                return  # bu xabar bilan AI so'rovi oldin boshlangan (jarayon qayta ishga tushgan bo'lsa ham): takroriy xarajat yo'q
             if not unlimited:
-                if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT):
+                if not db.try_consume_ai_quota(owner_id, day, AI_DAILY_LIMIT, request=request):
                     await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-limit")
                     return
                 consumed = True
 
+            if voice is not None and not unlimited and not db.try_consume_voice_attempt(owner_id, day, VOICE_ATTEMPTS_DAILY_LIMIT):
+                # kunlik transkripsiya urinishlari tugagan (muvaffaqiyatsizlari ham sanaladi): Gemini'ga yuborilmaydi
+                if consumed:
+                    consumed = not refund()
+                _mark_ai_answered(owner_id, chat_id, incoming_id)
+                await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",voice-attempts")
+                return
             if voice is not None:
                 caption = text  # ovozga yozilgan izoh (bo'lsa) — qo'shimcha kontekst
                 text = await transcribe_business_voice(bot, voice)
                 # Transkripsiya davomida egasi suhbatga aralashgan yoki AI o'chirilgan/sozlamalar o'zgargan bo'lishi mumkin
                 if db.is_ai_paused(owner_id, chat_id) or not ai_reply_still_allowed(owner_id):
                     if consumed:
-                        consumed = False
-                        db.refund_ai_quota(owner_id, day)
+                        consumed = not refund()
                     return
                 if not text:
                     # tushunarsiz audio yoki xato: AI limiti qaytariladi, avvaldan mavjud zaxira avtojavob ketadi
                     if consumed:
-                        consumed = False
-                        db.refund_ai_quota(owner_id, day)
+                        consumed = not refund()
                     _mark_ai_answered(owner_id, chat_id, incoming_id)  # takroriy update qayta transkripsiya (xarajat) qilmasin
                     await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",voice-failed")
                     return
@@ -2297,14 +2319,12 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
             # boshlangan bo'lishi mumkin: joriy sozlamalar bo'yicha qayta tekshiramiz (eski so'rov yangi sozlamani buzmaydi).
             if db.is_ai_paused(owner_id, chat_id) or not ai_reply_still_allowed(owner_id):
                 if consumed:
-                    consumed = False
-                    db.refund_ai_quota(owner_id, day)
+                    consumed = not refund()
                 logger.info("AI javobi bekor qilindi: egasi yozgan yoki sozlamalar o'zgargan (owner=%s, chat=%s)", owner_id, chat_id)
                 return
             if not answer:
                 if consumed:
-                    consumed = False
-                    db.refund_ai_quota(owner_id, day)
+                    consumed = not refund()
                 if _ai_answered_message(owner_id, chat_id, incoming_id):
                     return  # AI shu aniq xabarga allaqachon javob bergan: zaxira matn ikkinchi javob bo'lib ketmasin
                 await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-failed")
@@ -2325,8 +2345,7 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                     db.add_ai_messages(owner_id, chat_id, [("user", text)], keep=AI_HISTORY_MESSAGES)
                     return
                 if consumed:
-                    consumed = False
-                    db.refund_ai_quota(owner_id, day)
+                    consumed = not refund()
                 logger.warning("AI javobi yuborilmadi (owner=%s, chat=%s): %s", owner_id, chat_id, e)
                 return
             delivered = True  # javob ketdi: bundan keyingi xatolar limitni qaytarmaydi
@@ -2341,10 +2360,7 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
         # Kutilmagan xato (Python/PostgreSQL), bekor qilish yoki boshqa chiqish yo'li: javob yuborilmagan bo'lsa,
         # band qilingan kunlik limit qaytariladi. Allaqachon qaytarilgan bo'lsa (`consumed` False) — ikki marta emas.
         if consumed and not delivered:
-            try:
-                db.refund_ai_quota(owner_id, day)
-            except Exception:
-                logger.exception("AI limitini qaytarib bo'lmadi (owner=%s)", owner_id)
+            refund()
 
 
 async def ai_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
