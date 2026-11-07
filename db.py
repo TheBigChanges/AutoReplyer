@@ -188,6 +188,8 @@ def init_db():
         cur.execute("ALTER TABLE ai_requests ADD COLUMN IF NOT EXISTS updated_at DOUBLE PRECISION NOT NULL DEFAULT 0")
         cur.execute("ALTER TABLE ai_requests ADD COLUMN IF NOT EXISTS day TEXT NOT NULL DEFAULT ''")
         cur.execute("ALTER TABLE ai_requests ADD COLUMN IF NOT EXISTS counted BOOLEAN NOT NULL DEFAULT TRUE")
+        # recover_orphaned_ai_requests() har 60 soniyada eskirgan `reserved` yozuvlarni qidiradi: qisman indeks faqat shularni qamraydi
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_requests_recovery ON ai_requests (updated_at) WHERE state = 'reserved'")
         # Voice AI: Gemini'ga yuborilgan transkripsiya urinishlari (muvaffaqiyatsizlari ham) — qaytarilmaydi
         cur.execute(
             """
@@ -2268,18 +2270,18 @@ def _claim_ai_request(cur, owner_user_id: int, request: tuple, day: str, counted
     return "recovered" if cur.fetchone() is not None else "duplicate"
 
 
-def try_consume_ai_quota(owner_user_id: int, day: str, limit: int, request: tuple | None = None) -> bool:
-    """Bugungi AI javoblar limitidan bittasini ATOMIK band qiladi (bitta tranzaksiya).
-    request=(chat_id, message_id) berilsa, band qilish shu xabar bo'yicha idempotent: bir xabar uchun limit ikki marta
-    sarflanmaydi. Jarayon to'xtab qolgan eskirgan `reserved` so'rov qayta olinadi (limit allaqachon band — qayta sarflanmaydi).
-    True — ruxsat berildi; False — limit tugagan (yoki bu xabar allaqachon qayta ishlangan/ishlanmoqda)."""
+def reserve_ai_quota(owner_user_id: int, day: str, limit: int, request: tuple | None = None) -> str:
+    """Bugungi AI javoblar limitidan bittasini ATOMIK band qiladi (bitta tranzaksiya). Natija:
+      'reserved'        — limit band qilindi (yangi so'rov);
+      'recovered'       — jarayon to'xtagan eskirgan `reserved` so'rov qayta olindi (limit allaqachon band — qayta sarflanmaydi);
+      'duplicate'       — bu xabarni boshqa jarayon/oqim allaqachon olgan yoki qayta ishlagan: javob YUBORILMAYDI (zaxira matn ham);
+      'limit_exhausted' — kunlik limit tugagan: faqat shu holatda zaxira avtojavob yuboriladi.
+    request=(chat_id, message_id) berilsa, band qilish shu xabar bo'yicha idempotent: bir xabar uchun limit ikki marta sarflanmaydi."""
     with get_conn() as conn, conn.cursor() as cur:
         if request is not None:
             outcome = _claim_ai_request(cur, owner_user_id, request, day, True)
-            if outcome == "duplicate":
-                return False
-            if outcome == "recovered":
-                return True
+            if outcome in ("duplicate", "recovered"):
+                return outcome
         cur.execute(
             """
             INSERT INTO ai_usage (owner_user_id, day, count) VALUES (%s, %s, 1)
@@ -2295,8 +2297,8 @@ def try_consume_ai_quota(owner_user_id: int, day: str, limit: int, request: tupl
                     "DELETE FROM ai_requests WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s",
                     (owner_user_id, request[0], request[1]),
                 )
-            return False
-        return True
+            return "limit_exhausted"
+        return "reserved"
 
 
 def track_ai_request(owner_user_id: int, request: tuple, day: str) -> bool:
