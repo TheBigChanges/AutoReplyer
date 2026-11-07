@@ -371,8 +371,6 @@ class _PanelBase(_Base):
                 "id": i, "owner_user_id": owner, "question": "Q", "keywords": ["k"], "answer": "A", "is_enabled": True}}),
             ("set_faq_entry_enabled", {"return_value": True}),
             ("set_kb_entry_enabled", {"return_value": True}),
-            ("toggle_faq_entry", {"return_value": True}),
-            ("toggle_kb_entry", {"return_value": True}),
         ):
             patcher = patch.object(db, name, **kwargs)
             self.mocks[name] = patcher.start()
@@ -613,7 +611,7 @@ class TestExplicitOnOffButtons(_PanelBase):
             q = self.press(data)
             self.assertTrue(q.edit_message_text.await_count, data)  # joriy holatni ko'rsatadi, yiqilmaydi
         self.mocks["update_settings"].assert_not_called()
-        for name in ("set_faq_entry_enabled", "set_kb_entry_enabled", "toggle_faq_entry", "toggle_kb_entry"):
+        for name in ("set_faq_entry_enabled", "set_kb_entry_enabled"):
             self.mocks[name].assert_not_called()
 
     def test_menus_carry_the_explicit_action_for_the_current_state(self):
