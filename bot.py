@@ -2969,26 +2969,68 @@ async def inbox_reminder_job(context: ContextTypes.DEFAULT_TYPE):
             logger.exception("Smart Inbox: eslatma xatosi (id=%s)", rem.get("id"))
 
 
+def build_feature_status(owner_id: int, s: dict, plan: str, lang: str) -> str:
+    """Panel: barcha funksiyalarning holati (🟢 yoqilgan / 🔴 o'chirilgan / 🔒 tarifda yo'q) va qisqa tafsilot. Hisob-kitob
+    xatosi paneldagi tugmalarni hech qachon buzmaydi: tafsilotsiz, faqat yoqilgan/o'chirilgan holati ko'rsatiladi."""
+    try:
+        ov = db.get_panel_overview(owner_id)
+    except Exception:
+        logger.warning("Panel holatini o'qib bo'lmadi (owner=%s)", owner_id, exc_info=True)
+        ov = None
+
+    def line(key: str, state: str, detail: str | None = None) -> str:
+        return f"{t(lang, 'pnl_' + key)} — {state}" + (f" · {detail}" if detail else "")
+
+    def switch(key: str, feature: str | None, on: bool, detail: str | None = None) -> str:
+        if feature is not None and not plan_allows(owner_id, plan, feature):
+            return line(key, t(lang, "pnl_locked"))
+        return line(key, t(lang, "pnl_on"), detail) if on else line(key, t(lang, "pnl_off"))
+
+    def counted(key: str, feature: str | None, flag: bool, total, active, detail_key: str) -> str:
+        if feature is not None and not plan_allows(owner_id, plan, feature):
+            return line(key, t(lang, "pnl_locked"))
+        if ov is None:
+            return line(key, t(lang, "pnl_on" if flag else "pnl_off"))
+        if not total:
+            return line(key, t(lang, "pnl_empty"))
+        if not flag or not active:
+            return line(key, t(lang, "pnl_off"))
+        return line(key, t(lang, "pnl_on"), t(lang, detail_key, n=total, a=active))
+
+    target = s.get("bio_countdown_target")
+    sleep_detail = t(lang, "pnl_d_sleep", start=inbox.format_minutes(s.get("sleep_start_minutes", 1380)), end=inbox.format_minutes(s.get("sleep_end_minutes", 420)))
+    lines = [
+        switch("sleep", None, bool(s.get("sleep_mode_enabled")), sleep_detail),
+        switch("ai", "ai", bool(s.get("ai_enabled"))),
+        switch("bio", "bio", bool(target), bio_event_label(target, lang) if target else None),
+        counted("faq", "faq", s.get("faq_enabled", True), ov and ov["faq_total"], ov and ov["faq_active"], "pnl_d_faq"),
+        counted("kb", "kb", s.get("kb_enabled", True), ov and ov["kb_total"], ov and ov["kb_active"], "pnl_d_kb"),
+        counted("automation", "automation", True, ov and ov["au_total"], ov and ov["au_active"], "pnl_d_automation"),
+        counted("sched", None, s.get("scheduler_enabled", True), ov and ov["sc_total"], ov and ov["sc_active"], "pnl_d_sched"),
+        switch("inbox", None, bool(ov and ov["inbox_enabled"]) if ov else False,
+               t(lang, "pnl_d_inbox", n=ov["inbox_pending"]) if ov and ov["inbox_enabled"] else None),
+    ]
+    if name_clock_allowed(owner_id):
+        lines.append(switch("clock", None, bool(s.get("name_clock_enabled"))))
+    return t(lang, "pnl_title") + "\n" + "\n".join(lines)
+
+
 def build_panel(owner_id: int):
     lang = get_lang(owner_id)
     s = db.get_settings(owner_id)
     status_line = t(lang, "panel_offline" if s["offline"] else "panel_online")
     toggle_label = t(lang, "panel_go_online" if s["offline"] else "panel_go_offline")
     toggle_data = "status_online" if s["offline"] else "status_offline"  # aniq amal: eski tugma qayta bosilsa holat teskarilanmaydi
-    sleep_line = t(lang, "panel_sleep_on" if s.get("sleep_mode_enabled") else "panel_sleep_off")
-
     ai_on = bool(s.get("ai_enabled"))
-    ai_line = t(lang, "panel_ai_on" if ai_on else "panel_ai_off")
+    plan = plan_of(owner_id)
     message_line = t(lang, "panel_ai_message") if ai_on else auto_reply_text_for(s, lang)[:MENU_TEXT_PREVIEW_CHARS]
     text = t(
         lang, "panel",
         status=status_line,
         cooldown=format_cooldown(s["cooldown_hours"], lang),
         message=message_line,
-        sleep=sleep_line,
-        ai=ai_line,
+        features=build_feature_status(owner_id, s, plan, lang),
     )
-    plan = plan_of(owner_id)
     keyboard = [
         [InlineKeyboardButton(toggle_label, callback_data=toggle_data)],
         [InlineKeyboardButton(t(lang, "btn_autoreply"), callback_data="ar_menu")],
