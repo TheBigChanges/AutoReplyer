@@ -67,7 +67,7 @@ def is_active(state: PlanState, now: float) -> bool:
     return state.plan in STARS_PRICE_1M and (state.expires_at is None or state.expires_at > now)
 
 
-def is_unlimited(state: PlanState, now: float) -> bool:
+def is_unlimited(state: PlanState) -> bool:
     return state.plan in STARS_PRICE_1M and state.expires_at is None
 
 
@@ -93,7 +93,7 @@ def quote(state: PlanState, target: str, months: int, now: float, add_months) ->
     """Tanlangan tarif va muddat uchun hisob-kitob. `add_months(ts, n)` — n oy keyingi vaqt (taqvim bo'yicha).
     Muddatsiz pullik tarifda sotib olish mumkin emas (PaymentError('unlimited'))."""
     price = stars_price(target, months)
-    if is_unlimited(state, now):
+    if is_unlimited(state):
         raise PaymentError("unlimited")
 
     if not is_active(state, now):
@@ -166,7 +166,7 @@ def grant(state: PlanState, snapshot_ok: bool, kind: str, plan: str, months: int
         new = apply_order(state, kind, plan, months, stars, credit, now, add_months)
         extended = kind == "extend" and state.plan == plan and state.expires_at is not None
         return Grant(new, state.expires_at if extended else now, new.expires_at)
-    if is_unlimited(state, now):
+    if is_unlimited(state):
         return Grant(state, now, now, True)
     price = stars_price(plan, months)
     period_days = _days(now, add_months(now, months))
