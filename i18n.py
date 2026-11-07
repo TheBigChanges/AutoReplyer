@@ -607,6 +607,18 @@ T: dict[str, dict] = {
         "неясное совпадение — ответ из FAQ не отправляется.",
     ),
     "ai_info_empty": _("kiritilmagan", "not set", "не указано"),
+    "handoff_btn_on": _("🔔 Inson bilan bog'lashni yoqish", "🔔 Enable human handoff", "🔔 Включить передачу человеку"),
+    "handoff_btn_off": _("🔕 Inson bilan bog'lashni o'chirish", "🔕 Disable human handoff", "🔕 Отключить передачу человеку"),
+    "handoff_owner_notice": _(
+        "🔔 Smart Handoff\n\n👤 Mijoz: {customer}\n💬 Suhbat ID: {chat}\n\nMijoz siz bilan shaxsan gaplashishni so'radi. Bot ushbu suhbatdagi avtomatik javoblarni to'xtatdi. Suhbatga o'zingiz javob bering.",
+        "🔔 Smart Handoff\n\n👤 Contact: {customer}\n💬 Chat ID: {chat}\n\nThe contact asked to speak to a person. Automatic replies in this chat are paused. Please reply personally.",
+        "🔔 Smart Handoff\n\n👤 Клиент: {customer}\n💬 ID чата: {chat}\n\nКлиент попросил связаться с человеком. Автоответы в этом чате приостановлены. Ответьте лично.",
+    ),
+    "handoff_customer_ack": _(
+        "Xabaringiz akkaunt egasiga yetkazildi. U imkon topishi bilan sizga shaxsan javob beradi.",
+        "I've notified the account owner. They will reply personally when available.",
+        "Я уведомил владельца аккаунта. Он ответит вам лично, когда сможет.",
+    ),
     "btn_ai_roles": _("\U0001F3AD Rolni tanlash", "\U0001F3AD Choose role", "\U0001F3AD Выбрать роль"),
     "btn_ai_info": _("\U0001F4DD Ma'lumot va uslub", "\U0001F4DD Info and style", "\U0001F4DD Информация и стиль"),
     "ai_roles_menu": _(

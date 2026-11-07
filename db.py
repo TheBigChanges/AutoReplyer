@@ -54,6 +54,7 @@ ALLOWED_SETTINGS_FIELDS = {
     "ai_enabled",
     "ai_info",
     "ai_role",
+    "handoff_enabled",
     "name_clock_enabled",
     "name_clock_tz",
     "name_clock_first",
@@ -168,6 +169,21 @@ def init_db():
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_enabled BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_info TEXT")
         cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_role TEXT")
+        cur.execute("ALTER TABLE settings ADD COLUMN IF NOT EXISTS handoff_enabled BOOLEAN NOT NULL DEFAULT FALSE")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS handoff_chats (
+                owner_user_id BIGINT NOT NULL,
+                chat_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL,
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at DOUBLE PRECISION NOT NULL,
+                updated_at DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY (owner_user_id, chat_id)
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_handoff_chats_age ON handoff_chats (updated_at)")
         # Har bir AI so'rovi uchun band qilingan limit daftari: limitni band qilish/qaytarish xabar bo'yicha idempotent,
         # takroriy xabar himoyasi esa qayta ishga tushishdan keyin ham saqlanadi.
         cur.execute(
@@ -2435,6 +2451,69 @@ def get_ai_history(owner_user_id: int, chat_id: int, limit: int = 10, max_age_se
         return [dict(r) for r in cur.fetchall()]
 
 
+
+# Smart Handoff: no message contents, only owner/chat IDs and activation state.
+HANDOFF_RETENTION_SECONDS = 14 * 86400
+
+
+def handoff_active(owner_id: int, chat_id: int) -> bool:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM handoff_chats WHERE owner_user_id = %s AND chat_id = %s AND active",
+            (owner_id, chat_id),
+        )
+        return cur.fetchone() is not None
+
+
+def claim_handoff(owner_id: int, chat_id: int, message_id: int) -> bool:
+    """Atomically activate handoff once per chat. False means an existing active handoff.
+
+    Reopening after owner reply requires a NEWER incoming message ID.
+    """
+    now = time.time()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO handoff_chats (owner_user_id, chat_id, message_id, active, created_at, updated_at)
+            VALUES (%s, %s, %s, TRUE, %s, %s)
+            ON CONFLICT (owner_user_id, chat_id) DO UPDATE
+            SET message_id = EXCLUDED.message_id, active = TRUE, updated_at = EXCLUDED.updated_at
+            WHERE NOT handoff_chats.active AND handoff_chats.message_id < EXCLUDED.message_id
+            RETURNING 1
+            """,
+            (owner_id, chat_id, message_id, now, now),
+        )
+        return cur.fetchone() is not None
+
+
+def close_handoff(owner_id: int, chat_id: int) -> bool:
+    """Owner's genuine reply ends the handoff; their existing 2-hour AI pause still applies."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE handoff_chats SET active = FALSE, updated_at = %s "
+            "WHERE owner_user_id = %s AND chat_id = %s AND active RETURNING 1",
+            (time.time(), owner_id, chat_id),
+        )
+        return cur.fetchone() is not None
+
+
+def release_handoff(owner_id: int, chat_id: int, message_id: int) -> None:
+    """Definite failure notifying the owner: do not strand this chat in handoff."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE handoff_chats SET active = FALSE, updated_at = %s "
+            "WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s AND active",
+            (time.time(), owner_id, chat_id, message_id),
+        )
+
+
+def purge_old_handoffs(age_seconds: float = HANDOFF_RETENTION_SECONDS) -> int:
+    """Delete aged handoff metadata, including inactive rows."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM handoff_chats WHERE updated_at < %s", (time.time() - age_seconds,))
+        return cur.rowcount
+
+
 def pause_ai_chat(owner_user_id: int, chat_id: int, seconds: float):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -2464,6 +2543,7 @@ def delete_ai_data(owner_user_id: int):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM ai_chat_history WHERE owner_user_id = %s", (owner_user_id,))
         cur.execute("DELETE FROM ai_chat_pause WHERE owner_user_id = %s", (owner_user_id,))
+        cur.execute("DELETE FROM handoff_chats WHERE owner_user_id = %s", (owner_user_id,))
         # bitta DELETE ... RETURNING: o'chirilgan `reserved` yozuvlarning limiti aynan bir marta qaytariladi
         cur.execute("DELETE FROM ai_requests WHERE owner_user_id = %s RETURNING state, counted, day", (owner_user_id,))
         refunds: dict = {}

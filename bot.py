@@ -52,6 +52,7 @@ import analytics
 import automation
 import db
 import inbox
+import handoff
 from ui import Markup
 import payments
 from i18n import DEFAULT_LANG, LANG_NAMES, LANGS, all_defaults, is_lang, t
@@ -2067,6 +2068,8 @@ def build_ai_menu(owner_id: int, notice: str | None = None):
         [InlineKeyboardButton(t(lang, "btn_disable" if enabled else "btn_enable"), callback_data="ai_off" if enabled else "ai_on")],
         [InlineKeyboardButton(t(lang, "btn_ai_roles"), callback_data="ai_roles")],
         [InlineKeyboardButton(t(lang, "btn_ai_info"), callback_data="ai_edit_info")],
+        [InlineKeyboardButton(t(lang, "handoff_btn_off" if s.get("handoff_enabled") else "handoff_btn_on"),
+                              callback_data="ai_handoff_off" if s.get("handoff_enabled") else "ai_handoff_on")],
         [InlineKeyboardButton(t(lang, "btn_back"), callback_data="open_panel")],
     ]
     return text, Markup(keyboard)
@@ -2258,6 +2261,63 @@ def _mark_ledger(owner_id: int, request, state: str) -> None:
         logger.exception("AI so'rovi holatini yozib bo'lmadi (%s)", state)
 
 
+
+def handoff_customer_lang(text: str, fallback: str = "uz") -> str:
+    """Only select canned response language; no text is sent to any additional AI service."""
+    if any("\u0400" <= c <= "\u04ff" for c in text):
+        return "ru"
+    if handoff.detect_handoff_reason(text) and any(
+        word in text.lower().split() for word in ("speak", "talk", "human", "agent", "owner", "connect")
+    ):
+        return "en"
+    return "uz" if fallback not in ("en", "ru") else fallback
+
+
+async def maybe_handoff(bot, bm, owner_id: int, chat_id: int, text: str, owner_lang: str = "uz") -> bool:
+    """For explicit person requests, notify owner and acknowledge to customer.
+
+    Returns True when the chat is (or became) handed off. Notification is
+    at most once per open handoff and never includes raw customer text.
+    """
+    if db.handoff_active(owner_id, chat_id):
+        return True
+    if handoff.detect_handoff_reason(text) is None:
+        return False
+    incoming_id = getattr(bm, "message_id", None)
+    if not isinstance(incoming_id, int):
+        return False
+    if not db.claim_handoff(owner_id, chat_id, incoming_id):
+        return db.handoff_active(owner_id, chat_id)
+    customer = getattr(bm, "from_user", None)
+    name = " ".join(part for part in (
+        getattr(customer, "first_name", None), getattr(customer, "last_name", None)
+    ) if isinstance(part, str) and part.strip()).strip()[:64] or str(chat_id)
+    try:
+        await bot.send_message(
+            chat_id=owner_id,
+            text=t(owner_lang, "handoff_owner_notice", customer=name, chat=chat_id),
+        )
+    except TelegramError as exc:
+        if not _send_outcome_unknown(exc):
+            # The owner was certainly not notified. Restore ordinary AI flow.
+            db.release_handoff(owner_id, chat_id, incoming_id)
+            return False
+        # Delivery is uncertain; leave handoff active rather than send duplicates.
+        logger.warning("Smart Handoff: owner notification delivery uncertain (owner=%s, chat=%s)", owner_id, chat_id)
+        return True
+    try:
+        if db.handoff_active(owner_id, chat_id):
+            await bot.send_message(
+                chat_id=chat_id,
+                text=t(handoff_customer_lang(text, owner_lang), "handoff_customer_ack"),
+                business_connection_id=bm.business_connection_id,
+            )
+    except TelegramError as exc:
+        logger.warning("Smart Handoff: customer acknowledgement failed (owner=%s, chat=%s): %s",
+                       owner_id, chat_id, type(exc).__name__)
+    return True
+
+
 async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings: dict, fallback_text: str, label: str, voice=None):
     """AI javobini yaratib yuboradi. Limit tugasa yoki xato bo'lsa — odatiy matnli avtojavob (zaxira).
     voice berilsa (Voice AI): ovoz avval matnga aylantiriladi (kunlik limit band qilingach, suhbat qulfi ichida), so'ng oddiy AI oqimi."""
@@ -2289,6 +2349,8 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
         async with _chat_lock(owner_id, chat_id):
             if db.is_ai_paused(owner_id, chat_id) or not ai_reply_still_allowed(owner_id):
                 return  # navbat kutayotganda egasi chatga yozgan yoki sozlamalar o'zgargan: AI ham, zaxira matn ham ketmaydi
+            if settings.get("handoff_enabled") and db.handoff_active(owner_id, chat_id):
+                return
             if _ai_answered_message(owner_id, chat_id, incoming_id):
                 return  # shu kiruvchi xabarga AI allaqachon javob bergan (takroriy update): na yangi so'rov, na limit, na zaxira matn
             if voice is not None and not voice_acceptable(voice):
@@ -2340,6 +2402,12 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 if caption:
                     text = f"{text}\n\n[Caption: {caption}]"
 
+            if settings.get("handoff_enabled") and await maybe_handoff(bot, bm, owner_id, chat_id, text, get_lang(owner_id)):
+                if consumed:
+                    consumed = not refund()
+                _mark_ai_answered(owner_id, chat_id, incoming_id)
+                return
+
             history = db.get_ai_history(owner_id, chat_id, AI_HISTORY_MESSAGES)
             history.append({"role": "user", "text": text})
             info = db.get_user(owner_id) or {}
@@ -2365,6 +2433,10 @@ async def run_ai_reply(bot, bm, owner_id: int, chat_id: int, text: str, settings
                 if _ai_answered_message(owner_id, chat_id, incoming_id):
                     return  # AI shu aniq xabarga allaqachon javob bergan: zaxira matn ikkinchi javob bo'lib ketmasin
                 await send_auto_reply(bot, bm, owner_id, chat_id, fallback_text, settings["cooldown_hours"], label + ",ai-failed")
+                return
+            if settings.get("handoff_enabled") and db.handoff_active(owner_id, chat_id):
+                if consumed:
+                    consumed = not refund()
                 return
             if request is not None and not db.mark_ai_request(owner_id, request, "sending"):
                 consumed = False  # daftar yozuvi boshqa jarayonga o'tgan/yopilgan: bu yerda yuborilmaydi (ikki marta javob bo'lmasin)
@@ -2425,6 +2497,10 @@ async def ai_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
         db.purge_old_inbox()  # Smart Inbox: 14 kundan eski suhbat holatlari
     except Exception:
         logger.exception("Smart Inbox ma'lumotlarini tozalashda xato")
+    try:
+        db.purge_old_handoffs()
+    except Exception:
+        logger.exception("Smart Handoff ma'lumotlarini tozalashda xato")
     try:
         db.purge_old_analytics()  # statistika: eng ko'pi bilan 90 kunlik soatlik hisoblagichlar
     except Exception:
@@ -4775,6 +4851,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.update_settings(owner_id, ai_enabled=True)
         # eski «ai_toggle» tugmasi holatni o'zgartirmaydi
         text, markup = build_ai_menu(owner_id, notice)
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data in ("ai_handoff_on", "ai_handoff_off"):
+        db.update_settings(owner_id, handoff_enabled=(data == "ai_handoff_on"))
+        text, markup = build_ai_menu(owner_id)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
@@ -7609,6 +7691,10 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.exception("Ism soati: yangi ismni olishda xato (owner=%s)", owner_id)
                 track_inbox_owner_reply(owner_id, bm)
                 try:
+                    db.close_handoff(owner_id, bm.chat.id)
+                except Exception:
+                    logger.exception("Smart Handoff: egasining javobidan keyin holatni yopib bo'lmadi")
+                try:
                     if db.get_settings(owner_id).get("ai_enabled"):
                         db.pause_ai_chat(owner_id, bm.chat.id, AI_TAKEOVER_PAUSE_SECONDS)
                 except Exception:
@@ -7644,6 +7730,13 @@ async def on_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         chat_id = bm.chat.id
+        # Once handed off, no automated response (including FAQ, Scheduler or Sleep Mode).
+        if db.handoff_active(owner_id, chat_id):
+            return
+        if ai.is_configured() and settings.get("ai_enabled") and settings.get("handoff_enabled") and has_feature(owner_id, "ai"):
+            handoff_text = (bm.text or bm.caption or "").strip() if getattr(bm, "voice", None) is None else ""
+            if handoff_text and await maybe_handoff(context.bot, bm, owner_id, chat_id, handoff_text, owner_lang):
+                return
         label = f"sleeping={sleeping}" + (",schedule" if schedule_rule is not None else "")
 
         ai_usable = not sleeping and bool(settings.get("ai_enabled")) and ai.is_configured() and has_feature(owner_id, "ai")
