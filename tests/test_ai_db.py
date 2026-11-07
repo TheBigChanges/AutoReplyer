@@ -192,6 +192,73 @@ class AiDbTests(unittest.TestCase):
         self._age()
         self.assertFalse(db.track_ai_request(self.owner, req, "2026-10-11"))    # yopilgan (`refunded`) qayta ochilmaydi
 
+    def test_crashed_background_ai_request_is_recovered(self):
+        """Jarayon to'xtadi, Telegram xabarni qayta yubormaydi: job eskirgan `reserved` so'rovni o'zi yopadi."""
+        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 1))
+        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 2))
+        self.assertEqual(db.recover_orphaned_ai_requests(), 0)       # hali yangi: tegilmaydi
+        with _conn() as c, c.cursor() as cur:                       # faqat 1-xabar eskirgan
+            cur.execute("UPDATE ai_requests SET updated_at = 0 WHERE owner_user_id = %s AND message_id = 1", (self.owner,))
+        self.assertEqual(db.recover_orphaned_ai_requests(), 1)
+        self.assertEqual(self._state(1), "abandoned")
+        self.assertEqual(self._state(2), "reserved")
+        self.assertEqual(db.recover_orphaned_ai_requests(), 0)       # takroriy job hech narsani ikki marta yopmaydi
+        self.assertTrue(db.ai_request_seen(self.owner, self.chat, 1))  # yopilgan so'rov qayta ishlanmaydi (javob yaratilmaydi)
+
+    def test_orphaned_reservation_releases_quota(self):
+        db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 1))
+        self.assertFalse(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 2)))  # limit to'la
+        self._age()
+        db.recover_orphaned_ai_requests()
+        self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 0)   # band qilingan limit qaytdi (band qilingan kunga)
+        self.assertTrue(db.try_consume_ai_quota(self.owner, "2026-10-11", 1, request=(self.chat, 3)))
+
+    def test_orphaned_admin_reservation_closes_without_touching_quota(self):
+        db.track_ai_request(self.owner, (self.chat, 1), "2026-10-11")
+        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 2))
+        self._age()
+        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=(self.chat, 3))   # yangi, hali ishlayapti
+        self.assertEqual(db.recover_orphaned_ai_requests(), 2)
+        self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 1)   # faqat eskirgan oddiy so'rov limiti qaytdi; admin yozuvi va yangi so'rov tegilmadi
+
+    def test_recovery_does_not_resend_unknown_telegram_message(self):
+        for msg, final in ((1, "sending"), (2, "unknown"), (3, "sent")):
+            req = (self.chat, msg)
+            db.try_consume_ai_quota(self.owner, "2026-10-11", 9, request=req)
+            db.mark_ai_request(self.owner, req, "sending")
+            if final != "sending":
+                db.mark_ai_request(self.owner, req, final)
+        self._age(10 * 86400)
+        self.assertEqual(db.recover_orphaned_ai_requests(), 0)
+        self.assertEqual([self._state(i) for i in (1, 2, 3)], ["sending", "unknown", "sent"])
+        self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 3)   # limit qaytarilmadi
+        self.assertTrue(all(db.ai_request_seen(self.owner, self.chat, i) for i in (1, 2, 3)))
+
+    def test_running_request_closed_by_recovery_cannot_send_later(self):
+        req = (self.chat, 1)
+        db.try_consume_ai_quota(self.owner, "2026-10-11", 5, request=req)
+        self._age()
+        db.recover_orphaned_ai_requests()
+        self.assertFalse(db.mark_ai_request(self.owner, req, "sending"))  # kechikib tugagan eski so'rov yubora olmaydi
+        db.refund_ai_quota(self.owner, "2026-10-11", request=req)          # va limitni ikkinchi marta qaytarmaydi
+        self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 0)
+
+    def test_delete_ai_data_removes_ledger_and_releases_reserved_quota(self):
+        a, b, c3 = (self.chat, 1), (self.chat, 2), (self.chat, 3)
+        for r in (a, b, c3):
+            db.try_consume_ai_quota(self.owner, "2026-10-11", 9, request=r)
+        db.mark_ai_request(self.owner, b, "sending")           # yuborilmoqda: limit qaytarilmaydi
+        db.mark_ai_request(self.owner, c3, "sending"); db.mark_ai_request(self.owner, c3, "sent")
+        db.try_consume_voice_attempt(self.owner, "2026-10-11", 9)
+        db.delete_ai_data(self.owner)
+        for m in (1, 2, 3):
+            self.assertFalse(db.ai_request_seen(self.owner, self.chat, m))    # chat/xabar ID'lari qolmadi
+        self.assertEqual(db.get_ai_usage(self.owner, "2026-10-11"), 2)        # faqat `reserved`ning limiti qaytdi
+        self.assertFalse(db.mark_ai_request(self.owner, a, "sending"))        # hali ishlayotgan so'rov uzilgan hisobdan yubora olmaydi
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT count FROM voice_attempts WHERE owner_user_id = %s", (self.owner,))
+            self.assertEqual(cur.fetchone()[0], 1)                            # xarajat hisoblagichi uzib-ulash bilan nollanmaydi
+
     def test_voice_attempts_stop_at_limit_and_are_never_refunded(self):
         res = [db.try_consume_voice_attempt(self.owner, "2026-10-11", 3) for _ in range(5)]
         self.assertEqual(res, [True, True, True, False, False])
