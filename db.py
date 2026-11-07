@@ -182,6 +182,12 @@ def init_db():
             )
             """
         )
+        # Holatlar: reserved (tayyorlanmoqda) -> sending (Telegram'ga yuborilmoqda) -> sent | unknown (natija noma'lum) | refunded.
+        # updated_at — oxirgi o'zgarish (eskirgan `reserved` tiklanadi, `sending`/`unknown` hech qachon qayta yuborilmaydi);
+        # day/counted — limit qaysi kunga va umuman band qilinganmi (admin uchun yo'q).
+        cur.execute("ALTER TABLE ai_requests ADD COLUMN IF NOT EXISTS updated_at DOUBLE PRECISION NOT NULL DEFAULT 0")
+        cur.execute("ALTER TABLE ai_requests ADD COLUMN IF NOT EXISTS day TEXT NOT NULL DEFAULT ''")
+        cur.execute("ALTER TABLE ai_requests ADD COLUMN IF NOT EXISTS counted BOOLEAN NOT NULL DEFAULT TRUE")
         # Voice AI: Gemini'ga yuborilgan transkripsiya urinishlari (muvaffaqiyatsizlari ham) — qaytarilmaydi
         cur.execute(
             """
@@ -2234,22 +2240,46 @@ def add_ai_messages(owner_user_id: int, chat_id: int, messages: list, keep: int 
         )
 
 
+AI_REQUEST_STALE_SECONDS = 180.0  # shundan uzoq `reserved` turgan so'rov — jarayon to'xtagan deb hisoblanadi (Gemini taymauti 20s)
+
+
+def _claim_ai_request(cur, owner_user_id: int, request: tuple, day: str, counted: bool) -> str:
+    """Daftarga yozadi. 'new' — yangi yozuv; 'recovered' — jarayon to'xtagani sababli eskirgan `reserved` yozuv qayta olindi
+    (limit allaqachon band qilingan, qayta sarflanmaydi); 'duplicate' — bu xabar allaqachon qayta ishlangan/ishlanmoqda
+    (`sending`, `sent`, `unknown`, `refunded` yoki yangi `reserved`) — HECH QACHON qayta yuborilmaydi."""
+    now = time.time()
+    cur.execute(
+        """
+        INSERT INTO ai_requests (owner_user_id, chat_id, message_id, state, created_at, updated_at, day, counted)
+        VALUES (%s, %s, %s, 'reserved', %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING 1
+        """,
+        (owner_user_id, request[0], request[1], now, now, day, counted),
+    )
+    if cur.fetchone() is not None:
+        return "new"
+    cur.execute(
+        """
+        UPDATE ai_requests SET updated_at = %s
+        WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s AND state = 'reserved' AND updated_at < %s
+        RETURNING counted
+        """,
+        (now, owner_user_id, request[0], request[1], now - AI_REQUEST_STALE_SECONDS),
+    )
+    return "recovered" if cur.fetchone() is not None else "duplicate"
+
+
 def try_consume_ai_quota(owner_user_id: int, day: str, limit: int, request: tuple | None = None) -> bool:
     """Bugungi AI javoblar limitidan bittasini ATOMIK band qiladi (bitta tranzaksiya).
     request=(chat_id, message_id) berilsa, band qilish shu xabar bo'yicha idempotent: bir xabar uchun limit ikki marta
-    sarflanmaydi (xabar allaqachon band qilingan bo'lsa — False, limit tegilmaydi).
-    True — ruxsat berildi; False — limit tugagan (yoki bu xabar allaqachon qayta ishlangan)."""
+    sarflanmaydi. Jarayon to'xtab qolgan eskirgan `reserved` so'rov qayta olinadi (limit allaqachon band — qayta sarflanmaydi).
+    True — ruxsat berildi; False — limit tugagan (yoki bu xabar allaqachon qayta ishlangan/ishlanmoqda)."""
     with get_conn() as conn, conn.cursor() as cur:
         if request is not None:
-            cur.execute(
-                """
-                INSERT INTO ai_requests (owner_user_id, chat_id, message_id, state, created_at)
-                VALUES (%s, %s, %s, 'reserved', %s) ON CONFLICT DO NOTHING RETURNING 1
-                """,
-                (owner_user_id, request[0], request[1], time.time()),
-            )
-            if cur.fetchone() is None:
+            outcome = _claim_ai_request(cur, owner_user_id, request, day, True)
+            if outcome == "duplicate":
                 return False
+            if outcome == "recovered":
+                return True
         cur.execute(
             """
             INSERT INTO ai_usage (owner_user_id, day, count) VALUES (%s, %s, 1)
@@ -2269,21 +2299,50 @@ def try_consume_ai_quota(owner_user_id: int, day: str, limit: int, request: tupl
         return True
 
 
+def track_ai_request(owner_user_id: int, request: tuple, day: str) -> bool:
+    """Limitsiz egasi (admin) uchun: limit band qilinmaydi, lekin so'rov daftarga yoziladi (restartdan keyin ham takroriy
+    xabar himoyasi). True — davom etish mumkin (yangi yoki tiklangan); False — takroriy."""
+    with get_conn() as conn, conn.cursor() as cur:
+        return _claim_ai_request(cur, owner_user_id, request, day, False) != "duplicate"
+
+
+def mark_ai_request(owner_user_id: int, request: tuple, state: str) -> bool:
+    """Daftar holatini o'zgartiradi: 'sending' (faqat `reserved`dan), 'sent' / 'unknown' / 'refunded' (`sending` yoki `reserved`dan).
+    'refunded' limitga tegmaydi (admin so'rovini bo'shatish uchun); oddiy egalar uchun limitni refund_ai_quota qaytaradi. True — o'zgardi."""
+    allowed = {"sending": ("reserved",), "sent": ("sending", "reserved"), "unknown": ("sending", "reserved"),
+               "refunded": ("sending", "reserved")}[state]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE ai_requests SET state = %s, updated_at = %s
+            WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s AND state = ANY(%s) RETURNING 1
+            """,
+            (state, time.time(), owner_user_id, request[0], request[1], list(allowed)),
+        )
+        return cur.fetchone() is not None
+
+
 def refund_ai_quota(owner_user_id: int, day: str, request: tuple | None = None):
     """Javob yuborilmagan bo'lsa, band qilingan limitni qaytaradi.
     request=(chat_id, message_id) berilsa, qaytarish IDEMPOTENT: xabar uchun faqat bir marta (va faqat band qilingan bo'lsa)
-    qaytariladi — natija noma'lum bo'lgan (javob yo'qolgan) qayta urinish ham limitni ikki marta qaytarmaydi."""
+    qaytariladi — natija noma'lum bo'lgan (javob yo'qolgan) qayta urinish ham limitni ikki marta qaytarmaydi.
+    Limit yozuvda saqlangan kunga qaytariladi (yarim tunda ham to'g'ri hisoblagichga)."""
     with get_conn() as conn, conn.cursor() as cur:
         if request is not None:
             cur.execute(
                 """
-                UPDATE ai_requests SET state = 'refunded'
-                WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s AND state = 'reserved' RETURNING 1
+                UPDATE ai_requests SET state = 'refunded', updated_at = %s
+                WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s AND state IN ('reserved', 'sending')
+                RETURNING counted, day
                 """,
-                (owner_user_id, request[0], request[1]),
+                (time.time(), owner_user_id, request[0], request[1]),
             )
-            if cur.fetchone() is None:
+            row = cur.fetchone()
+            if row is None:
                 return
+            if not row[0]:
+                return  # limit band qilinmagan (admin)
+            day = row[1] or day
         cur.execute(
             "UPDATE ai_usage SET count = count - 1 WHERE owner_user_id = %s AND day = %s AND count > 0",
             (owner_user_id, day),
@@ -2291,13 +2350,17 @@ def refund_ai_quota(owner_user_id: int, day: str, request: tuple | None = None):
 
 
 def ai_request_seen(owner_user_id: int, chat_id: int, message_id: int) -> bool:
-    """Shu kiruvchi xabar uchun AI so'rovi allaqachon boshlanganmi (qayta ishga tushishdan keyin ham takroriy himoya)."""
+    """Shu kiruvchi xabar uchun AI so'rovi allaqachon boshlanganmi (qayta ishga tushishdan keyin ham takroriy himoya).
+    Faqat jarayon to'xtagani sababli eskirgan `reserved` yozuv "ko'rilmagan" hisoblanadi (tiklanadi)."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM ai_requests WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s",
+            "SELECT state, updated_at FROM ai_requests WHERE owner_user_id = %s AND chat_id = %s AND message_id = %s",
             (owner_user_id, chat_id, message_id),
         )
-        return cur.fetchone() is not None
+        row = cur.fetchone()
+        if row is None:
+            return False
+        return not (row[0] == "reserved" and row[1] < time.time() - AI_REQUEST_STALE_SECONDS)
 
 
 def try_consume_voice_attempt(owner_user_id: int, day: str, limit: int) -> bool:
