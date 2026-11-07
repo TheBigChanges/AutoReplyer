@@ -302,7 +302,7 @@ class FlowTests(unittest.TestCase):
             "faq": patch.object(bot, "find_faq_answer", return_value=faq_answer),
             "conf": patch.object(ai, "is_configured", return_value=ai_ready),
             "gen": patch.object(ai, "generate_reply", new=AsyncMock(return_value="AI javobi")),
-            "quota": patch.object(db, "try_consume_ai_quota", return_value=True),
+            "quota": patch.object(db, "reserve_ai_quota", return_value="reserved"),
             "ledger_seen": patch.object(db, "ai_request_seen", return_value=False),
             "ledger_mark": patch.object(db, "mark_ai_request", return_value=True),
             "ledger_track": patch.object(db, "track_ai_request", return_value=True),
