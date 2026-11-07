@@ -735,3 +735,9 @@ No new menu or button: when the **🤖 AI Assistant** is on and a customer sends
 - A repeated update for the same voice message is answered (and transcribed) only once.
 - **Privacy:** the audio is downloaded into memory, sent to Gemini and never saved to disk or logged. The recognized text is stored in the AI conversation history under the usual retention rules. The AI settings screen says so.
 - Costs: each voice reply makes two Gemini requests (speech→text, text→reply); watch real API usage.
+
+## Tugmalar: joylashuv va ranglar
+
+Barcha inline tugmalar `ui.Markup` orqali o'tadi: qisqa tugmalar yonma-yon (2 tadan) joylanadi, keng/toggle tugmalar to'liq qatorda qoladi.
+Ranglar (Bot API 9.4 `style`): 🔴 qaytish/bekor qilish/o'chirish/o'chirib qo'yish, 🟢 yoqish/saqlash/qo'shish/to'lov, 🔵 bo'lim tugmalari.
+Eski Telegram klientlarida tugmalar oddiy ko'rinadi (funksiya buzilmaydi).
