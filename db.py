@@ -1985,6 +1985,33 @@ def get_faq_entry(owner_user_id: int, entry_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+def get_panel_overview(owner_id: int, now: float | None = None) -> dict:
+    """Boshqaruv paneli uchun funksiyalar holati: barcha sanoqlar BITTA so'rovda (panel tez-tez qayta chiziladi).
+    faq/kb/automation/sched: jami va faol yozuvlar; inbox: yoqilganmi va javobsiz suhbatlar soni (saqlash muddati ichida)."""
+    now = time.time() if now is None else now
+    cutoff = now - INBOX_RETENTION_DAYS * 86400
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM faq_entries WHERE owner_user_id = %(o)s),
+              (SELECT COUNT(*) FROM faq_entries WHERE owner_user_id = %(o)s AND is_enabled),
+              (SELECT COUNT(*) FROM knowledge_entries WHERE owner_user_id = %(o)s),
+              (SELECT COUNT(*) FROM knowledge_entries WHERE owner_user_id = %(o)s AND is_enabled),
+              (SELECT COUNT(*) FROM automation_rules WHERE owner_user_id = %(o)s),
+              (SELECT COUNT(*) FROM automation_rules WHERE owner_user_id = %(o)s AND is_enabled),
+              (SELECT COUNT(*) FROM schedule_rules WHERE owner_user_id = %(o)s),
+              (SELECT COUNT(*) FROM schedule_rules WHERE owner_user_id = %(o)s AND is_enabled),
+              COALESCE((SELECT enabled FROM inbox_settings WHERE owner_user_id = %(o)s), FALSE),
+              (SELECT COUNT(*) FROM inbox_chats WHERE owner_user_id = %(o)s AND pending AND last_customer_at >= %(c)s)
+            """,
+            {"o": owner_id, "c": cutoff},
+        )
+        r = cur.fetchone()
+    keys = ("faq_total", "faq_active", "kb_total", "kb_active", "au_total", "au_active", "sc_total", "sc_active", "inbox_enabled", "inbox_pending")
+    return dict(zip(keys, r))
+
+
 def count_faq_entries(owner_user_id: int) -> int:
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM faq_entries WHERE owner_user_id = %s", (owner_user_id,))
@@ -3227,7 +3254,7 @@ for _name in (
     "get_name_clock_targets", "mark_name_clock_applied_bulk", "get_name_clock_base",
     "get_settings", "get_connection", "get_connection_by_business_id", "get_user_lang", "get_user_plan_info", "list_plan_subscribers",
     "get_all_bio_targets", "get_user", "get_bio_ad_candidates", "get_onboarding_step", "set_onboarding_step", "onboarding_stats", "get_enabled_faq_entries", "list_faq_entries", "list_automation_rules", "count_automation_rules", "get_automation_deleted_sent", "get_automation_counters_since", "get_user_plan_state", "get_payment", "get_payment_by_charge", "list_user_payments", "list_recent_payments", "list_unprocessed_payment_events", "get_payment_recon_mark", "get_faq_entry", "count_faq_entries",
-    "get_analytics_rows", "release_inbox_digest", "finish_inbox_digest", "get_inbox_settings", "inbox_enabled", "get_pending_chats", "get_pending_stats", "count_priority_chats", "list_inbox_reminders", "get_inbox_chat", "count_inbox_reminders_for_date", "list_inbox_owners", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
+    "get_analytics_rows", "release_inbox_digest", "finish_inbox_digest", "get_inbox_settings", "inbox_enabled", "get_pending_chats", "get_pending_stats", "get_panel_overview", "count_priority_chats", "list_inbox_reminders", "get_inbox_chat", "count_inbox_reminders_for_date", "list_inbox_owners", "list_schedule_rules", "get_schedule_rule", "count_schedule_rules", "get_enabled_kb_entries", "list_kb_entries", "get_kb_entry", "count_kb_entries",
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
