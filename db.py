@@ -9,6 +9,7 @@ fayl (SQLite) saqlanib qolishi kafolatlanmaydi, tashqi Postgres esa doimiy.
 """
 
 import logging
+import contextvars
 import os
 import threading
 import time
@@ -68,6 +69,7 @@ ALLOWED_SETTINGS_FIELDS = {
 }
 
 POOL_MAX_CONNECTIONS = 10
+POOL_MIN_CONNECTIONS = int(os.environ.get("DB_POOL_MIN", "2"))  # tayyor ulanishlar: uzoq bazada yangi ulanish (TLS) ~0.5 s
 _pool_init_lock = threading.Lock()
 _pool: "psycopg2.pool.ThreadedConnectionPool | None" = None
 
@@ -84,12 +86,28 @@ def _get_pool() -> "psycopg2.pool.ThreadedConnectionPool":
                 database_url = os.environ["DATABASE_URL"]
                 try:
                     # ThreadedConnectionPool — ko'p oqimli (asyncio.to_thread) ishlatish uchun xavfsiz
-                    _pool = psycopg2.pool.ThreadedConnectionPool(1, POOL_MAX_CONNECTIONS, dsn=database_url)
+                    _pool = psycopg2.pool.ThreadedConnectionPool(
+                        max(1, POOL_MIN_CONNECTIONS), POOL_MAX_CONNECTIONS, dsn=database_url,
+                        # TCP keepalive: bo'sh turgan ulanishni NAT/pooler jimgina uzib qo'ymasin (keyingi bosish sekin qayta ulanmasin)
+                        keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
+                    )
                 except Exception:
                     logger.exception("Bazaga ulanib bo'lmadi (DATABASE_URL noto'g'ri yoki server javob bermayapti)")
                     raise
                 logger.info("Baza connection pool yaratildi")
     return _pool
+
+
+# Tezlikni o'lchash: har bir yangilanish (tugma bosish/xabar) uchun bazaga nechta so'rov ketgani va qancha vaqt olgani.
+# ContextVar'dagi o'zgaruvchan lug'at asyncio.to_thread ichida ham (kontekst nusxalanadi) bir xil ob'ektga yoziladi.
+_perf: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar("db_perf", default=None)
+
+
+def perf_start() -> dict:
+    """Joriy yangilanish uchun hisoblagichni boshlaydi: {'n': so'rovlar soni, 'ms': umumiy ulanish vaqti}."""
+    stats = {"n": 0, "ms": 0.0}
+    _perf.set(stats)
+    return stats
 
 
 class _PooledConnection:
@@ -101,9 +119,14 @@ class _PooledConnection:
         self._pool = _get_pool()
         self._conn = self._pool.getconn()
         self._conn.autocommit = True
+        self._t0 = time.perf_counter()
         return self._conn
 
     def __exit__(self, exc_type, exc, tb):
+        stats = _perf.get()
+        if stats is not None:
+            stats["n"] += 1
+            stats["ms"] += (time.perf_counter() - self._t0) * 1000
         # Faqat chindan ham ULANISH buzilgan bo'lsa (tarmoq uzilishi va h.k.)
         # ulanishni tashlab yuboramiz. Oddiy SQL xatosi (masalan constraint
         # buzilishi — UniqueViolation) autocommit rejimida ulanishni
@@ -714,21 +737,31 @@ def ensure_settings(owner_user_id: int):
 
 
 def get_settings(owner_user_id: int) -> dict:
-    ensure_settings(owner_user_id)
-    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("SELECT * FROM settings WHERE owner_user_id = %s", (owner_user_id,))
-        return dict(cur.fetchone())
+    """Sozlamalar. Odatda BITTA so'rov (qator bor); yo'q bo'lsagina yaratiladi — har chaqiruvda ortiqcha INSERT yo'q."""
+    for attempt in (0, 1):
+        with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM settings WHERE owner_user_id = %s", (owner_user_id,))
+            row = cur.fetchone()
+        if row is not None:
+            return dict(row)
+        if attempt == 0:
+            ensure_settings(owner_user_id)
+    raise RuntimeError("settings qatori yaratilmadi")
 
 
 def update_settings(owner_user_id: int, **kwargs):
     invalid = set(kwargs) - ALLOWED_SETTINGS_FIELDS
     if invalid:
         raise ValueError(f"Ruxsat etilmagan settings ustuni: {invalid}")
-    ensure_settings(owner_user_id)
     fields = ", ".join(f"{k} = %s" for k in kwargs)
     values = list(kwargs.values()) + [owner_user_id]
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(f"UPDATE settings SET {fields} WHERE owner_user_id = %s", values)
+    for attempt in (0, 1):  # qator odatda bor: bitta UPDATE; yo'q bo'lsagina avval yaratiladi
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE settings SET {fields} WHERE owner_user_id = %s", values)
+            if cur.rowcount:
+                return
+        if attempt == 0:
+            ensure_settings(owner_user_id)
 
 
 # --------------------------------------------------------------------------
@@ -3258,3 +3291,82 @@ for _name in (
 ):
     globals()[_name] = retry_on_disconnect(globals()[_name])
 del _name
+
+
+# --------------------------------------------------------------------------
+# Qisqa muddatli "issiq" kesh: har tugma bosilishida takror o'qiladigan kichik yozuvlar (sozlamalar, ulanish, tarif, ism soati
+# asl ismi). Baza uzoq regionda bo'lsa, har bir so'rov 100+ ms — menyu 5–13 ta so'rov qilardi.
+# Xavfsizlik: (1) har qanday YOZUVCHI funksiya (nomi get_/list_/count_/... bilan boshlanmaydigan) tugagach butun kesh tozalanadi —
+# keyingi o'qish bazadan; (2) muddat (TTL) bilan chegaralangan; (3) tarif muddati o'tishi hisobga olinadi; (4) nusxa qaytariladi.
+# Faqat bitta jarayon ishlaganda to'liq to'g'ri: boshqa jarayon yozsa, eskirish TTL bilan cheklanadi.
+# DB_HOT_CACHE_TTL=0 — o'chirilgan (testlar shunday ishlaydi: ular ba'zan SQL'ni to'g'ridan-to'g'ri yozadi).
+# --------------------------------------------------------------------------
+import copy as _copy  # noqa: E402
+
+HOT_CACHE_TTL = float(os.environ.get("DB_HOT_CACHE_TTL", "15"))
+_hot_lock = threading.Lock()
+_hot: dict = {}
+_HOT_MAX = 20000
+_READ_PREFIXES = ("get_", "list_", "count_", "is_", "has_", "find_", "search_", "fetch_")
+# Kesh qilingan jadvallarga tegmaydigan, lekin har xabarda chaqiriladigan yozuvchilar: kesh ularda tozalanmaydi
+_HOT_HARMLESS_WRITERS = frozenset({
+    "record_user", "record_analytics", "record_automation_sent", "try_claim_reply", "release_reply_claim",
+    "reserve_ai_quota", "track_ai_request", "mark_ai_request", "refund_ai_quota", "ai_request_seen",
+    "try_consume_voice_attempt", "add_ai_messages", "pause_ai_chat", "record_customer_message", "record_owner_reply",
+    "inbox_enabled", "perf_start", "retry_on_disconnect", "onboarding_stats", "invalidate_schedule_cache",
+})
+
+
+def hot_cache_clear() -> None:
+    with _hot_lock:
+        _hot.clear()
+
+
+def _hot_cached(fn):
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args):
+        if HOT_CACHE_TTL <= 0:
+            return fn(*args)
+        key = (fn.__name__, args)
+        now = time.monotonic()
+        with _hot_lock:
+            hit = _hot.get(key)
+        if hit is not None and hit[0] > now:
+            value = hit[1]
+            # tarif muddati o'tib ketgan bo'lsa (kesh ichida) — qayta o'qiladi
+            if not (fn.__name__ == "get_user_plan_info" and value[1] is not None and value[1] <= time.time()):
+                return _copy.deepcopy(value)
+        value = fn(*args)
+        with _hot_lock:
+            if len(_hot) >= _HOT_MAX:
+                _hot.clear()
+            _hot[key] = (now + HOT_CACHE_TTL, _copy.deepcopy(value))
+        return value
+
+    return wrapper
+
+
+def _clears_hot_cache(fn):
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            hot_cache_clear()  # yozuvdan KEYIN (muvaffaqiyatsiz bo'lsa ham): keyingi o'qish aniq bazadan
+
+    wrapper._clears_cache = True
+    return wrapper
+
+
+for _name in ("get_settings", "get_connection", "get_connection_by_business_id", "get_user_plan_info", "get_name_clock_base", "get_onboarding_step"):
+    globals()[_name] = _hot_cached(globals()[_name])
+for _name, _obj in list(globals().items()):
+    if (callable(_obj) and getattr(_obj, "__module__", None) == __name__ and not _name.startswith("_")
+            and not _name.startswith(_READ_PREFIXES) and _name not in _HOT_HARMLESS_WRITERS
+            and not isinstance(_obj, type) and _name != "hot_cache_clear"):
+        globals()[_name] = _clears_hot_cache(_obj)
+del _name, _obj
