@@ -272,12 +272,24 @@ def sleep_text_for(settings: dict, lang: str) -> str:
     return t(lang, "default_sleep") if (not text or text in all_defaults("default_sleep")) else text
 
 
+USER_TRACK_TTL = 600.0
+_user_tracked: dict[int, tuple[float, tuple]] = {}
+
+
 def track_user(user):
     """Foydalanuvchini (va uning username/ismini) bazaga yozadi. Username
     saqlanishi sababli admin /block @username bilan odamni topa oladi."""
     if user is None or getattr(user, "is_bot", False):
         return  # botlar "foydalanuvchi" emas: ro'yxat, /stats va reklamaga kirmasin
-    db.record_user(user.id, username=user.username, full_name=user.full_name)
+    # Har bosishda bazaga yozmaslik uchun: bir xil username/ismli foydalanuvchi uchun USER_TRACK_TTL ichida qayta yozilmaydi
+    # (har bir yozuv uzoq bazada ~100+ ms). Username/ism o'zgarsa — darhol yoziladi.
+    seen = (user.username, user.full_name)
+    last = _user_tracked.get(user.id)
+    if last is None or last[1] != seen or time.monotonic() - last[0] > USER_TRACK_TTL:
+        db.record_user(user.id, username=user.username, full_name=user.full_name)
+        if len(_user_tracked) >= 50000:
+            _user_tracked.clear()
+        _user_tracked[user.id] = (time.monotonic(), seen)
     # Ism soati yoqilgan egasi botga biror narsa yozsa/bossa, uning joriy ismi shu yerda keladi —
     # o'zi o'zgartirgan bo'lsa, darhol yangi ismni asl ism qilib olamiz.
     if name_clock_allowed(user.id):
@@ -4247,7 +4259,27 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+PERF_LOG_SLOW_MS = float(os.environ.get("PERF_LOG_SLOW_MS", "400"))  # shundan sekin tugma bosilishlari logga yoziladi (0 — hammasi)
+
+
+def _log_perf(kind: str, label: str, t0: float, stats: dict) -> None:
+    """Tezlik logi: bosishdan oxirigacha vaqt, bazaga so'rovlar soni va ularning umumiy vaqti (sekin joyni topish uchun)."""
+    total_ms = (time.perf_counter() - t0) * 1000
+    if total_ms >= PERF_LOG_SLOW_MS:
+        logger.info("PERF %s %s: jami %.0f ms, baza %d ta so'rov / %.0f ms", kind, (label or "")[:40], total_ms, stats["n"], stats["ms"])
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stats = db.perf_start()
+    t0 = time.perf_counter()
+    try:
+        await _on_button(update, context)
+    finally:
+        query = getattr(update, "callback_query", None)
+        _log_perf("button", getattr(query, "data", None) if isinstance(getattr(query, "data", None), str) else "", t0, stats)
+
+
+async def _on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     owner_id = query.from_user.id
     track_user(query.from_user)
