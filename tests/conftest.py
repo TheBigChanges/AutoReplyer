@@ -26,6 +26,8 @@ if _test_db_url:
             returncode=2,
         )
 os.environ["DATABASE_URL"] = _test_db_url or "postgresql://fake/fake"
+# "Issiq" kesh testlarda o'chiriq (ular ba'zan SQL'ni to'g'ridan-to'g'ri yozadi); kesh tests/test_hot_cache.py da alohida sinaladi
+os.environ["DB_HOT_CACHE_TTL"] = "0"
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +38,7 @@ def _language_already_chosen(monkeypatch):
         yield
         return
     bot._lang_cache.clear()
+    bot._user_tracked.clear()
     bot._ai_answered.clear()
     bot._incoming_seen.clear()
     monkeypatch.setattr(bot, "has_chosen_lang", lambda user_id: True)
