@@ -402,7 +402,7 @@ class UiTests(DbBase):
 
     def _press(self, data, plan="pro", owner=None):
         q = self._q()
-        with _Plan(plan):
+        with _Plan(plan), patch("bot.time.time", return_value=NOW):  # soat qat'iy: suhbat 14 kunlik saqlash muddatidan chiqib ketmasin
             run(bot.handle_inbox_callback(q, owner or self.o, data, "uz"))
         return q.edit_message_text.await_args.args[0]
 
@@ -548,6 +548,7 @@ class PurgeAndLimitUiTests(DbBase):
             cur.execute("DELETE FROM inbox_chats WHERE owner_user_id=%s", (self.o,))
         self.assertEqual(db.list_inbox_reminders(self.o), [])
 
+    @patch("bot.time.time", new=lambda: NOW)  # soat qat'iy: suhbat 14 kunlik saqlash muddatidan chiqib ketmasin
     def test_created_message_shows_remaining_for_chosen_date(self):
         for i in (1, 2):
             self.chat(i)
@@ -562,6 +563,7 @@ class PurgeAndLimitUiTests(DbBase):
         self.assertIn(tomorrow, text)
         self.assertIn("1", text.split("\n")[0])  # Pro 3 - 2 = 1 ta qoldi
 
+    @patch("bot.time.time", new=lambda: NOW)  # soat qat'iy: suhbat 14 kunlik saqlash muddatidan chiqib ketmasin
     def test_choice_view_shows_today_and_tomorrow_remaining(self):
         self.chat()
         with _Plan("pro"):
