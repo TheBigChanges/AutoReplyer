@@ -750,3 +750,13 @@ Eski Telegram klientlarida tugmalar oddiy ko'rinadi (funksiya buzilmaydi).
 
 Panel (`/start` → Panelni ochish) endi barcha funksiyalarning holatini bir blokda ko'rsatadi: Uxlayapman rejimi (vaqt oralig'i bilan), AI-Yordamchi, BIO hisoblagich (tanlangan voqea), Smart FAQ, AI Shaxsiy Bilimlar, Avtomatlashtirish (faol/jami qoida), Smart Jadval (faol/jami qoida), Smart Inbox (javobsiz suhbatlar soni) va Ism soati.
 🟢 yoqilgan · 🔴 o'chirilgan · 🔴 hali qo'shilmagan (ro'yxat bo'sh) · 🔒 tarifda yo'q. Sanoqlar bitta SQL so'rovda olinadi (`db.get_panel_overview`); xato bo'lsa panel tafsilotsiz, lekin tugmalari bilan ishlayveradi.
+
+## Tezlik (tugmalar tez ishlashi)
+
+Baza uzoq regionda bo'lsa, har bir so'rov 100+ ms oladi. Avval bitta tugma bosilishi 5–13 ta so'rov qilardi (Sydney bazasi + AQSh serveri = 1.5–2 soniya); endi iliq holatda 0–1 ta.
+- **Issiq kesh** (`db.py`): `get_settings`, `get_connection`, `get_connection_by_business_id`, `get_user_plan_info`, `get_name_clock_base`, `get_onboarding_step` — 15 soniya (`DB_HOT_CACHE_TTL`, 0 = o'chirilgan). Har qanday yozuvchi funksiya (nomi `get_/list_/count_/...` bilan boshlanmaydigan) tugagach kesh to'liq tozalanadi, shuning uchun o'zgarish darhol ko'rinadi; tarif muddati kesh ichida ham hisobga olinadi. Faqat BITTA jarayon ishlaganda to'liq to'g'ri (Railway'da bitta replica); ko'p jarayonda eskirish TTL bilan cheklanadi.
+- `get_settings` / `update_settings` — bitta so'rov (avval har safar ortiqcha INSERT bor edi).
+- `track_user` — bir xil username/ismli foydalanuvchi uchun 10 daqiqada bir marta yozadi (o'zgarsa — darhol).
+- Pool: `DB_POOL_MIN` (standart 2) tayyor ulanish + TCP keepalive.
+- **PERF log:** `PERF_LOG_SLOW_MS` (standart 400) dan sekin tugma bosilishi logga yoziladi: `PERF button open_panel: jami 1830 ms, baza 9 ta so'rov / 1400 ms`. Railway loglarida `PERF` ni qidirib, sekin joyni toping.
+- Eng katta yutuq — bazani serverga yaqin joylashtirish (bir region): kesh faqat so'rovlar sonini kamaytiradi, bitta so'rov narxini emas.
